@@ -1,0 +1,17 @@
+# files
+*.rst
+*.xml
+*.nc
+*.pdf
+*.dat
+*.txt
+*.mod
+*.iml
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+# plots
+figures/
+*.F90
+*.so
