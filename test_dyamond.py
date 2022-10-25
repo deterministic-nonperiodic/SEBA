@@ -22,12 +22,12 @@ if __name__ == '__main__':
     resolution = 'n128'
     data_path = 'data/'
 
-    dset_uvt = xr.open_dataset(data_path + 'DYAMONDwinter2_atm_3d_inst_uvt_PL_{}_20200128.nc'.format(resolution))
-    dset_pwe = xr.open_dataset(data_path + 'DYAMONDwinter2_atm_3d_inst_pwe_PL_{}_20200128.nc'.format(resolution))
+    dset_uvt = xr.open_dataset(data_path + 'ICON_atm_3d_inst_uvt_PL_{}_20200128.nc'.format(resolution))
+    dset_pwe = xr.open_dataset(data_path + 'ICON_atm_3d_inst_pwe_PL_{}_20200128.nc'.format(resolution))
 
     # load earth topography and surface pressure
+    sfcp = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution)).pres_sfc.values
     ghsl = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution)).topography_c.values
-    sfcp = xr.open_dataset(data_path + 'DYAMOND2_sfcp_{}.nc'.format(resolution)).pres_sfc.values.squeeze()
 
     # Create energy budget object
     AEB = EnergyBudget(
@@ -130,15 +130,15 @@ if __name__ == '__main__':
     # -----------------------------------------------------------------------------------------------------------
     kappa = 1e3 * kappa_from_deg(np.arange(AEB.truncation + 1))
 
-    prange = [200e2, 400e2]
+    prange = [100e2, 500e2]
 
     Tk_p = AEB.vertical_integration(Tk, prange=prange).mean(-1)
     Ta_p = AEB.vertical_integration(Ta, prange=prange).mean(-1)
     Cka_l = AEB.vertical_integration(Cka, prange=prange).mean(-1)
 
     # Accumulate
-    Tk_l = np.cumsum(Tk_p[::-1])[::-1]
-    Ta_l = np.cumsum(Ta_p[::-1])[::-1]
+    Tk_l = np.nansum(Tk_p) - np.cumsum(Tk_p, axis=0)
+    Ta_l = np.nansum(Ta_p) - np.cumsum(Ta_p, axis=0)
 
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8.0, 5.8), constrained_layout=True)
 
@@ -160,8 +160,8 @@ if __name__ == '__main__':
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
-    ax.set_ylim(-4.0, 4.)
-    ax.legend(loc='upper right', fontsize=12)
+    ax.set_ylim(-2.0, 2.)
+    ax.legend(title=r"  $100 \leq p \leq 500$ hPa ", loc='upper right', fontsize=12)
 
     plt.show()
 

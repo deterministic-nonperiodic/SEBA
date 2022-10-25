@@ -146,11 +146,14 @@ class EnergyBudget(object):
         elif np.isscalar(ps):
             self.ps = ps
         else:
-            if np.shape(ps) != (self.nlat, self.nlon):
-                raise ValueError('Surface pressure must be a scalar or a'
-                                 ' 2D array with shape (nlat, nlon)')
+            if np.ndim(ps) > 2:
+                self.ps = np.nanmean(ps, axis=0)
             else:
                 self.ps = ps
+
+            if np.shape(self.ps) != (self.nlat, self.nlon):
+                raise ValueError('Surface pressure must be a scalar or a'
+                                 ' 2D array with shape (nlat, nlon)')
 
         if ghsl is None:
             self.ghsl = 0.0
@@ -174,7 +177,7 @@ class EnergyBudget(object):
         if truncation is None:
             self.truncation = self.nlat - 1
         else:
-            self.truncation = truncation
+            self.truncation = int(truncation)
 
         if self.truncation < 0 or self.truncation + 1 > self.nlat:
             raise ValueError('truncation must be between 0 and %d' % (self.nlat - 1,))
@@ -197,16 +200,22 @@ class EnergyBudget(object):
         else:
             self.beta = np.ones((self.nlat, self.nlon, self.nlevels))
 
-        self.u = self._transform_data(u)
-        self.v = self._transform_data(v)
+        self.u = self._transform_data(u, filtered=False)  # avoid filtering before computing divergence
+        self.v = self._transform_data(v, filtered=False)
         self.t = self._transform_data(t)
         self.w = self._transform_data(w)
         self.omega = self._transform_data(omega)
 
         # Compute vorticity and divergence of the wind field
-        self.vrt, self.div = self.vorticity_divergence()
+        self.vrt_spc, self.div_spc = self.vorticity_divergence()
 
-        self.div_grd = self._inverse_transform(self.div)
+        # Transform of divergence/vorticity to grid-point space
+        self.div = self._inverse_transform(self.div_spc)
+        self.vrt = self._inverse_transform(self.vrt_spc)
+
+        # filtering horizontal wind after computing divergence/vorticity
+        self.u = self.filter_topography(self.u)
+        self.v = self.filter_topography(self.v)
 
         # -----------------------------------------------------------------------------
         # Thermodynamic diagnostics:
@@ -264,12 +273,11 @@ class EnergyBudget(object):
         # Compute geopotential height (implement in parallel)
         height = surface_height + geopotential_height(temperature, self.p, self.ps, axis=-1)
 
-        # Apply smoothed terrain mask
-        height = self.beta[..., np.newaxis] * np.moveaxis(height, -2, -1)
-        height = self._pack_levels(np.moveaxis(height, -1, -2))
-
         # Convert geopotential height to geopotential
-        return height_to_geopotential(height)
+        phi = height_to_geopotential(self.filter_topography(height))
+
+        # Apply smoothed terrain mask
+        return self.filter_topography(phi)
 
     # diagnose kinetic and potential energies
     def horizontal_kinetic_energy(self):
@@ -277,8 +285,8 @@ class EnergyBudget(object):
         Horizontal kinetic energy after Augier and Lindborg (2013), Eq.13
         :return:
         """
-        vrt_sqd = self._cspectra(self.vrt)
-        div_sqd = self._cspectra(self.div)
+        vrt_sqd = self._cspectra(self.vrt_spc)
+        div_sqd = self._cspectra(self.div_spc)
 
         return self.scale * (vrt_sqd + div_sqd) / 2.0
 
@@ -309,11 +317,11 @@ class EnergyBudget(object):
         """
         wind = np.stack((self.u, self.v))
 
-        adv_u = self._advect_scalar(self.u)
-        adv_v = self._advect_scalar(self.v)
+        # compute horizontal advection of the horizontal wind
+        adv_u, adv_v = self._advect_wind(*wind)
 
-        der_u = self.u * self.div_grd / 2.0
-        der_v = self.v * self.div_grd / 2.0
+        der_u = self.u * self.div / 2.0
+        der_v = self.v * self.div / 2.0
 
         # create advection vector
         advection_term = np.stack((adv_u + der_u, adv_v + der_v))
@@ -338,7 +346,7 @@ class EnergyBudget(object):
         # compute horizontal advection of potential temperature
         theta_advection = self._advect_scalar(self.theta_p)
 
-        der_theta = self.theta_p * self.div_grd / 2.0
+        der_theta = self.theta_p * self.div / 2.0
 
         # compute turbulent horizontal transfer
         advection_term = - self._scalar_cross_spectra(self.theta_p, theta_advection + der_theta)
@@ -392,6 +400,23 @@ class EnergyBudget(object):
         dlog_gamma = self._vertical_gradient(np.log(self.ganma))
 
         return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
+
+    def accumulated_fluxes(self, pressure_range=None):
+
+        # Compute spectral energy fluxes accumulated along
+        # zonal wavenumber (spherical harmonic order)
+        tk = self.ke_nonlinear_transfer()
+        ta = self.ape_nonlinear_transfer()
+
+        # Vertical integration
+        tk_p = self.vertical_integration(tk, prange=pressure_range)
+        ta_p = self.vertical_integration(ta, prange=pressure_range)
+
+        # Accumulate from small to large scales
+        pi_k = np.nansum(tk_p) - np.cumsum(tk_p)
+        pi_a = np.nansum(ta_p) - np.cumsum(ta_p)
+
+        return pi_k, pi_a
 
     def sfvp(self):
         """
@@ -507,6 +532,50 @@ class EnergyBudget(object):
         """
         return np.sum(self._horizontal_advection(scalar), axis=0)
 
+    def _advect_wind(self, ugrid, vgrid):
+        r"""
+        Compute the horizontal advection of the horizontal wind in 'rotation form'
+
+        .. math:: (\boldsymbol{u}\cdot\nabla_h)\boldsymbol{u}=\nabla_h|\boldsymbol{u}|^2 \\
+        .. math:: + \boldsymbol{\zeta}\times\boldsymbol{u}
+
+        where :math:`\boldsymbol{u}=(u, v)` is the horizontal wind vector,
+        and :math:`\boldsymbol{\zeta}` is the vertical vorticity.
+
+        Notes
+        -----
+        Advection calculated in rotation form is more robust than the standard convective form
+        :math:`(\boldsymbol{u}\cdot\nabla_h)\boldsymbol{u}` around sharp discontinuities,
+        and better conserves kinetic energy (Zang, 1991).
+
+        Thomas A. Zang, On the rotation and skew-symmetric forms for incompressible flow simulations,
+        Applied Numerical Mathematics, Volume 7, Issue 1, 1991, https://doi.org/10.1016/0168-9274(91)90102-6.
+
+        Parameters:
+        -----------
+            ugrid: `np.ndarray`
+                zonal component of the horizontal wind
+            vgrid: `np.ndarray`
+                meridional component of the horizontal wind
+        Returns
+        -------
+            advection: `np.ndarray`
+                Array containing the zonal and meridional components of advection
+        """
+
+        # Horizontal kinetic energy per unit mass in physical space
+        kinetic_energy = (ugrid ** 2 + vgrid ** 2) / 2.0
+
+        # Horizontal gradient of kinetic energy
+        # (components stored along the first dimension)
+        ke_gradient = self._horizontal_gradient(kinetic_energy)
+
+        # Horizontal advection of zonal and meridional wind components
+        # (components stored along the first dimension)
+        advection = ke_gradient + self.vrt * np.stack((-vgrid, ugrid))
+
+        return advection
+
     def _compute_rotdiv(self, ugrid, vgrid):
         """
         Compute the spectral coefficients of vorticity and horizontal
@@ -557,6 +626,8 @@ class EnergyBudget(object):
     def _vector_cross_spectra(self, a, b):
         """
         Compute spherical harmonic cross spectra between two vector fields on the sphere.
+
+        Reduces to '_vector_spectra' for a=b.
         """
         rot_uml, div_uml = self._compute_rotdiv(*a)
         rot_vml, div_vml = self._compute_rotdiv(*b)
@@ -584,8 +655,27 @@ class EnergyBudget(object):
         return self._pack_levels(ddz_scalar)
 
     def vertical_integration(self, scalar, prange=None):
-        """
-            Computes vertical gradient of a scalar function d(scalar)/dz
+        r"""Computes mass-weighted vertical integral of a scalar function.
+
+            .. math:: \Phi = \int_{z_b}^{z_t}\rho(z)\phi(z)~dz
+            where :math:`\phi` is any scalar and :math:`\rho` is density.
+            In pressure coordinates, assuming a hydrostatic atmosphere, the above can be written as:
+
+            .. math:: \Phi = \int_{p_t}^{p_b}\phi(p)/g~dp
+            where :math:`p_{t,b}` is pressure at the top/bottom of the integration interval,
+            and :math:`g` is gravity acceleration.
+
+        Parameters
+        ----------
+        scalar : `np.ndarray`
+            Scalar function
+
+        prange: list,
+            pressure interval limits: :math:`(p_t, p_b)`
+        Returns
+        -------
+        `np.ndarray`
+            The vertically integrated scalar
         """
         if prange is None:
             prange = np.sort([self.p[0], self.p[-1]])
@@ -599,9 +689,9 @@ class EnergyBudget(object):
         press_layer = pressure[press_index]
 
         # unpack vertical dimension before computing vertical gradient
-        scalar = self._unpack_levels(scalar)
+        scalar = self._unpack_levels(scalar)[..., press_index]
 
-        integrated_scalar = simpson(scalar[..., press_index], x=press_layer, axis=-1, even='avg')
+        integrated_scalar = simpson(scalar, x=press_layer, axis=-1, even='avg') / cn.g
 
         return self.direction * self._pack_levels(integrated_scalar)
 
@@ -629,25 +719,7 @@ class EnergyBudget(object):
 
         return cl_sqd.real / 2.0
 
-    # Functions for data preprocessing:
-    def _transform_data(self, data, beta=None):
-        # Helper function
-
-        # Move dimensions (nlat, nlon) forward and vertical axis last
-        data = np.moveaxis(data, self.axes, (-1, 0, 1))
-
-        # reverse data along vertical axis so the surface is at index 0
-        if self.direction < 0:
-            data = np.flip(data, axis=-1)
-
-        # Filter out interpolated subterranean data using smoothed Heaviside function
-        if beta is None:
-            beta = self.beta[..., np.newaxis]
-
-        data = beta * np.moveaxis(data, -2, -1)
-
-        return np.moveaxis(data, -1, -2).reshape((self.nlat, self.nlon, -1))
-
+    # Functions for preprocessing data:
     def _unpack_levels(self, data):
         trn_shape = data.shape[:-1] + (self.samples, self.nlevels)
         return data.reshape(trn_shape).squeeze()
@@ -658,6 +730,31 @@ class EnergyBudget(object):
         else:
             trn_shape = (data.shape[0], -1)
         return data.reshape(trn_shape).squeeze()
+
+    def filter_topography(self, scalar):
+        # masks scalar values pierced by the topography
+        if scalar.ndim <= 3:
+            scalar = self._unpack_levels(scalar)
+
+        return self._pack_levels(np.expand_dims(self.beta, -2) * scalar)
+
+    def _transform_data(self, scalar, filtered=True):
+        # Helper function
+
+        # Move dimensions (nlat, nlon) forward and vertical axis last
+        data = np.moveaxis(scalar, self.axes, (-1, 0, 1))
+
+        # reverse data along vertical axis so the surface is at index 0
+        if self.direction < 0:
+            data = np.flip(data, axis=-1)
+
+        data = self._pack_levels(data)
+
+        # Filter out interpolated subterranean data using smoothed Heaviside function
+        if filtered:
+            return self.filter_topography(data)
+        else:
+            return data
 
     def _global_average(self, scalar, axis=None):
         """

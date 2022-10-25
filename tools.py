@@ -10,7 +10,7 @@ import constants as cn
 
 earth_radius_km = 1.0e-3 * cn.earth_radius  # km
 
-DATA_PATH = '/media/yanm/Resources/DYAMOND/spectra/'
+DATA_PATH = '/media/yanm/Data/DYAMOND/spectra/'
 
 
 def kappa_from_deg(ls):
@@ -42,7 +42,7 @@ def kappa_from_lambda(lb):
     return 1.0 / lb
 
 
-def unpack_2Dto1D(data_2d, ntrunc):
+def unpack_2dto1d(data_2d, ntrunc):
     """Helper function for reshaping spherepack spectra"""
     ncs = int((ntrunc + 1) * (ntrunc + 2) / 2)
     data_1d = np.empty((ncs,) + data_2d.shape[2:])
@@ -56,7 +56,7 @@ def unpack_2Dto1D(data_2d, ntrunc):
     return data_1d
 
 
-def unpack_1Dto2D(data_1d):
+def unpack_1dto2d(data_1d):
     """Helper function for reshaping spherepack spectra"""
 
     ntrunc = -1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(data_1d.shape[0])))
@@ -127,10 +127,10 @@ def lp_lanczos(data, nw, fc, axis=None, jobs=None):
         jobs = min(mp.cpu_count(), arr.shape[0])
 
     # compute lanczos 2D window for convolution
-    coeffs = window_2d(fc, nw)
+    coefficients = window_2d(fc, nw)
 
     # wrapper of convolution function for parallel computations
-    convolve2d = functools.partial(sig.convolve2d, in2=coeffs, boundary='wrap', mode='same')
+    convolve2d = functools.partial(sig.convolve2d, in2=coefficients, boundary='wrap', mode='same')
 
     # Chunks of arrays along axis=0 for the mp mapping ...
     chunks = np.array_split(arr, jobs, axis=0)
@@ -153,13 +153,13 @@ def lp_lanczos(data, nw, fc, axis=None, jobs=None):
 
 def intersections(coords, a, b, direction='all'):
     #
-    icoords, _ = find_intersections(coords, a, b, direction=direction)
+    index_coords, _ = find_intersections(coords, a, b, direction=direction)
 
-    if len(icoords) == 0:
+    if len(index_coords) == 0:
         # print('No intersections found in data')
         return np.nan
     else:
-        return icoords
+        return index_coords
 
 
 def find_intersections(x, a, b, direction='all'):
@@ -312,7 +312,7 @@ def terrain_mask(p, ps, smoothed=True, jobs=None):
 
     if smoothed:
         # Calculate normalised cut-off frequencies for zonal and meridional directions:
-        resolution = 0.5 * lambda_from_deg(nlon)  # zonal grid spacing at the Equator
+        resolution = 0.5 * lambda_from_deg(nlat)  # zonal grid spacing at the Equator
         cutoff_scale = lambda_from_deg(np.array([40, 40]))
 
         fc = resolution / cutoff_scale  # cut-off at wavenumber 40 (~500 km) from A&L (2013)
