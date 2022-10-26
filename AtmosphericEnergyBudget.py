@@ -204,8 +204,10 @@ class EnergyBudget(object):
         else:
             self.beta = np.ones((self.nlat, self.nlon, self.nlevels))
 
-        self.u = self._transform_data(u, filtered=False)  # avoid filtering before computing divergence
-        self.v = self._transform_data(v, filtered=False)
+        u = self._transform_data(u, filtered=False)  # avoid filtering before computing divergence
+        v = self._transform_data(v, filtered=False)
+
+        self.wind = np.stack((u, v))
         self.t = self._transform_data(t)
         self.w = self._transform_data(w)
         self.omega = self._transform_data(omega)
@@ -218,11 +220,10 @@ class EnergyBudget(object):
         self.vrt = self._inverse_transform(self.vrt_spc)
 
         # compute the vertical wind shear before filtering
-        self.wind_shear = self._vertical_gradient(np.stack((self.u, self.v)))
+        self.wind_shear = self._vertical_gradient(self.wind)
 
         # filtering horizontal wind after computing divergence/vorticity
-        self.u = self.filter_topography(self.u)
-        self.v = self.filter_topography(self.v)
+        self.wind = self.filter_topography(self.wind)
 
         # -----------------------------------------------------------------------------
         # Thermodynamic diagnostics:
@@ -314,7 +315,7 @@ class EnergyBudget(object):
 
     def vorticity_divergence(self):
         # computes the vertical vorticity and horizontal wind divergence
-        return self._compute_rotdiv(self.u, self.v)
+        return self._compute_rotdiv(*self.wind)
 
     def ke_nonlinear_transfer(self):
         """
@@ -323,16 +324,15 @@ class EnergyBudget(object):
         :return:
             Spherical harmonic coefficients of KE transfer across scales
         """
-        wind = np.stack((self.u, self.v))
 
         # compute horizontal advection of the horizontal wind
-        advection_term = self._advect_wind(*wind) + self.div * wind / 2.0
+        advection_term = self._advect_wind(*self.wind) + self.div * self.wind / 2.0
 
         # compute nonlinear spectral fluxes
-        advective_flux = - self._vector_cross_spectra(wind, advection_term)
+        advective_flux = - self._vector_cross_spectra(self.wind, advection_term)
 
-        turbulent_flux = self._vector_cross_spectra(self.wind_shear, self.omega * wind)
-        turbulent_flux -= self._vector_cross_spectra(wind, self.omega * self.wind_shear)
+        turbulent_flux = self._vector_cross_spectra(self.wind_shear, self.omega * self.wind)
+        turbulent_flux -= self._vector_cross_spectra(self.wind, self.omega * self.wind_shear)
 
         return advective_flux + turbulent_flux / 2.0
 
@@ -362,8 +362,7 @@ class EnergyBudget(object):
 
     def ke_turbulent_flux(self):
         # Turbulent kinetic energy flux (Eq.22)
-        wind = np.stack((self.u, self.v))
-        return - self._vector_cross_spectra(wind, self.omega * wind) / 2.0
+        return - self._vector_cross_spectra(self.wind, self.omega * self.wind) / 2.0
 
     def ke_vertical_fluxes(self):
         # Vertical flux of total kinetic energy (Eq. A9)
@@ -434,7 +433,7 @@ class EnergyBudget(object):
 
     def global_diagnostics(self):
 
-        theta_wind = np.stack((self.u, self.v)) * self.theta_p ** 2
+        theta_wind = self.wind * self.theta_p ** 2
 
         _, div_spc = self._compute_rotdiv(*theta_wind)
 
@@ -447,7 +446,7 @@ class EnergyBudget(object):
             The streamfunction and velocity potential
             of the flow field on the sphere.
         """
-        return self.sphere.getpsichi(self.u, self.v, ntrunc=self.truncation)
+        return self.sphere.getpsichi(*self.wind, ntrunc=self.truncation)
 
     def helmholtz(self):
         """
@@ -547,7 +546,7 @@ class EnergyBudget(object):
         # compute horizontal gradient
         ds_dx, ds_dy = self._horizontal_gradient(scalar)
 
-        return self.u * ds_dx, self.v * ds_dy
+        return self.wind[0] * ds_dx, self.wind[1] * ds_dy
 
     def _advect_scalar(self, scalar):
         """
@@ -761,8 +760,7 @@ class EnergyBudget(object):
 
     def filter_topography(self, scalar):
         # masks scalar values pierced by the topography
-        if scalar.ndim <= 3:
-            scalar = self._unpack_levels(scalar)
+        scalar = self._unpack_levels(scalar)
 
         return self._pack_levels(np.expand_dims(self.beta, -2) * scalar)
 
@@ -800,6 +798,9 @@ class EnergyBudget(object):
         if scalar.shape[axis] != self.nlat:
             raise ValueError("Variable scalar must have size nlat along axis."
                              "Expected {} and got {}".format(self.nlat, scalar.shape[axis]))
+
+        if scalar.shape[axis + 1] != self.nlon:
+            raise ValueError("Dimensions nlat and nlon must be consecutive.")
 
         # Compute area-weighted average on the sphere
         # (assumes meridional and zonal dimensions are in consecutive order)
