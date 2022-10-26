@@ -183,7 +183,7 @@ def exner_function(pressure, reference_pressure=cn.ps):
     -------
         The value of the Exner function at the given pressure
     """
-    return (pressure / reference_pressure) ** cn.kappa
+    return (pressure / reference_pressure) ** cn.chi
 
 
 def potential_temperature(pressure, temperature):

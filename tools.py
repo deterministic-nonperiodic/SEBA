@@ -42,6 +42,19 @@ def kappa_from_lambda(lb):
     return 1.0 / lb
 
 
+def coriolis_parameter(latitude):
+    r"""Calculate the coriolis parameter at each point.
+    The implementation uses the formula outlined in [Hobbs1977]_ pg.370-371.
+    Parameters
+    ----------
+    :param latitude: array
+        Latitude at each point
+
+    returns coriolis parameter
+    """
+    return cn.Omega * np.sin(np.deg2rad(latitude))
+
+
 def unpack_2dto1d(data_2d, ntrunc):
     """Helper function for reshaping spherepack spectra"""
     ncs = int((ntrunc + 1) * (ntrunc + 2) / 2)

@@ -28,7 +28,7 @@ class EnergyBudget(object):
     """
 
     def __init__(self, u, v, w, t, p, ps=None, ghsl=None, leveltype='pressure',
-                 gridtype='gaussian', truncation=None, rsphere=cn.earth_radius,
+                 gridtype='gaussian', truncation=None, rsphere=cn.earth_radius, standard_average=True,
                  legfunc='stored', axes=None, sample_axis=None, filter_terrain=False, jobs=None):
 
         """
@@ -170,10 +170,14 @@ class EnergyBudget(object):
         # Get latitude and gaussian quadrature weights: weights ~ cosine(lat)
         self.lats, self.weights = spharm.gaussian_lats_wts(self.nlat)
 
+        if standard_average:
+            self.weights = np.ones_like(self.lats) / self.nlat
+
+        # get sphere object for spectral transformations
         self.sphere = spharm.Spharmt(self.nlon, self.nlat,
                                      gridtype=self.gridtype, rsphere=rsphere,
                                      legfunc=legfunc)
-
+        # define truncation
         if truncation is None:
             self.truncation = self.nlat - 1
         else:
@@ -213,6 +217,9 @@ class EnergyBudget(object):
         self.div = self._inverse_transform(self.div_spc)
         self.vrt = self._inverse_transform(self.vrt_spc)
 
+        # compute the vertical wind shear before filtering
+        self.wind_shear = self._vertical_gradient(np.stack((self.u, self.v)))
+
         # filtering horizontal wind after computing divergence/vorticity
         self.u = self.filter_topography(self.u)
         self.v = self.filter_topography(self.v)
@@ -235,10 +242,11 @@ class EnergyBudget(object):
         self.theta_avg, self.theta_p = self._split_mean_perturbations(self.theta)
 
         # Compute vertical gradient of averaged potential temperature profile
-        self.ddp_theta = np.gradient(self.theta_avg, self.p, axis=-1, edge_order=2)
+        self.ddp_theta_avg = np.gradient(self.theta_avg, self.p, axis=-1, edge_order=2)
+        self.ddp_theta_pbn = self._vertical_gradient(self.theta_p)
 
-        self.ganma = - cn.Rd * self.exner / (self.p * self.ddp_theta)
-        self.ganma = self.ganma.reshape(-1)  # pack samples and vertical levels
+        self.ganma = - cn.Rd * self.exner / (self.p * self.ddp_theta_avg)
+        self.ganma = self._pack_levels(self.ganma)  # pack samples and vertical levels
 
     # -------------------------------------------------------------------------------
     # Methods for computing physical processes and diagnostics
@@ -318,21 +326,13 @@ class EnergyBudget(object):
         wind = np.stack((self.u, self.v))
 
         # compute horizontal advection of the horizontal wind
-        adv_u, adv_v = self._advect_wind(*wind)
+        advection_term = self._advect_wind(*wind) + self.div * wind / 2.0
 
-        der_u = self.u * self.div / 2.0
-        der_v = self.v * self.div / 2.0
-
-        # create advection vector
-        advection_term = np.stack((adv_u + der_u, adv_v + der_v))
-
+        # compute nonlinear spectral fluxes
         advective_flux = - self._vector_cross_spectra(wind, advection_term)
 
-        # create wind shear vector
-        wind_shear = np.stack((self._vertical_gradient(self.u), self._vertical_gradient(self.v)))
-
-        turbulent_flux = self._vector_cross_spectra(wind_shear, self.omega * wind)
-        turbulent_flux -= self._vector_cross_spectra(wind, self.omega * wind_shear)
+        turbulent_flux = self._vector_cross_spectra(self.wind_shear, self.omega * wind)
+        turbulent_flux -= self._vector_cross_spectra(wind, self.omega * self.wind_shear)
 
         return advective_flux + turbulent_flux / 2.0
 
@@ -343,21 +343,18 @@ class EnergyBudget(object):
         :return:
             Spherical harmonic coefficients of APE transfer across scales
         """
-        # compute horizontal advection of potential temperature
-        theta_advection = self._advect_scalar(self.theta_p)
 
-        der_theta = self.theta_p * self.div / 2.0
+        # compute horizontal advection of potential temperature
+        theta_advection = self._advect_scalar(self.theta_p) + self.theta_p * self.div / 2.0
 
         # compute turbulent horizontal transfer
-        advection_term = - self._scalar_cross_spectra(self.theta_p, theta_advection + der_theta)
+        advection_term = - self._scalar_cross_spectra(self.theta_p, theta_advection)
 
-        # compute turbulent vertical transfer
-        theta_gradient = self._vertical_gradient(self.theta_p)
+        # compute vertical turbulent transfer
+        vertical_trans = self._scalar_cross_spectra(self.ddp_theta_pbn, self.omega * self.theta_p)
+        vertical_trans -= self._scalar_cross_spectra(self.theta_p, self.omega * self.ddp_theta_pbn)
 
-        vertical_transport = self._scalar_cross_spectra(theta_gradient, self.omega * self.theta_p)
-        vertical_transport -= self._scalar_cross_spectra(self.theta_p, self.omega * theta_gradient)
-
-        return self.ganma * (advection_term + vertical_transport / 2.0)
+        return self.ganma * (advection_term + vertical_trans / 2.0)
 
     def pressure_flux(self):
         # Pressure flux (Eq.22)
@@ -368,17 +365,15 @@ class EnergyBudget(object):
         wind = np.stack((self.u, self.v))
         return - self._vector_cross_spectra(wind, self.omega * wind) / 2.0
 
-    def ape_turbulent_flux(self):
-        # Turbulent APE vertical flux (Eq.16)
-        return - self._scalar_cross_spectra(self.theta_p, self.omega * self.theta_p) / 2.0
-
     def ke_vertical_fluxes(self):
         # Vertical flux of total kinetic energy (Eq. A9)
         return self.pressure_flux() + self.ke_turbulent_flux()
 
     def ape_vertical_flux(self):
         # Total APE vertical flux (Eq. A10)
-        return self.ganma * self.ape_turbulent_flux()
+        turbulent_flux = self._scalar_cross_spectra(self.theta_p, self.omega * self.theta_p)
+
+        return - self.ganma * turbulent_flux / 2.0
 
     def surface_fluxes(self):
         return
@@ -393,7 +388,26 @@ class EnergyBudget(object):
 
     def coriolis_linear_transfer(self):
         # relevance?
-        return
+        sin_lat = np.sin(np.deg2rad(self.lats))
+        cos_lat = np.cos(np.deg2rad(self.lats))
+
+        sin_lat = np.moveaxis(np.atleast_3d(sin_lat), 1, 0)
+        cos_lat = np.moveaxis(np.atleast_3d(cos_lat), 1, 0)
+
+        # Compute the streamfunction and velocity potential
+        sf, vp = self.sfvp()
+
+        # compute meridional gradients
+        _, sf_grad = self._horizontal_gradient(sf)
+        _, vp_grad = self._horizontal_gradient(vp)
+
+        vp_grad *= cos_lat / cn.earth_radius ** 2
+        sf_grad *= cos_lat / cn.earth_radius ** 2
+
+        linear_term = self._scalar_cross_spectra(sf, sin_lat * self.div + vp_grad)
+        linear_term += self._scalar_cross_spectra(vp, sin_lat * self.vrt - sf_grad)
+
+        return cn.Omega * linear_term
 
     def non_conservative_term(self):
         # non-conservative term J(p) in Eq. A11
@@ -417,6 +431,16 @@ class EnergyBudget(object):
         pi_a = np.nansum(ta_p) - np.cumsum(ta_p)
 
         return pi_k, pi_a
+
+    def global_diagnostics(self):
+
+        theta_wind = np.stack((self.u, self.v)) * self.theta_p ** 2
+
+        _, div_spc = self._compute_rotdiv(*theta_wind)
+
+        div_grd = self._inverse_transform(div_spc) / 2.0
+
+        return self._global_average(div_grd, axis=0)
 
     def sfvp(self):
         """
@@ -693,7 +717,7 @@ class EnergyBudget(object):
 
         integrated_scalar = simpson(scalar, x=press_layer, axis=-1, even='avg') / cn.g
 
-        return self.direction * self._pack_levels(integrated_scalar)
+        return self.direction * integrated_scalar
 
     def _cspectra(self, clm1, clm2=None):
         # Computes 1D cross spectra as a function of spherical harmonic degree
@@ -720,15 +744,19 @@ class EnergyBudget(object):
         return cl_sqd.real / 2.0
 
     # Functions for preprocessing data:
-    def _unpack_levels(self, data):
-        trn_shape = data.shape[:-1] + (self.samples, self.nlevels)
+    @staticmethod
+    def _pack_levels(data):
+        if data.ndim != 3:
+            trn_shape = data.shape[:-2] + (-1,)
+        else:
+            trn_shape = data.shape
         return data.reshape(trn_shape).squeeze()
 
-    def _pack_levels(self, data):
-        if data.ndim > 3:
-            trn_shape = (self.nlat, self.nlon, -1)
+    def _unpack_levels(self, data):
+        if data.shape[0] != self.samples:
+            trn_shape = data.shape[:-1] + (self.samples, self.nlevels)
         else:
-            trn_shape = (data.shape[0], -1)
+            trn_shape = data.shape
         return data.reshape(trn_shape).squeeze()
 
     def filter_topography(self, scalar):
@@ -794,8 +822,6 @@ class EnergyBudget(object):
         # and perturbations with respect to the mean
         scalar_p = scalar.copy()
         scalar_m = self._representative_mean(scalar)
-
-        print(scalar_p.shape, self.beta.shape, scalar_m.shape)
 
         for ij in np.ndindex(self.nlat, self.nlon):
             scalar_p[ij] -= (self.beta[ij] * scalar_m).reshape(-1)

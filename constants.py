@@ -11,7 +11,7 @@ cp = 1004.       # specific heat at constant pressure for dry air (J / kg / K)
 cpv = 1875.      # specific heat at constant pressure for water vapor (J / kg / K)
 
 eps = Rd / Rv    # molecular_weight_ratio (dimensionless)
-kappa = Rd / cp  # (dimensionless)
+chi = Rd / cp    # ~2/7 (dimensionless)
 gamma = 6.5      # Temperature lapse rate units('K/km')
 
 ps = 1000e2     # reference surface pressure (Pa)
