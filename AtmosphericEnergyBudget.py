@@ -190,7 +190,8 @@ class EnergyBudget(object):
         self.kappa = kappa_from_deg(self.degrees)
 
         # Compute scale for vector cross spectra (1 / kappa^2)
-        self.scale = 1.0 / np.atleast_2d(self.kappa ** 2).clip(1.0e-20, None).T
+        self.scale = 1.0 / (self.kappa ** 2).clip(1.0e-20, None)
+        self.scale = self.scale.reshape(-1, 1, 1)
 
         # self.l, self.m = spharm.getspecindx(self.truncation)
 
@@ -247,7 +248,6 @@ class EnergyBudget(object):
         self.ddp_theta_pbn = self._vertical_gradient(self.theta_p)
 
         self.ganma = - cn.Rd * self.exner / (self.p * self.ddp_theta_avg)
-        self.ganma = self._pack_levels(self.ganma)  # pack samples and vertical levels
 
     # -------------------------------------------------------------------------------
     # Methods for computing physical processes and diagnostics
@@ -256,11 +256,11 @@ class EnergyBudget(object):
     # Diagnose thermodynamic variables
     def potential_temperature(self):
         # computes potential temperature
-        return self._pack_levels(_potential_temperature(self.p, self._unpack_levels(self.t)))
+        return _potential_temperature(self.p, self.t)
 
     def density(self):
         # computes air density from pressure and temperature using the gas law
-        return self._pack_levels(_density(self.p, self._unpack_levels(self.t)))
+        return _density(self.p, self.t)
 
     def specific_volume(self):
         return 1.0 / self.density()
@@ -277,10 +277,9 @@ class EnergyBudget(object):
 
         # Topographic height in meters above sea level
         surface_height = self.ghsl[..., np.newaxis, np.newaxis]
-        temperature = self._unpack_levels(self.t)
 
         # Compute geopotential height (implement in parallel)
-        height = surface_height + geopotential_height(temperature, self.p, self.ps, axis=-1)
+        height = surface_height + geopotential_height(self.t, self.p, self.ps, axis=-1)
 
         # Convert geopotential height to geopotential
         phi = height_to_geopotential(self.filter_topography(height))
@@ -446,7 +445,12 @@ class EnergyBudget(object):
             The streamfunction and velocity potential
             of the flow field on the sphere.
         """
-        return self.sphere.getpsichi(*self.wind, ntrunc=self.truncation)
+        # pack last dimension before calling spharm
+        wind = self._pack_levels(self.wind)
+
+        sf_vp = self.sphere.getpsichi(*wind, ntrunc=self.truncation)
+
+        return self._unpack_levels(sf_vp)
 
     def helmholtz(self):
         """
@@ -478,6 +482,8 @@ class EnergyBudget(object):
         Modified for multiprocessing
         """
 
+        scalar = self._pack_levels(scalar)
+
         # Chunks of arrays along axis=-1 for the mp mapping ...
         chunks = np.array_split(scalar, self.jobs, axis=-1)
 
@@ -491,13 +497,18 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        return np.concatenate(result, axis=-1)
+        result = np.concatenate(result, axis=-1)
+
+        return self._unpack_levels(result)
 
     def _inverse_transform(self, scalar_sp):
         """
         Compute spherical harmonic coefficients of a scalar function on the sphere.
         Modified for multiprocessing
         """
+
+        # reshape to ((ntrunc+1)*(ntrunc+2)/2, nt)
+        scalar_sp = self._pack_levels(scalar_sp)
 
         # Chunks of arrays along axis=-1 for the mp mapping ...
         chunks = np.array_split(scalar_sp, self.jobs, axis=-1)
@@ -512,7 +523,9 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        return np.concatenate(result, axis=-1)
+        result = np.concatenate(result, axis=-1)
+
+        return self._unpack_levels(result)
 
     def _horizontal_gradient(self, scalar):
         """
@@ -526,6 +539,8 @@ class EnergyBudget(object):
         # compute spherical harmonic coefficients:
         scalar_ml = self._spectral_transform(scalar)
 
+        scalar_ml = self._pack_levels(scalar_ml)
+
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
 
@@ -536,7 +551,9 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        return np.concatenate(result, axis=-1)
+        result = np.concatenate(result, axis=-1)
+
+        return self._unpack_levels(result)
 
     def _horizontal_advection(self, scalar):
         """
@@ -605,6 +622,9 @@ class EnergyBudget(object):
         divergence of a vector field with components ugrid and vgrid on the sphere.
         """
 
+        ugrid = self._pack_levels(ugrid)
+        vgrid = self._pack_levels(vgrid)
+
         # Chunks of arrays along axis=-1 for the mp mapping ...
         chunks = [chunk for chunk in
                   zip(np.array_split(ugrid, self.jobs, axis=-1),
@@ -623,7 +643,9 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        return np.concatenate(result, axis=-1)
+        result = np.concatenate(result, axis=-1)
+
+        return self._unpack_levels(result)
 
     def _scalar_spectra(self, scalar):
         """
@@ -670,12 +692,7 @@ class EnergyBudget(object):
             else:
                 raise ValueError('Height based vertical coordinate not implemented')
 
-        # unpack vertical dimension before computing vertical gradient
-        scalar = self._unpack_levels(scalar)
-
-        ddz_scalar = np.gradient(scalar, z, axis=-1, edge_order=2)
-
-        return self._pack_levels(ddz_scalar)
+        return np.gradient(scalar, z, axis=-1, edge_order=2)
 
     def vertical_integration(self, scalar, prange=None):
         r"""Computes mass-weighted vertical integral of a scalar function.
@@ -712,7 +729,7 @@ class EnergyBudget(object):
         press_layer = pressure[press_index]
 
         # unpack vertical dimension before computing vertical gradient
-        scalar = self._unpack_levels(scalar)[..., press_index]
+        scalar = scalar[..., press_index]
 
         integrated_scalar = simpson(scalar, x=press_layer, axis=-1, even='avg') / cn.g
 
@@ -740,41 +757,32 @@ class EnergyBudget(object):
                                     normalization='4pi', lmax=self.truncation,
                                     convention='power', unit='per_l')
 
-        return cl_sqd.real / 2.0
+        return self._unpack_levels(cl_sqd.real, order='F') / 2.0
 
     # Functions for preprocessing data:
     @staticmethod
-    def _pack_levels(data):
-        if data.ndim != 3:
-            trn_shape = data.shape[:-2] + (-1,)
-        else:
-            trn_shape = data.shape
-        return data.reshape(trn_shape).squeeze()
+    def _pack_levels(data, order='C'):
+        trn_shape = data.shape[:-2] + (-1,)
+        return data.reshape(trn_shape, order=order).squeeze()
 
-    def _unpack_levels(self, data):
-        if data.shape[0] != self.samples:
-            trn_shape = data.shape[:-1] + (self.samples, self.nlevels)
-        else:
-            trn_shape = data.shape
-        return data.reshape(trn_shape).squeeze()
+    def _unpack_levels(self, data, order='C'):
+        trn_shape = data.shape[:-1] + (self.samples, self.nlevels)
+        return data.reshape(trn_shape, order=order).squeeze()
 
     def filter_topography(self, scalar):
         # masks scalar values pierced by the topography
-        scalar = self._unpack_levels(scalar)
-
-        return self._pack_levels(np.expand_dims(self.beta, -2) * scalar)
+        return np.expand_dims(self.beta, -2) * scalar
 
     def _transform_data(self, scalar, filtered=True):
         # Helper function
 
         # Move dimensions (nlat, nlon) forward and vertical axis last
+        # (Useful for cleaner vectorized operations)
         data = np.moveaxis(scalar, self.axes, (-1, 0, 1))
 
-        # reverse data along vertical axis so the surface is at index 0
+        # Reverse data along vertical axis so the surface is at index 0
         if self.direction < 0:
             data = np.flip(data, axis=-1)
-
-        data = self._pack_levels(data)
 
         # Filter out interpolated subterranean data using smoothed Heaviside function
         if filtered:
@@ -784,7 +792,10 @@ class EnergyBudget(object):
 
     def _global_average(self, scalar, axis=None):
         """
-            Computes global weighted average of a scalar function on the sphere.
+        Computes the global weighted average of a scalar function on the sphere.
+        The weights are initialized according to 'standard_average':
+        For 'standard_average=True,' uniform weights (1/nlat) are used, giving the global mean;
+        Gaussian (cosine latitude) weights are used otherwise.
 
         param scalar: nd-array with data to be averaged
         :param axis: axis of the meridional dimension.
@@ -814,17 +825,15 @@ class EnergyBudget(object):
         norm = self._global_average(self.beta, axis=0).clip(1.0e-12, None)
 
         # compute weighted average on gaussian grid and divide by norm
-        weighted_scl = np.expand_dims(self.beta, -2) * self._unpack_levels(scalar)
+        # weighted_scl = np.expand_dims(self.beta, -2) * scalar
 
-        return self._global_average(weighted_scl, axis=0) / norm
+        return self._global_average(scalar, axis=0) / norm
 
     def _split_mean_perturbations(self, scalar):
         # Decomposes a scalar function into the representative mean
         # and perturbations with respect to the mean
-        scalar_p = scalar.copy()
         scalar_m = self._representative_mean(scalar)
 
-        for ij in np.ndindex(self.nlat, self.nlon):
-            scalar_p[ij] -= (self.beta[ij] * scalar_m).reshape(-1)
+        scalar_p = scalar - np.expand_dims(self.beta, -2) * scalar_m
 
         return scalar_m, scalar_p
