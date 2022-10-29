@@ -8,19 +8,16 @@ from scipy.spatial import cKDTree
 
 import constants as cn
 
-earth_radius_km = 1.0e-3 * cn.earth_radius  # km
 
-DATA_PATH = '/media/yanm/Data/DYAMOND/spectra/'
-
-
-def kappa_from_deg(ls):
+def kappa_from_deg(ls, linear=True):
     """
         Returns total horizontal wavenumber [radians / meter]
         from spherical harmonics degree (ls) on the surface
         of a sphere of radius Re using the Jeans formula.
-        κ = sqrt[l(l + 1)] / Re
+        κ = sqrt[l(l + 1)] / Re ~ l / Re  for l>>1
     """
-    return np.sqrt(ls * (ls + 1.0)) / cn.earth_radius
+    num = ls if linear else np.sqrt(ls * (ls + 1.0))
+    return num / cn.earth_radius
 
 
 def lambda_from_deg(ls):

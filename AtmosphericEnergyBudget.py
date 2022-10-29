@@ -3,12 +3,10 @@ from functools import partial
 
 import numpy as np
 import spharm
-from _spherepack import onedtotwod
 from numpy.core.numeric import normalize_axis_tuple, normalize_axis_index
 from scipy.integrate import simpson
 
 import constants as cn
-from spectral_analysis import cross_spectrum, spectrum
 from thermodynamics import density as _density
 from thermodynamics import exner_function as _exner_function
 from thermodynamics import height_to_geopotential, geopotential_height
@@ -186,7 +184,7 @@ class EnergyBudget(object):
         if self.truncation < 0 or self.truncation + 1 > self.nlat:
             raise ValueError('truncation must be between 0 and %d' % (self.nlat - 1,))
 
-        self.degrees = np.arange(self.truncation + 1, dtype=float)
+        self.degrees = np.arange(self.truncation + 1, dtype=int)
         self.kappa = kappa_from_deg(self.degrees)
 
         # Compute scale for vector cross spectra (1 / kappa^2)
@@ -293,8 +291,8 @@ class EnergyBudget(object):
         Horizontal kinetic energy after Augier and Lindborg (2013), Eq.13
         :return:
         """
-        vrt_sqd = self._cspectra(self.vrt_spc)
-        div_sqd = self._cspectra(self.div_spc)
+        vrt_sqd = self._cross_spectrum(self.vrt_spc)
+        div_sqd = self._cross_spectrum(self.div_spc)
 
         return self.scale * (vrt_sqd + div_sqd) / 2.0
 
@@ -389,8 +387,8 @@ class EnergyBudget(object):
         sin_lat = np.sin(np.deg2rad(self.lats))
         cos_lat = np.cos(np.deg2rad(self.lats))
 
-        sin_lat = np.moveaxis(np.atleast_3d(sin_lat), 1, 0)
-        cos_lat = np.moveaxis(np.atleast_3d(cos_lat), 1, 0)
+        sin_lat = np.expand_dims(sin_lat, (1, 2, 3))
+        cos_lat = np.expand_dims(cos_lat, (1, 2, 3))
 
         # Compute the streamfunction and velocity potential
         sf, vp = self.sfvp()
@@ -576,8 +574,9 @@ class EnergyBudget(object):
         r"""
         Compute the horizontal advection of the horizontal wind in 'rotation form'
 
-        .. math:: (\boldsymbol{u}\cdot\nabla_h)\boldsymbol{u}=\nabla_h|\boldsymbol{u}|^2 \\
+        .. math:: \boldsymbol{u}\cdot\nabla_h\boldsymbol{u}=\nabla_h|\boldsymbol{u}|^2
         .. math:: + \boldsymbol{\zeta}\times\boldsymbol{u}
+
 
         where :math:`\boldsymbol{u}=(u, v)` is the horizontal wind vector,
         and :math:`\boldsymbol{\zeta}` is the vertical vorticity.
@@ -585,8 +584,7 @@ class EnergyBudget(object):
         Notes
         -----
         Advection calculated in rotation form is more robust than the standard convective form
-        :math:`(\boldsymbol{u}\cdot\nabla_h)\boldsymbol{u}` around sharp discontinuities,
-        and better conserves kinetic energy (Zang, 1991).
+        :math:`(\boldsymbol{u}\cdot\nabla_h)\boldsymbol{u}` around sharp discontinuities (Zang, 1991).
 
         Thomas A. Zang, On the rotation and skew-symmetric forms for incompressible flow simulations,
         Applied Numerical Mathematics, Volume 7, Issue 1, 1991, https://doi.org/10.1016/0168-9274(91)90102-6.
@@ -651,7 +649,7 @@ class EnergyBudget(object):
         """
         Compute power spectra of a scalar function on the sphere.
         """
-        return self._cspectra(self._spectral_transform(scalar))
+        return self._cross_spectrum(self._spectral_transform(scalar))
 
     def _scalar_cross_spectra(self, scalar1, scalar2):
         """
@@ -660,13 +658,13 @@ class EnergyBudget(object):
         s1_ml = self._spectral_transform(scalar1)
         s2_ml = self._spectral_transform(scalar2)
 
-        return self._cspectra(s1_ml, s2_ml)
+        return self._cross_spectrum(s1_ml, s2_ml)
 
     def _vector_spectra(self, u, v):
 
         rot_ml, div_ml = self._compute_rotdiv(u, v)
 
-        return self.scale * (self._cspectra(rot_ml) + self._cspectra(div_ml))
+        return self.scale * (self._cross_spectrum(rot_ml) + self._cross_spectrum(div_ml))
 
     def _vector_cross_spectra(self, a, b):
         """
@@ -677,11 +675,11 @@ class EnergyBudget(object):
         rot_uml, div_uml = self._compute_rotdiv(*a)
         rot_vml, div_vml = self._compute_rotdiv(*b)
 
-        c_ml = self._cspectra(rot_uml, rot_vml) + self._cspectra(div_uml, div_vml)
+        c_ml = self._cross_spectrum(rot_uml, rot_vml) + self._cross_spectrum(div_uml, div_vml)
 
         return self.scale * c_ml.real
 
-    def _vertical_gradient(self, scalar, z=None):
+    def _vertical_gradient(self, scalar, z=None, axis=-1):
         """
             Computes vertical gradient of a scalar function d(scalar)/dz
         """
@@ -692,9 +690,9 @@ class EnergyBudget(object):
             else:
                 raise ValueError('Height based vertical coordinate not implemented')
 
-        return np.gradient(scalar, z, axis=-1, edge_order=2)
+        return np.gradient(scalar, z, axis=axis, edge_order=2)
 
-    def vertical_integration(self, scalar, prange=None):
+    def vertical_integration(self, scalar, prange=None, axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
 
             .. math:: \Phi = \int_{z_b}^{z_t}\rho(z)\phi(z)~dz
@@ -712,6 +710,9 @@ class EnergyBudget(object):
 
         prange: list,
             pressure interval limits: :math:`(p_t, p_b)`
+        axis: `int`
+            axis of integration
+
         Returns
         -------
         `np.ndarray`
@@ -722,52 +723,105 @@ class EnergyBudget(object):
 
         assert prange[0] != prange[1], "Inconsistent pressure levels for vertical integration"
 
-        pressure = self.p  # Check for orientation: sorted(self.p, reverse=True)
-
         # find pressure surfaces where integration takes place
-        press_index = (pressure >= prange[0]) & (pressure <= prange[1])
-        press_layer = pressure[press_index]
+        press_lmask = (self.p >= prange[0]) & (self.p <= prange[1])
+        press_layer = self.p[press_lmask]
 
-        # unpack vertical dimension before computing vertical gradient
-        scalar = scalar[..., press_index]
+        # Get data inside integration interval along the vertical axis
+        scalar = np.take(scalar, np.where(press_lmask)[0], axis=axis)
 
-        integrated_scalar = simpson(scalar, x=press_layer, axis=-1, even='avg') / cn.g
+        # Integrate scalar at pressure levels
+        integrated_scalar = simpson(scalar, x=press_layer, axis=axis, even='avg') / cn.g
 
         return self.direction * integrated_scalar
 
-    def _cspectra(self, clm1, clm2=None):
-        # Computes 1D cross spectra as a function of spherical harmonic degree
-        # from spectral coefficients
+    def _cross_spectrum(self, clm1, clm2=None, normalization='4pi', convention='power', unit='per_l'):
+        """Returns the cross-spectrum of the spherical harmonic coefficients as a
+        function of spherical harmonic degree.
 
-        # Expand spectral coefficients from size (lmax+1)(lmax+2)/2 to (2, l, m)
-        clm1_2d = np.asarray(onedtotwod(clm1, self.nlat))
+        Signature
+        ---------
+        array = cross_spectrum(clm1, clm2, [convention,])
+
+        Parameters
+        ----------
+        clm1 : ndarray, shape (2, (ntrunc+1)*(ntrunc+2)/2, ...)
+            contains the first set of spherical harmonic coefficients.
+        clm2 : ndarray, shape (2, (ntrunc+1)*(ntrunc+2)/2, ...)
+            contains the second set of spherical harmonic coefficients.
+        normalization : str, optional, default = '4pi'
+            '4pi', 'ortho', 'schmidt', or 'unnorm' for geodesy 4pi normalized,
+            orthonormalized, Schmidt semi-normalized, or unnormalized coefficients,
+            respectively.
+        convention : str, optional, default = 'power'
+            The type of spectrum to return: 'power' for power spectrum, 'energy'
+            for energy spectrum, and 'l2norm' for the l2-norm spectrum.
+        unit : str, optional, default = 'per_l'
+            If 'per_l', return the total contribution to the spectrum for each
+            spherical harmonic degree l. If 'per_lm', return the average
+            contribution to the spectrum for each coefficient at spherical
+            harmonic degree l. If 'per_dlogl', return the spectrum per log
+            interval dlog_a(l).
+        Returns
+        -------
+        array : ndarray, shape (len(degrees), ...)
+            contains the 1D spectrum as a function of spherical harmonic degree.
+        """
+
+        # Get indexes of the triangular matrix with spectral coefficients
+        # (move this to class init?)
+        zonal_wavenumber, total_wavenumber = spharm.getspecindx(self.truncation)
+
+        sample_shape = clm1.shape[1:]
 
         if clm2 is None:
-            # Accumulate along meridional wavenumber m
-            cl_sqd = spectrum(clm1_2d,
-                              normalization='4pi', lmax=self.truncation,
-                              convention='power', unit='per_l')
+            clm_sqd = np.real(clm1 * clm1.conjugate())
         else:
-            assert clm2.shape == clm1.shape, "Arrays clm1 and clm2 of spectral" \
-                                             " coefficients must have the same shape"
+            assert clm2.shape == clm1.shape, \
+                "Spectral coefficients arrays 'clm1' and 'clm2' " \
+                "must have the same shape. Expected 'clm2' shape: {} but got: {}".format(clm1.shape, clm2.shape)
 
-            clm2_2d = np.asarray(onedtotwod(clm2, self.nlat))
+            clm_sqd = np.real(clm1 * clm2.conjugate())
 
-            cl_sqd = cross_spectrum(clm1_2d, clm2_2d,
-                                    normalization='4pi', lmax=self.truncation,
-                                    convention='power', unit='per_l')
+        # Initialize array for the 1D energy/power spectrum
+        cl_sqd = np.empty((self.truncation + 1,) + sample_shape)
 
-        return self._unpack_levels(cl_sqd.real, order='F') / 2.0
+        # Compute summation along zonal wavenumber
+        for degree in self.degrees:
+            degree_range = (zonal_wavenumber <= degree) & (degree == total_wavenumber)
+
+            # cp = np.where(zonal_wavenumber[degree_range] == 0, 0.5, 1.0)
+            cl_sqd[degree] = clm_sqd[degree_range].sum(axis=0)
+
+        if convention.lower() == 'l2norm':
+            return cl_sqd
+        else:
+            if normalization.lower() == '4pi':
+                pass
+            elif normalization.lower() == 'schmidt':
+                cl_sqd /= (2.0 * self.degrees + 1.0)
+            elif normalization.lower() == 'ortho':
+                cl_sqd /= (4.0 * np.pi)
+
+        if convention.lower() == 'energy':
+            cl_sqd *= 4.0 * np.pi
+
+        if unit.lower() == 'per_l':
+            pass
+        elif unit.lower() == 'per_lm':
+            cl_sqd /= (2.0 * self.degrees + 1.0)
+
+        return cl_sqd.squeeze()
 
     # Functions for preprocessing data:
     @staticmethod
     def _pack_levels(data, order='C'):
-        trn_shape = data.shape[:-2] + (-1,)
-        return data.reshape(trn_shape, order=order).squeeze()
+        new_shape = np.shape(data)[:-2] + (-1,)
+        return np.reshape(data, new_shape, order=order).squeeze()
 
     def _unpack_levels(self, data, order='C'):
-        trn_shape = data.shape[:-1] + (self.samples, self.nlevels)
-        return data.reshape(trn_shape, order=order).squeeze()
+        new_shape = np.shape(data)[:-1] + (self.samples, self.nlevels)
+        return np.reshape(data, new_shape, order=order).squeeze()
 
     def filter_topography(self, scalar):
         # masks scalar values pierced by the topography
@@ -825,7 +879,7 @@ class EnergyBudget(object):
         norm = self._global_average(self.beta, axis=0).clip(1.0e-12, None)
 
         # compute weighted average on gaussian grid and divide by norm
-        # weighted_scl = np.expand_dims(self.beta, -2) * scalar
+        # scalar *= np.expand_dims(self.beta, -2)
 
         return self._global_average(scalar, axis=0) / norm
 

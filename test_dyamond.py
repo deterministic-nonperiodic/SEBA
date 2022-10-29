@@ -160,7 +160,7 @@ if __name__ == '__main__':
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
-    ax.set_ylim(-2.0, 2.)
+    ax.set_ylim(-4.0, 4.)
     ax.legend(title=r"  $100 \leq p \leq 500$ hPa ", loc='upper right', fontsize=12)
 
     plt.show()
