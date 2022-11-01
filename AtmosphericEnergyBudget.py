@@ -1,5 +1,5 @@
+import functools
 import multiprocessing as mp
-from functools import partial
 
 import numpy as np
 import spharm
@@ -13,6 +13,7 @@ from thermodynamics import height_to_geopotential, geopotential_height
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import terrain_mask, _getvrtdiv, kappa_from_deg
+from tools import transform_io
 
 
 class EnergyBudget(object):
@@ -171,6 +172,11 @@ class EnergyBudget(object):
         if standard_average:
             self.weights = np.ones_like(self.lats) / self.nlat
 
+        # reverse latitude array (weights are symmetric around the equator)
+        self.reverse_latitude = self.lats[0] < self.lats[-1]
+        if self.reverse_latitude:
+            self.lats = self.lats[::-1]
+
         # get sphere object for spectral transformations
         self.sphere = spharm.Spharmt(self.nlon, self.nlat,
                                      gridtype=self.gridtype, rsphere=rsphere,
@@ -184,6 +190,12 @@ class EnergyBudget(object):
         if self.truncation < 0 or self.truncation + 1 > self.nlat:
             raise ValueError('truncation must be between 0 and %d' % (self.nlat - 1,))
 
+        # get indexes of spherical harmonic degree and horizontal wavenumber
+        self.zonal_wavenumber, self.total_wavenumber = spharm.getspecindx(self.truncation)
+
+        self.ncoeffs = self.total_wavenumber.size
+
+        # get spherical harmonic degree and horizontal wavenumber
         self.degrees = np.arange(self.truncation + 1, dtype=int)
         self.kappa = kappa_from_deg(self.degrees)
 
@@ -391,7 +403,7 @@ class EnergyBudget(object):
         cos_lat = np.expand_dims(cos_lat, (1, 2, 3))
 
         # Compute the streamfunction and velocity potential
-        sf, vp = self.sfvp()
+        sf, vp = self.sfvp(*self.wind)
 
         # compute meridional gradients
         _, sf_grad = self._horizontal_gradient(sf)
@@ -438,17 +450,14 @@ class EnergyBudget(object):
 
         return self._global_average(div_grd, axis=0)
 
-    def sfvp(self):
+    @transform_io
+    def sfvp(self, ugrid, vgrid):
         """
-            The streamfunction and velocity potential
-            of the flow field on the sphere.
+            Returns the streamfunction and velocity potential
+            of a vector field on the sphere with components 'ugrid' and 'vgrid'.
         """
         # pack last dimension before calling spharm
-        wind = self._pack_levels(self.wind)
-
-        sf_vp = self.sphere.getpsichi(*wind, ntrunc=self.truncation)
-
-        return self._unpack_levels(sf_vp)
+        return self.sphere.getpsichi(ugrid, vgrid, ntrunc=self.truncation)
 
     def helmholtz(self):
         """
@@ -461,7 +470,7 @@ class EnergyBudget(object):
         """
 
         # compute the streamfunction and velocity potential
-        psigrid, chigrid = self.sfvp()
+        psigrid, chigrid = self.sfvp(*self.wind)
 
         # Compute non-divergent components from velocity potential
         vpsi, upsi = self._horizontal_gradient(psigrid)
@@ -474,13 +483,12 @@ class EnergyBudget(object):
     # --------------------------------------------------------------------
     # Helper methods
     # --------------------------------------------------------------------
+    @transform_io
     def _spectral_transform(self, scalar):
         """
         Compute spherical harmonic coefficients of a scalar function on the sphere.
         Modified for multiprocessing
         """
-
-        scalar = self._pack_levels(scalar)
 
         # Chunks of arrays along axis=-1 for the mp mapping ...
         chunks = np.array_split(scalar, self.jobs, axis=-1)
@@ -489,7 +497,7 @@ class EnergyBudget(object):
         pool = mp.Pool(processes=self.jobs)
 
         # perform computations in parallel
-        result = pool.map(partial(self.sphere.grdtospec, ntrunc=self.truncation), chunks)
+        result = pool.map(functools.partial(self.sphere.grdtospec, ntrunc=self.truncation), chunks)
 
         # Close pool of workers
         pool.close()
@@ -497,16 +505,14 @@ class EnergyBudget(object):
 
         result = np.concatenate(result, axis=-1)
 
-        return self._unpack_levels(result)
+        return result
 
+    @transform_io
     def _inverse_transform(self, scalar_sp):
         """
         Compute spherical harmonic coefficients of a scalar function on the sphere.
         Modified for multiprocessing
         """
-
-        # reshape to ((ntrunc+1)*(ntrunc+2)/2, nt)
-        scalar_sp = self._pack_levels(scalar_sp)
 
         # Chunks of arrays along axis=-1 for the mp mapping ...
         chunks = np.array_split(scalar_sp, self.jobs, axis=-1)
@@ -523,11 +529,12 @@ class EnergyBudget(object):
 
         result = np.concatenate(result, axis=-1)
 
-        return self._unpack_levels(result)
+        return result
 
+    @transform_io
     def _horizontal_gradient(self, scalar):
         """
-            Computes gradient vector of a scalar function on the sphere.
+            Computes horizontal gradient of a scalar function on the sphere.
 
         Returns:
             Arrays containing gridded zonal and meridional
@@ -549,9 +556,7 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        result = np.concatenate(result, axis=-1)
-
-        return self._unpack_levels(result)
+        return np.concatenate(result, axis=-1)
 
     def _horizontal_advection(self, scalar):
         """
@@ -610,18 +615,14 @@ class EnergyBudget(object):
 
         # Horizontal advection of zonal and meridional wind components
         # (components stored along the first dimension)
-        advection = ke_gradient + self.vrt * np.stack((-vgrid, ugrid))
+        return ke_gradient + self.vrt * np.stack((-vgrid, ugrid))
 
-        return advection
-
+    @transform_io
     def _compute_rotdiv(self, ugrid, vgrid):
         """
         Compute the spectral coefficients of vorticity and horizontal
         divergence of a vector field with components ugrid and vgrid on the sphere.
         """
-
-        ugrid = self._pack_levels(ugrid)
-        vgrid = self._pack_levels(vgrid)
 
         # Chunks of arrays along axis=-1 for the mp mapping ...
         chunks = [chunk for chunk in
@@ -629,7 +630,7 @@ class EnergyBudget(object):
                       np.array_split(vgrid, self.jobs, axis=-1))]
 
         # Wrapper for spherepack function: 'getvrtdivspec'
-        getvrtdiv = partial(_getvrtdiv, func=self.sphere.getvrtdivspec, ntrunc=self.truncation)
+        getvrtdiv = functools.partial(_getvrtdiv, func=self.sphere.getvrtdivspec, ntrunc=self.truncation)
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
@@ -641,9 +642,7 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        result = np.concatenate(result, axis=-1)
-
-        return self._unpack_levels(result)
+        return np.concatenate(result, axis=-1)
 
     def _scalar_spectra(self, scalar):
         """
@@ -770,8 +769,6 @@ class EnergyBudget(object):
 
         # Get indexes of the triangular matrix with spectral coefficients
         # (move this to class init?)
-        zonal_wavenumber, total_wavenumber = spharm.getspecindx(self.truncation)
-
         sample_shape = clm1.shape[1:]
 
         if clm2 is None:
@@ -788,13 +785,13 @@ class EnergyBudget(object):
 
         # Compute summation along zonal wavenumber
         for degree in self.degrees:
-            degree_range = (zonal_wavenumber <= degree) & (degree == total_wavenumber)
+            # get index mask
+            degree_range = (self.zonal_wavenumber <= degree) & (degree == self.total_wavenumber)
 
-            # cp = np.where(zonal_wavenumber[degree_range] == 0, 0.5, 1.0)
             cl_sqd[degree] = clm_sqd[degree_range].sum(axis=0)
 
         if convention.lower() == 'l2norm':
-            return cl_sqd
+            return cl_sqd.squeeze()
         else:
             if normalization.lower() == '4pi':
                 pass
@@ -814,14 +811,25 @@ class EnergyBudget(object):
         return cl_sqd.squeeze()
 
     # Functions for preprocessing data:
-    @staticmethod
-    def _pack_levels(data, order='C'):
-        new_shape = np.shape(data)[:-2] + (-1,)
-        return np.reshape(data, new_shape, order=order).squeeze()
+    def _pack_levels(self, data, order='C'):
+        # pack dimensions of arrays (nlat, nlon, ...) to (nlat, nlon, samples)
+        if np.shape(data)[0] == self.nlat:
+            new_shape = np.shape(data)[:2] + (-1,)
+            return np.reshape(data, new_shape, order=order).squeeze()
+        elif np.shape(data)[0] == self.ncoeffs:
+            new_shape = np.shape(data)[:1] + (-1,)
+            return np.reshape(data, new_shape, order=order).squeeze()
+        else:
+            raise ValueError("Inconsistent array shape: expecting"
+                             "first dimension with size {} or {}.".format(self.nlat, self.ncoeffs))
 
     def _unpack_levels(self, data, order='C'):
-        new_shape = np.shape(data)[:-1] + (self.samples, self.nlevels)
-        return np.reshape(data, new_shape, order=order).squeeze()
+        # unpack dimensions of arrays (nlat, nlon, samples)
+        if np.shape(data)[-1] == self.samples * self.nlevels:
+            new_shape = np.shape(data)[:-1] + (self.samples, self.nlevels)
+            return np.reshape(data, new_shape, order=order).squeeze()
+        else:
+            return data
 
     def filter_topography(self, scalar):
         # masks scalar values pierced by the topography
@@ -834,8 +842,14 @@ class EnergyBudget(object):
         # (Useful for cleaner vectorized operations)
         data = np.moveaxis(scalar, self.axes, (-1, 0, 1))
 
-        # Reverse data along vertical axis so the surface is at index 0
+        # Ensure the latitude dimension is ordered north-to-south
+        if self.reverse_latitude:
+            # Reverse latitude dimension
+            data = np.flip(data, axis=0)
+
+        # Ensure the surface is at index 0
         if self.direction < 0:
+            # Reverse data along vertical axis
             data = np.flip(data, axis=-1)
 
         # Filter out interpolated subterranean data using smoothed Heaviside function

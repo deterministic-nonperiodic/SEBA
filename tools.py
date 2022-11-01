@@ -52,48 +52,35 @@ def coriolis_parameter(latitude):
     return cn.Omega * np.sin(np.deg2rad(latitude))
 
 
-def unpack_2dto1d(data_2d, ntrunc):
-    """Helper function for reshaping spherepack spectra"""
-    ncs = int((ntrunc + 1) * (ntrunc + 2) / 2)
-    data_1d = np.empty((ncs,) + data_2d.shape[2:])
+def transform_io(func, order='C'):
+    """
+    Decorator for handling arrays' IO dimensions for calling spharm's spectral functions.
+    The dimensions of the input arrays with shapes (nlat, nlon, nlev, ntime, ...) or (ncoeffs, nlev, ntime, ...)
+    are packed to (nlat, nlon, samples) and (ncoeffs, samples) respectively, where ncoeffs = (ntrunc+1)*(ntrunc+2)/2.
+    Finally, the outputs are transformed back to the original shape where needed.
 
-    nmstrt = 0
-    for m in range(ntrunc + 1):
-        for n in range(m, ntrunc + 1):
-            nm = nmstrt + n - m
-            data_1d[nm] = data_2d[m, n]
-        nmstrt = nmstrt + ntrunc - m + 1
-    return data_1d
-
-
-def unpack_1dto2d(data_1d):
-    """Helper function for reshaping spherepack spectra"""
-
-    ntrunc = -1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(data_1d.shape[0])))
-
-    data_2d = np.empty((2, ntrunc + 1, ntrunc + 1) + data_1d.shape[1:])
-    nmstrt = 0
-    for m in range(ntrunc + 1):
-        for n in range(m, ntrunc + 1):
-            nm = nmstrt + n - m + 1
-            data_2d[m, n] = data_1d[nm]
-        nmstrt = nmstrt + ntrunc - m + 1
-    return data_2d
-
-
-def transform_data(func):
+    Parameters:
+    -----------
+    func: decorated function
+    order: {‘C’, ‘F’, ‘A’}, optional
+        Reshape the elements of the input arrays using this index order.
+        ‘C’ means to read / write the elements using C-like index order, with the last axis index changing fastest,
+        back to the first axis index changing slowest. See 'numpy.reshape' for details.
+    """
     @functools.wraps(func)
-    def wrapper_decorator(*args, **kwargs):
-        # reshape input data
-        nargs = []
+    def dimension_packer(*args, **kwargs):
+        # self passed as first argument
+        self, *_ = args
+        transformed_args = [self, ]
         for arg in args:
-            ashape = arg.shape
-            nargs.append(np.moveaxis(arg, 0, -1).reshape(ashape[:2] + (-1)))
-        value = func(*nargs, **kwargs)
-        # back to original shape
-        return np.moveaxis(value.reshape(value.shape[0]), -1, 0)
+            if isinstance(arg, np.ndarray):
+                transformed_args.append(self._pack_levels(arg, order=order))
 
-    return wrapper_decorator
+        results = func(*transformed_args, **kwargs)
+        # convert output back to original shape
+        return self._unpack_levels(results, order=order)
+
+    return dimension_packer
 
 
 def window_2d(fc, n):
