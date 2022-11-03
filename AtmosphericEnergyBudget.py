@@ -12,7 +12,7 @@ from thermodynamics import exner_function as _exner_function
 from thermodynamics import height_to_geopotential, geopotential_height
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import terrain_mask, _getvrtdiv, kappa_from_deg
+from tools import terrain_mask, kappa_from_deg
 from tools import transform_io
 
 
@@ -200,8 +200,8 @@ class EnergyBudget(object):
         self.kappa = kappa_from_deg(self.degrees)
 
         # Compute scale for vector cross spectra (1 / kappa^2)
-        self.scale = 1.0 / (self.kappa ** 2).clip(1.0e-20, None)
-        self.scale = self.scale.reshape(-1, 1, 1)
+        # self.scale = 1.0 / (self.kappa ** 2).clip(1.0e-20, None)
+        # self.scale = self.scale.reshape(-1, 1, 1)
 
         # self.l, self.m = spharm.getspecindx(self.truncation)
 
@@ -251,19 +251,19 @@ class EnergyBudget(object):
 
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
-        self.theta_avg, self.theta_p = self._split_mean_perturbations(self.theta)
+        self.theta_avg, self.theta_p = self._split_mean_perturbation(self.theta)
 
         # Compute vertical gradient of averaged potential temperature profile
-        self.ddp_theta_avg = np.gradient(self.theta_avg, self.p, axis=-1, edge_order=2)
         self.ddp_theta_pbn = self._vertical_gradient(self.theta_p)
 
-        self.ganma = - cn.Rd * self.exner / (self.p * self.ddp_theta_avg)
+        # Factor ganma(p) to convert from temperature variance to APE spectra
+        # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
+        ddlp_theta_avg = self._vertical_gradient(self.theta_avg, z=np.log(self.p))
+        self.ganma = - cn.Rd * self.exner / ddlp_theta_avg
 
     # -------------------------------------------------------------------------------
-    # Methods for computing physical processes and diagnostics
+    # Methods for computing thermodynamic quantities
     # -------------------------------------------------------------------------------
-
-    # Diagnose thermodynamic variables
     def potential_temperature(self):
         # computes potential temperature
         return _potential_temperature(self.p, self.t)
@@ -297,16 +297,18 @@ class EnergyBudget(object):
         # Apply smoothed terrain mask
         return self.filter_topography(phi)
 
-    # diagnose kinetic and potential energies
+    # -------------------------------------------------------------------------------
+    # Methods for computing diagnostics: kinetic and available potential energies
+    # -------------------------------------------------------------------------------
     def horizontal_kinetic_energy(self):
         """
         Horizontal kinetic energy after Augier and Lindborg (2013), Eq.13
         :return:
         """
-        vrt_sqd = self._cross_spectrum(self.vrt_spc)
-        div_sqd = self._cross_spectrum(self.div_spc)
+        vrt_sqd = self._cross_spectrum(self.vrt_spc, normalization='vector')
+        div_sqd = self._cross_spectrum(self.div_spc, normalization='vector')
 
-        return self.scale * (vrt_sqd + div_sqd) / 2.0
+        return (vrt_sqd + div_sqd) / 2.0
 
     def vertical_kinetic_energy(self):
         """
@@ -326,6 +328,9 @@ class EnergyBudget(object):
         # computes the vertical vorticity and horizontal wind divergence
         return self._compute_rotdiv(*self.wind)
 
+    # -------------------------------------------------------------------------------
+    # Methods for computing spectral fluxes
+    # -------------------------------------------------------------------------------
     def ke_nonlinear_transfer(self):
         """
         Kinetic energy spectral transfer due to nonlinear interactions
@@ -354,7 +359,7 @@ class EnergyBudget(object):
         """
 
         # compute horizontal advection of potential temperature
-        theta_advection = self._advect_scalar(self.theta_p) + self.theta_p * self.div / 2.0
+        theta_advection = self._advect_scalar(self.theta_p) + self.div * self.theta_p / 2.0
 
         # compute turbulent horizontal transfer
         advection_term = - self._scalar_cross_spectra(self.theta_p, theta_advection)
@@ -373,15 +378,15 @@ class EnergyBudget(object):
         # Turbulent kinetic energy flux (Eq.22)
         return - self._vector_cross_spectra(self.wind, self.omega * self.wind) / 2.0
 
-    def ke_vertical_fluxes(self):
+    def ke_vertical_flux(self):
         # Vertical flux of total kinetic energy (Eq. A9)
         return self.pressure_flux() + self.ke_turbulent_flux()
 
     def ape_vertical_flux(self):
         # Total APE vertical flux (Eq. A10)
-        turbulent_flux = self._scalar_cross_spectra(self.theta_p, self.omega * self.theta_p)
+        vertical_flux = self._scalar_cross_spectra(self.theta_p, self.omega * self.theta_p)
 
-        return - self.ganma * turbulent_flux / 2.0
+        return - self.ganma * vertical_flux / 2.0
 
     def surface_fluxes(self):
         return
@@ -425,30 +430,32 @@ class EnergyBudget(object):
 
     def accumulated_fluxes(self, pressure_range=None):
 
-        # Compute spectral energy fluxes accumulated along
-        # zonal wavenumber (spherical harmonic order)
-        tk = self.ke_nonlinear_transfer()
-        ta = self.ape_nonlinear_transfer()
+        # Compute spectral energy fluxes accumulated over zonal wavenumbers
+        tk_l = self.ke_nonlinear_transfer()
+        ta_l = self.ape_nonlinear_transfer()
 
-        # Vertical integration
-        tk_p = self.vertical_integration(tk, prange=pressure_range)
-        ta_p = self.vertical_integration(ta, prange=pressure_range)
+        # Accumulate fluxes from the smallest resolved scale (l=truncation+1) to wavenumber l.
+        pi_k = np.nansum(tk_l, axis=0) - np.cumsum(tk_l, axis=0)
+        pi_a = np.nansum(ta_l, axis=0) - np.cumsum(ta_l, axis=0)
 
-        # Accumulate from small to large scales
-        pi_k = np.nansum(tk_p) - np.cumsum(tk_p)
-        pi_a = np.nansum(ta_p) - np.cumsum(ta_p)
+        # Perform vertical integration along last axis
+        pik_p = self.vertical_integration(pi_k, pressure_range=pressure_range)
+        pia_p = self.vertical_integration(pi_a, pressure_range=pressure_range)
 
-        return pi_k, pi_a
+        if pi_k.ndim > 1:
+            # compute mean over samples (time or any other dimension)
+            return pik_p.mean(-1), pia_p.mean(-1)
+        else:
+            return pik_p, pia_p
 
     def global_diagnostics(self):
 
-        theta_wind = self.wind * self.theta_p ** 2
+        wind_theta = self.wind * self.theta_p ** 2
 
-        _, div_spc = self._compute_rotdiv(*theta_wind)
+        _, div_spc = self._compute_rotdiv(*wind_theta)
+        divh_theta = self._global_average(self._inverse_transform(div_spc), axis=0)
 
-        div_grd = self._inverse_transform(div_spc) / 2.0
-
-        return self._global_average(div_grd, axis=0)
+        return - self.ganma * divh_theta / 2.0
 
     @transform_io
     def sfvp(self, ugrid, vgrid):
@@ -461,7 +468,8 @@ class EnergyBudget(object):
 
     def helmholtz(self):
         """
-        Compute the irrotational and non-divergent components of the wind field
+        Perform a Helmholtz decomposition of the horizontal wind. This decomposition divides
+        the horizontal wind vector into the irrotational and non-divergent components.
 
         Returns:
             uchi, vchi, upsi, vpsi:
@@ -503,15 +511,13 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        result = np.concatenate(result, axis=-1)
-
-        return result
+        return np.concatenate(result, axis=-1)
 
     @transform_io
     def _inverse_transform(self, scalar_sp):
         """
-        Compute spherical harmonic coefficients of a scalar function on the sphere.
-        Modified for multiprocessing
+            Compute spherical harmonic coefficients of a scalar function on the sphere.
+            Modified for multiprocessing
         """
 
         # Chunks of arrays along axis=-1 for the mp mapping ...
@@ -527,9 +533,7 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        result = np.concatenate(result, axis=-1)
-
-        return result
+        return np.concatenate(result, axis=-1)
 
     @transform_io
     def _horizontal_gradient(self, scalar):
@@ -582,7 +586,6 @@ class EnergyBudget(object):
         .. math:: \boldsymbol{u}\cdot\nabla_h\boldsymbol{u}=\nabla_h|\boldsymbol{u}|^2
         .. math:: + \boldsymbol{\zeta}\times\boldsymbol{u}
 
-
         where :math:`\boldsymbol{u}=(u, v)` is the horizontal wind vector,
         and :math:`\boldsymbol{\zeta}` is the vertical vorticity.
 
@@ -591,8 +594,8 @@ class EnergyBudget(object):
         Advection calculated in rotation form is more robust than the standard convective form
         :math:`(\boldsymbol{u}\cdot\nabla_h)\boldsymbol{u}` around sharp discontinuities (Zang, 1991).
 
-        Thomas A. Zang, On the rotation and skew-symmetric forms for incompressible flow simulations,
-        Applied Numerical Mathematics, Volume 7, Issue 1, 1991, https://doi.org/10.1016/0168-9274(91)90102-6.
+        Thomas A. Zang, On the rotation and skew-symmetric forms for incompressible flow simulations.
+        https://doi.org/10.1016/0168-9274(91)90102-6.
 
         Parameters:
         -----------
@@ -600,8 +603,8 @@ class EnergyBudget(object):
                 zonal component of the horizontal wind
             vgrid: `np.ndarray`
                 meridional component of the horizontal wind
-        Returns
-        -------
+        Returns:
+        --------
             advection: `np.ndarray`
                 Array containing the zonal and meridional components of advection
         """
@@ -609,7 +612,7 @@ class EnergyBudget(object):
         # Horizontal kinetic energy per unit mass in physical space
         kinetic_energy = (ugrid ** 2 + vgrid ** 2) / 2.0
 
-        # Horizontal gradient of kinetic energy
+        # Horizontal gradient of horizontal kinetic energy
         # (components stored along the first dimension)
         ke_gradient = self._horizontal_gradient(kinetic_energy)
 
@@ -630,13 +633,13 @@ class EnergyBudget(object):
                       np.array_split(vgrid, self.jobs, axis=-1))]
 
         # Wrapper for spherepack function: 'getvrtdivspec'
-        getvrtdiv = functools.partial(_getvrtdiv, func=self.sphere.getvrtdivspec, ntrunc=self.truncation)
+        getvrtdiv = functools.partial(self.sphere.getvrtdivspec, ntrunc=self.truncation)
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
 
         # perform computations in parallel
-        result = pool.map(getvrtdiv, chunks)
+        result = pool.starmap(getvrtdiv, chunks)
 
         # Freeing all the workers
         pool.close()
@@ -663,7 +666,10 @@ class EnergyBudget(object):
 
         rot_ml, div_ml = self._compute_rotdiv(u, v)
 
-        return self.scale * (self._cross_spectrum(rot_ml) + self._cross_spectrum(div_ml))
+        c_ml = self._cross_spectrum(rot_ml, normalization='vector') + \
+               self._cross_spectrum(div_ml, normalization='vector')
+
+        return c_ml.real
 
     def _vector_cross_spectra(self, a, b):
         """
@@ -671,12 +677,13 @@ class EnergyBudget(object):
 
         Reduces to '_vector_spectra' for a=b.
         """
-        rot_uml, div_uml = self._compute_rotdiv(*a)
-        rot_vml, div_vml = self._compute_rotdiv(*b)
+        rot_aml, div_aml = self._compute_rotdiv(*a)
+        rot_bml, div_bml = self._compute_rotdiv(*b)
 
-        c_ml = self._cross_spectrum(rot_uml, rot_vml) + self._cross_spectrum(div_uml, div_vml)
+        c_ml = self._cross_spectrum(rot_aml, rot_bml, normalization='vector') + \
+               self._cross_spectrum(div_aml, div_bml, normalization='vector')
 
-        return self.scale * c_ml.real
+        return c_ml.real
 
     def _vertical_gradient(self, scalar, z=None, axis=-1):
         """
@@ -691,7 +698,7 @@ class EnergyBudget(object):
 
         return np.gradient(scalar, z, axis=axis, edge_order=2)
 
-    def vertical_integration(self, scalar, prange=None, axis=-1):
+    def vertical_integration(self, scalar, pressure_range=None, axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
 
             .. math:: \Phi = \int_{z_b}^{z_t}\rho(z)\phi(z)~dz
@@ -707,7 +714,7 @@ class EnergyBudget(object):
         scalar : `np.ndarray`
             Scalar function
 
-        prange: list,
+        pressure_range: list,
             pressure interval limits: :math:`(p_t, p_b)`
         axis: `int`
             axis of integration
@@ -717,13 +724,13 @@ class EnergyBudget(object):
         `np.ndarray`
             The vertically integrated scalar
         """
-        if prange is None:
-            prange = np.sort([self.p[0], self.p[-1]])
+        if pressure_range is None:
+            pressure_range = np.sort([self.p[0], self.p[-1]])
 
-        assert prange[0] != prange[1], "Inconsistent pressure levels for vertical integration"
+        assert pressure_range[0] != pressure_range[1], "Inconsistent pressure levels for vertical integration"
 
         # find pressure surfaces where integration takes place
-        press_lmask = (self.p >= prange[0]) & (self.p <= prange[1])
+        press_lmask = (self.p >= pressure_range[0]) & (self.p <= pressure_range[1])
         press_layer = self.p[press_lmask]
 
         # Get data inside integration interval along the vertical axis
@@ -734,33 +741,28 @@ class EnergyBudget(object):
 
         return self.direction * integrated_scalar
 
-    def _cross_spectrum(self, clm1, clm2=None, normalization='4pi', convention='power', unit='per_l'):
+    def _cross_spectrum(self, clm1, clm2=None, degrees=None, normalization='scalar', convention='power'):
         """Returns the cross-spectrum of the spherical harmonic coefficients as a
         function of spherical harmonic degree.
 
         Signature
         ---------
-        array = cross_spectrum(clm1, clm2, [convention,])
+        array = cross_spectrum(clm1, [clm2, normalization, convention, unit])
 
         Parameters
         ----------
-        clm1 : ndarray, shape (2, (ntrunc+1)*(ntrunc+2)/2, ...)
+        clm1 : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
             contains the first set of spherical harmonic coefficients.
-        clm2 : ndarray, shape (2, (ntrunc+1)*(ntrunc+2)/2, ...)
+        clm2 : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...), optional
             contains the second set of spherical harmonic coefficients.
-        normalization : str, optional, default = '4pi'
-            '4pi', 'ortho', 'schmidt', or 'unnorm' for geodesy 4pi normalized,
-            orthonormalized, Schmidt semi-normalized, or unnormalized coefficients,
-            respectively.
+        degrees: 1D array, optional, default = None
+            Spherical harmonics degree. If not given, degrees are inferred from
+            the class definition or calculated from the number of latitude points.
+        normalization : str, optional, default = 'scalar'
+            'scalar', 'vector', or 'schmidt' normalized coefficients.
         convention : str, optional, default = 'power'
             The type of spectrum to return: 'power' for power spectrum, 'energy'
             for energy spectrum, and 'l2norm' for the l2-norm spectrum.
-        unit : str, optional, default = 'per_l'
-            If 'per_l', return the total contribution to the spectrum for each
-            spherical harmonic degree l. If 'per_lm', return the average
-            contribution to the spectrum for each coefficient at spherical
-            harmonic degree l. If 'per_dlogl', return the spectrum per log
-            interval dlog_a(l).
         Returns
         -------
         array : ndarray, shape (len(degrees), ...)
@@ -770,45 +772,72 @@ class EnergyBudget(object):
         # Get indexes of the triangular matrix with spectral coefficients
         # (move this to class init?)
         sample_shape = clm1.shape[1:]
+        coeffs_size = clm1.shape[0]
+
+        if degrees is None:
+            # check if degrees are defined
+            if hasattr(self, 'degrees'):
+                degrees = self.degrees
+            else:
+                if hasattr(self, 'truncation'):
+                    ntrunc = self.truncation
+                else:
+                    ntrunc = -1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(coeffs_size)))
+                degrees = np.arange(ntrunc + 1, dtype=int)
+        else:
+            degrees = np.asarray(degrees)
+            if (degrees.ndim != 1) or (degrees.size == self.nlat):
+                raise ValueError("If given, 'degrees' must be a 1D array "
+                                 "of length 'nlat'. Expected size {} and "
+                                 "got {}".format(self.nlat, degrees.size))
 
         if clm2 is None:
-            clm_sqd = np.real(clm1 * clm1.conjugate())
+            clm_sqd = (clm1 * clm1.conjugate()).real
         else:
             assert clm2.shape == clm1.shape, \
-                "Spectral coefficients arrays 'clm1' and 'clm2' " \
-                "must have the same shape. Expected 'clm2' shape: {} but got: {}".format(clm1.shape, clm2.shape)
+                "Arrays 'clm1' and 'clm2' of spectral coefficients " \
+                "must have the same shape. Expected 'clm2' shape: {} got: {}".format(
+                    clm1.shape, clm2.shape)
 
-            clm_sqd = np.real(clm1 * clm2.conjugate())
+            clm_sqd = (clm1 * clm2.conjugate()).real
 
-        # Initialize array for the 1D energy/power spectrum
-        cl_sqd = np.empty((self.truncation + 1,) + sample_shape)
+        # define wavenumbers locally
+        ls = self.total_wavenumber
+        ms = self.zonal_wavenumber
 
-        # Compute summation along zonal wavenumber
-        for degree in self.degrees:
-            # get index mask
-            degree_range = (self.zonal_wavenumber <= degree) & (degree == self.total_wavenumber)
+        # Spectrum scaled by 2 to account for symmetric coefficients (ms != 0)
+        # Using the normalization in equation (7) of Lambert [1984].
+        clm_sqd = (np.where(ms == 0, 0.5, 1.0) * clm_sqd.T).T
 
-            cl_sqd[degree] = clm_sqd[degree_range].sum(axis=0)
+        # Initialize array for the 1D energy/power spectrum shaped (truncation, ...)
+        spectrum = np.zeros((degrees.size,) + sample_shape)
 
-        if convention.lower() == 'l2norm':
-            return cl_sqd.squeeze()
-        else:
-            if normalization.lower() == '4pi':
-                pass
-            elif normalization.lower() == 'schmidt':
-                cl_sqd /= (2.0 * self.degrees + 1.0)
-            elif normalization.lower() == 'ortho':
-                cl_sqd /= (4.0 * np.pi)
+        # Perform summation along zonal wavenumbers to compute
+        # the spectrum as a function of total wavenumber.
+        for degree in degrees:
+            # Sum over all zonal wavenumbers <= total wavenumber
+            spectrum[degree] = clm_sqd[(ms <= degree) & (degree == ls)].sum(axis=0)
 
         if convention.lower() == 'energy':
-            cl_sqd *= 4.0 * np.pi
+            spectrum *= 4.0 * np.pi
 
-        if unit.lower() == 'per_l':
+        # Normalize the spectrum
+        if normalization.lower() == 'schmidt':
+            # using transpose for python broadcasting
+            spectrum = (spectrum.T / (2.0 * degrees + 1.0)).T
+        elif normalization.lower() == 'vector':
+            if hasattr(self, 'kappa'):
+                norm = self.kappa * self.kappa
+            else:
+                # Calculate scaling factor if horizontal wavenumber is not defined
+                norm = degrees * (degrees + 1.0) / cn.earth_radius ** 2
+            # avoid dividing by zero (using machine precision eps)
+            eps = np.finfo(norm.dtype).eps  # fun fact: eps = abs(7./3 - 4./3 - 1).
+            spectrum = (spectrum.T / norm.clip(min=eps)).T
+        else:
             pass
-        elif unit.lower() == 'per_lm':
-            cl_sqd /= (2.0 * self.degrees + 1.0)
 
-        return cl_sqd.squeeze()
+        return spectrum.squeeze()
 
     # Functions for preprocessing data:
     def _pack_levels(self, data, order='C'):
@@ -820,8 +849,8 @@ class EnergyBudget(object):
             new_shape = np.shape(data)[:1] + (-1,)
             return np.reshape(data, new_shape, order=order).squeeze()
         else:
-            raise ValueError("Inconsistent array shape: expecting"
-                             "first dimension with size {} or {}.".format(self.nlat, self.ncoeffs))
+            raise ValueError("Inconsistent array shape: expecting "
+                             "first dimension of size {} or {}.".format(self.nlat, self.ncoeffs))
 
     def _unpack_levels(self, data, order='C'):
         # unpack dimensions of arrays (nlat, nlon, samples)
@@ -875,14 +904,13 @@ class EnergyBudget(object):
             axis = normalize_axis_index(axis, scalar.ndim)
 
         if scalar.shape[axis] != self.nlat:
-            raise ValueError("Variable scalar must have size nlat along axis."
+            raise ValueError("Scalar size along axis must be nlat."
                              "Expected {} and got {}".format(self.nlat, scalar.shape[axis]))
 
         if scalar.shape[axis + 1] != self.nlon:
-            raise ValueError("Dimensions nlat and nlon must be consecutive.")
+            raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
 
-        # Compute area-weighted average on the sphere
-        # (assumes meridional and zonal dimensions are in consecutive order)
+        # Compute area-weighted average on the sphere (using either gaussian or linear weights)
         return np.average(scalar, weights=self.weights, axis=axis).mean(axis=axis)
 
     def _representative_mean(self, scalar):
@@ -893,15 +921,14 @@ class EnergyBudget(object):
         norm = self._global_average(self.beta, axis=0).clip(1.0e-12, None)
 
         # compute weighted average on gaussian grid and divide by norm
-        # scalar *= np.expand_dims(self.beta, -2)
+        scalar_beta = np.expand_dims(self.beta, -2) * scalar
 
-        return self._global_average(scalar, axis=0) / norm
+        return self._global_average(scalar_beta, axis=0) / norm
 
-    def _split_mean_perturbations(self, scalar):
+    def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean
         # and perturbations with respect to the mean
         scalar_m = self._representative_mean(scalar)
 
         scalar_p = scalar - np.expand_dims(self.beta, -2) * scalar_m
-
         return scalar_m, scalar_p

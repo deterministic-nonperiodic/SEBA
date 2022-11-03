@@ -9,7 +9,7 @@ from scipy.spatial import cKDTree
 import constants as cn
 
 
-def kappa_from_deg(ls, linear=True):
+def kappa_from_deg(ls, linear=False):
     """
         Returns total horizontal wavenumber [radians / meter]
         from spherical harmonics degree (ls) on the surface

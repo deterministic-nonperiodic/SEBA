@@ -33,14 +33,8 @@ if __name__ == '__main__':
     AEB = EnergyBudget(
         dset_uvt['u'].values, dset_uvt['v'].values,
         dset_pwe['omega'].values, dset_uvt['temp'].values, dset_uvt['plev'].values,
-        ps=sfcp, ghsl=ghsl, leveltype='pressure', gridtype='gaussian',
-        truncation=None, legfunc='stored', axes=(1, 2, 3), sample_axis=0,
-        filter_terrain=True)
-
-    # Compute energy fluxes
-    Tk = AEB.ke_nonlinear_transfer()
-    Ta = AEB.ape_nonlinear_transfer()
-    Cka = AEB.energy_conversion()
+        ps=sfcp, ghsl=ghsl, leveltype='pressure', gridtype='gaussian', truncation=None,
+        legfunc='stored', axes=(1, 2, 3), sample_axis=0, filter_terrain=True)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
@@ -49,17 +43,17 @@ if __name__ == '__main__':
 
     nlat = AEB.nlat
 
-    prange_trp = [400e2, 950e2]
-    prange_stp = [100e2, 400e2]
+    prange_trp = [500e2, 950e2]
+    prange_stp = [50e2, 500e2]
 
     # Kinetic energy in vector form accumulate and integrate vertically
-    Ek_trp = AEB.vertical_integration(Ek, prange=prange_trp).mean(-1)[1:-1]  # average over samples
-    Ew_trp = AEB.vertical_integration(Ew, prange=prange_trp).mean(-1)[1:-1]  # average over samples
-    Ea_trp = AEB.vertical_integration(Ea, prange=prange_trp).mean(-1)[1:-1]  # average over samples
+    Ek_trp = AEB.vertical_integration(Ek, pressure_range=prange_trp).mean(-1)[1:-1]  # average over samples
+    Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]  # average over samples
+    Ea_trp = AEB.vertical_integration(Ea, pressure_range=prange_trp).mean(-1)[1:-1]  # average over samples
 
-    Ek_stp = AEB.vertical_integration(Ek, prange=prange_stp).mean(-1)[1:-1]  # average over samples
-    Ew_stp = AEB.vertical_integration(Ew, prange=prange_stp).mean(-1)[1:-1]  # average over samples
-    Ea_stp = AEB.vertical_integration(Ea, prange=prange_stp).mean(-1)[1:-1]  # average over samples
+    Ek_stp = AEB.vertical_integration(Ek, pressure_range=prange_stp).mean(-1)[1:-1]  # average over samples
+    Ew_stp = AEB.vertical_integration(Ew, pressure_range=prange_stp).mean(-1)[1:-1]  # average over samples
+    Ea_stp = AEB.vertical_integration(Ea, pressure_range=prange_stp).mean(-1)[1:-1]  # average over samples
 
     # -----------------------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
@@ -69,11 +63,11 @@ if __name__ == '__main__':
     xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
     xticks = np.array([1, 10, 100, 1000])
 
-    x_lscale = kappa_from_lambda(np.linspace(2000, 400., 2))
-    x_sscale = kappa_from_lambda(np.linspace(200, 30., 2))
+    x_lscale = kappa_from_lambda(np.linspace(1600, 250., 2))
+    x_sscale = kappa_from_lambda(np.linspace(100, 20., 2))
 
     y_lscale = 5.0e-4 * x_lscale ** (-3.0)
-    y_sscale = 1.5 * x_sscale ** (-5.0 / 3.0)
+    y_sscale = 0.65 * x_sscale ** (-5.0 / 3.0)
 
     x_lscale_pos = x_lscale.min()
     x_sscale_pos = x_sscale.min()
@@ -81,8 +75,8 @@ if __name__ == '__main__':
     y_lscale_pos = 2.6 * y_lscale.max()
     y_sscale_pos = 2.6 * y_sscale.max()
 
-    s_lscale = r'$\kappa^{-3}$'
-    s_sscale = r'$\kappa^{-5/3}$'
+    s_lscale = r'$l^{-3}$'
+    s_sscale = r'$l^{-5/3}$'
 
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.0, 5.8), constrained_layout=True)
 
@@ -130,22 +124,21 @@ if __name__ == '__main__':
     # -----------------------------------------------------------------------------------------------------------
     kappa = 1e3 * kappa_from_deg(np.arange(AEB.truncation + 1))
 
-    prange = [100e2, 500e2]
+    # Accumulated fluxes
+    prange = [50e2, 500e2]
 
-    Tk_p = AEB.vertical_integration(Tk, prange=prange).mean(-1)
-    Ta_p = AEB.vertical_integration(Ta, prange=prange).mean(-1)
-    Cka_l = AEB.vertical_integration(Cka, prange=prange).mean(-1)
+    Tk_l, Ta_l = AEB.accumulated_fluxes(pressure_range=prange)
 
-    # Accumulate
-    Tk_l = np.nansum(Tk_p) - np.cumsum(Tk_p, axis=0)
-    Ta_l = np.nansum(Ta_p) - np.cumsum(Ta_p, axis=0)
+    Cka = AEB.energy_conversion()
+    Cka_l = AEB.vertical_integration(Cka, pressure_range=prange).mean(-1)
 
+    # visualize
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8.0, 5.8), constrained_layout=True)
 
     ax.semilogx(kappa, Tk_l + Ta_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=1.2, linestyle='-', color='k')
-    ax.semilogx(kappa, Tk_l, label=r'$\Pi_K$', linewidth=1.2, linestyle='-', color='red')
-    ax.semilogx(kappa, Ta_l, label=r'$\Pi_A$', linewidth=1.2, linestyle='-', color='navy')
-    ax.semilogx(kappa, Cka_l, label=r'$C_{AK}$', linewidth=1.2, linestyle='-.', color='green')
+    ax.semilogx(kappa, Tk_l, label=r'$\Pi_K$', linewidth=1., linestyle='-', color='red')
+    ax.semilogx(kappa, Ta_l, label=r'$\Pi_A$', linewidth=1., linestyle='-', color='navy')
+    ax.semilogx(kappa, Cka_l, label=r'$C_{AK}$', linewidth=1., linestyle='-.', color='green')
     ax.set_ylabel(r'Cumulative energy flux ($W / m^2$)', fontsize=14)
 
     ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=0.8, linestyle='dashed', alpha=0.25)
@@ -160,7 +153,7 @@ if __name__ == '__main__':
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
-    ax.set_ylim(-4.0, 4.)
+    ax.set_ylim(-0.8, 0.8)
     ax.legend(title=r"  $100 \leq p \leq 500$ hPa ", loc='upper right', fontsize=12)
 
     plt.show()

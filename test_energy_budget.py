@@ -119,10 +119,10 @@ if __name__ == '__main__':
     nlat = AEB.nlat
 
     # Kinetic energy in vector form accumulate and integrate vertically
-    Ek_p = AEB.vertical_integration(Ek, prange=None)
+    Ek_p = AEB.vertical_integration(Ek, pressure_range=None)
     Ek_l = Ek_p.mean(-1)  # average over samples
 
-    Ea_p = AEB.vertical_integration(Ea, prange=None)
+    Ea_p = AEB.vertical_integration(Ea, pressure_range=None)
     Ea_l = Ea_p.mean(-1)  # average over samples
 
     # Kinetic energy in scalar form for reference
@@ -132,7 +132,7 @@ if __name__ == '__main__':
     Ek_s = spectrum(u_ml, convention='power') + spectrum(v_ml, convention='power')
     Ek_s *= 0.5  # * np.atleast_2d(AEB.degrees).T  #  where is this l factor coming from? No clue!
 
-    Ek_s = AEB.vertical_integration(Ek_s, prange=None).mean(-1)  # average over samples
+    Ek_s = AEB.vertical_integration(Ek_s, pressure_range=None).mean(-1)  # average over samples
 
     kappa = 1e3 * kappa_from_deg(np.arange(nlat))  # km^-1
 
@@ -153,9 +153,9 @@ if __name__ == '__main__':
     # Nonlinear transfer of Kinetic energy and Available potential energy
     prange = [100e2, 950e2]
 
-    Tk_p = AEB.vertical_integration(Tk, prange=prange).mean(-1)
-    Ta_p = AEB.vertical_integration(Ta, prange=prange).mean(-1)
-    Cka_l = AEB.vertical_integration(Cka, prange=prange).mean(-1)
+    Tk_p = AEB.vertical_integration(Tk, pressure_range=prange).mean(-1)
+    Ta_p = AEB.vertical_integration(Ta, pressure_range=prange).mean(-1)
+    Cka_l = AEB.vertical_integration(Cka, pressure_range=prange).mean(-1)
 
     # Accumulate
     Tk_l = np.sum(Tk_p) - np.cumsum(Tk_p)
