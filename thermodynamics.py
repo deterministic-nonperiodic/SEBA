@@ -49,7 +49,7 @@ def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
     return - (cn.Rd / cn.g) * mean_temp
 
 
-def geopotential_height(temperature, pressure, psfc, axis=0):
+def geopotential_height(temperature, psfc, pressure, axis=0):
     """
     Computes geopotential height from pressure and temperature profiles
 
@@ -61,9 +61,9 @@ def geopotential_height(temperature, pressure, psfc, axis=0):
     """
     nlevels = pressure.size
 
-    temp = np.moveaxis(temperature, axis, 2)
+    temp = np.moveaxis(temperature, axis, 1)
 
-    ashape = temperature.shape[:2]
+    ashape = temperature.shape[:1]
 
     # Compute height via the hypsometric equation (hydrostatic layer thickness).
     height = np.zeros_like(temp)
@@ -84,8 +84,8 @@ def geopotential_height(temperature, pressure, psfc, axis=0):
         # Integrating the hypsometric equation
         height[ij][ind_atm:] = hydrostatic_thickness(pres_m, temp_m, initial=None, axis=0)
 
-        # Compute geopotential height (m)
-    return np.moveaxis(height, 2, axis)
+    # return geopotential height (m)
+    return np.moveaxis(height, 1, axis)
 
 
 def height_to_geopotential(height):

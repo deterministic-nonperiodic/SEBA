@@ -1,8 +1,11 @@
-from numpy import pi
+import numpy as np
 
-earth_radius = 6.3712e6         # Radius of Earth (m)
-Omega = 2.0 * pi / 24. / 3600.  # Earth's rotation rate, (s**(-1))
-g = 9.80665                     # gravitational acceleration (m / s**2)
+# avoid dividing by zero (using machine precision eps)
+epsilon = np.finfo(np.float64).eps  # fun fact: eps = abs(7./3 - 4./3 - 1).
+
+earth_radius = 6.3712e6            # Radius of Earth (m)
+Omega = 2.0 * np.pi / 24. / 3600.  # Earth's rotation rate, (s**(-1))
+g = 9.80665                        # gravitational acceleration (m / s**2)
 
 Rd = 287.058     # gas constant for dry air (J / kg / K)
 Rv = 461.5       # gas constant for water vapor (J / kg / K)
