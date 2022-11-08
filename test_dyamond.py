@@ -21,9 +21,10 @@ if __name__ == '__main__':
     # Load dyamond dataset
     resolution = 'n128'
     data_path = 'data/'
+    date_time = '20200128'
 
-    dset_uvt = xr.open_dataset(data_path + 'ICON_atm_3d_inst_uvt_PL_{}_20200128.nc'.format(resolution))
-    dset_pwe = xr.open_dataset(data_path + 'ICON_atm_3d_inst_pwe_PL_{}_20200128.nc'.format(resolution))
+    dset_uvt = xr.open_mfdataset(data_path + 'ICON_atm_3d_inst_uvt_PL_{}_{}.nc'.format(resolution, date_time))
+    dset_pwe = xr.open_mfdataset(data_path + 'ICON_atm_3d_inst_pwe_PL_{}_{}.nc'.format(resolution, date_time))
 
     # load earth topography and surface pressure
     sfcp = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution)).pres_sfc.values
@@ -34,7 +35,7 @@ if __name__ == '__main__':
         dset_uvt['u'].values, dset_uvt['v'].values,
         dset_pwe['omega'].values, dset_uvt['temp'].values, dset_uvt['plev'].values,
         ps=sfcp, ghsl=ghsl, leveltype='pressure', gridtype='gaussian', truncation=None,
-        legfunc='stored', axes=(1, 2, 3), sample_axis=0, filter_terrain=True)
+        legfunc='stored', axes=(1, 2, 3), sample_axis=0, filter_terrain=True, jobs=None)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
@@ -63,11 +64,11 @@ if __name__ == '__main__':
     xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
     xticks = np.array([1, 10, 100, 1000])
 
-    x_lscale = kappa_from_lambda(np.linspace(1600, 250., 2))
-    x_sscale = kappa_from_lambda(np.linspace(100, 20., 2))
+    x_lscale = kappa_from_lambda(np.linspace(3200, 650., 2))
+    x_sscale = kappa_from_lambda(np.linspace(500, 100., 2))
 
     y_lscale = 5.0e-4 * x_lscale ** (-3.0)
-    y_sscale = 0.65 * x_sscale ** (-5.0 / 3.0)
+    y_sscale = 0.250 * x_sscale ** (-5.0 / 3.0)
 
     x_lscale_pos = x_lscale.min()
     x_sscale_pos = x_sscale.min()
@@ -133,7 +134,7 @@ if __name__ == '__main__':
     Cka_l = AEB.vertical_integration(Cka, pressure_range=prange).mean(-1)
 
     # visualize
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8.0, 5.8), constrained_layout=True)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
 
     ax.semilogx(kappa, Tk_l + Ta_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=1.2, linestyle='-', color='k')
     ax.semilogx(kappa, Tk_l, label=r'$\Pi_K$', linewidth=1., linestyle='-', color='red')

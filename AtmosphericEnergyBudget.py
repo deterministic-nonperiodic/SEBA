@@ -14,7 +14,7 @@ from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import terrain_mask, kappa_from_deg
-from tools import transform_io
+from tools import transform_io, number_chunks
 
 
 class EnergyBudget(object):
@@ -130,10 +130,17 @@ class EnergyBudget(object):
             self.samples = u.shape[sample_axis]
 
         # making sure array splitting gives more chunks than jobs
+        # if not given, the chunk size is set to the cpu count.
+        sample_size = self.samples * self.nlevels
         if jobs is None:
-            self.jobs = min(mp.cpu_count(), self.samples * self.nlevels)
+            self.jobs = min(mp.cpu_count(), sample_size)
         else:
-            self.jobs = min(int(jobs), self.samples * self.nlevels)
+            self.jobs = min(int(jobs), sample_size)
+
+        self.jobs = number_chunks(sample_size, self.jobs)
+        self.chunk_size = 1
+
+        print("Running with {} workers ...".format(self.jobs))
 
         self.direction = np.sign(p[0] - p[-1]).astype(int)
         self.p = np.asarray(sorted(p, reverse=True))
@@ -279,23 +286,22 @@ class EnergyBudget(object):
         # Chunks of arrays along axis=-1 for the mp mapping ...
         data_shape = self.t.shape
 
-        pressure = self.p
         sf_pressure = self.ps.reshape(-1)
 
         temperature = np.reshape(self.t, (-1,) + data_shape[2:])
 
         # create data chunks for parallel computations
         data_chunks = [chunk for chunk in zip(
-                       np.array_split(temperature, self.jobs, axis=0),
-                       np.array_split(sf_pressure, self.jobs, axis=0))]
+            np.array_split(temperature, self.jobs, axis=0),
+            np.array_split(sf_pressure, self.jobs, axis=0))]
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
 
         # perform computations in parallel
-        _geopotential = functools.partial(_geopotential_height, pressure=pressure, axis=-1)
+        _geopotential = functools.partial(_geopotential_height, pressure=self.p, axis=-1)
 
-        height = pool.starmap(_geopotential, data_chunks)
+        height = pool.starmap(_geopotential, data_chunks, chunksize=self.chunk_size)
 
         # close pool of workers
         pool.close()
@@ -303,7 +309,13 @@ class EnergyBudget(object):
 
         height = np.concatenate(height, axis=0)
 
-        return np.reshape(height, data_shape)
+        height = np.reshape(height, data_shape)
+
+        if not self.filter_terrain:
+            # Adding the topographic height in meters above sea level
+            height += self.ghsl[..., np.newaxis, np.newaxis]
+
+        return height
 
     def geopotential(self):
         """
@@ -315,14 +327,11 @@ class EnergyBudget(object):
             geopotential (J/kg)
         """
 
-        # Compute geopotential height (levels below the surface are set to zero)
+        # Compute the geopotential height in meters
+        # (levels below the surface are set to zero)
         height = self.geopotential_height()
 
-        if not self.filter_terrain:
-            # Adding the topographic height in meters above sea level
-            height += self.ghsl[..., np.newaxis, np.newaxis]
-
-        # Convert geopotential height to geopotential (J/kg)
+        # Convert geopotential height to geopotential
         return height_to_geopotential(height)
 
     # -------------------------------------------------------------------------------
@@ -358,8 +367,9 @@ class EnergyBudget(object):
         return self.ganma * self._scalar_spectra(self.theta_p) / 2.0
 
     def vorticity_divergence(self):
-        # computes the vertical vorticity and horizontal wind divergence
-        return self._compute_rotdiv(*self.wind)
+        # computes the spectral coefficients of vertical
+        # vorticity and horizontal wind divergence
+        return self._compute_rotdiv(self.wind)
 
     # -------------------------------------------------------------------------------
     # Methods for computing spectral fluxes
@@ -373,7 +383,7 @@ class EnergyBudget(object):
         """
 
         # compute advection of the horizontal wind
-        advection_term = self._advect_wind(*self.wind) + self.div * self.wind / 2.0
+        advection_term = self._wind_advection(self.wind) + self.div * self.wind / 2.0
 
         # compute nonlinear spectral fluxes
         advective_flux = - self._vector_spectra(self.wind, advection_term)
@@ -392,7 +402,7 @@ class EnergyBudget(object):
         """
 
         # compute horizontal advection of potential temperature
-        theta_advection = self._advect_scalar(self.theta_p) + self.div * self.theta_p / 2.0
+        theta_advection = self._scalar_advection(self.theta_p) + self.div * self.theta_p / 2.0
 
         # compute turbulent horizontal transfer
         advection_term = - self._scalar_spectra(self.theta_p, theta_advection)
@@ -441,7 +451,7 @@ class EnergyBudget(object):
         cos_lat = np.expand_dims(cos_lat, (1, 2, 3))
 
         # Compute the streamfunction and velocity potential
-        sf, vp = self.sfvp(*self.wind)
+        sf, vp = self.sfvp(self.wind)
 
         # compute meridional gradients
         _, sf_grad = self.horizontal_gradient(sf)
@@ -485,19 +495,52 @@ class EnergyBudget(object):
 
         wind_theta = self.wind * self.theta_p ** 2
 
-        _, div_spc = self._compute_rotdiv(*wind_theta)
+        _, div_spc = self._compute_rotdiv(wind_theta)
         divh_theta = self._global_average(self._inverse_transform(div_spc), axis=0)
 
         return - self.ganma * divh_theta / 2.0
 
     @transform_io
-    def sfvp(self, ugrid, vgrid):
+    def ke_tendency(self, tendency):
         """
-            Returns the streamfunction and velocity potential
-            of a vector field on the sphere with components 'ugrid' and 'vgrid'.
+            Compute kinetic energy tendency from parametrized
+            or explicit horizontal wind tendencies.
         """
-        # pack last dimension before calling spharm
-        return self.sphere.getpsichi(ugrid, vgrid, ntrunc=self.truncation)
+        return self._vector_spectra(self.wind, tendency)
+
+    @transform_io
+    def ape_tendency(self, tendency):
+        """
+            Compute Available potential energy tendency from
+            parametrized or explicit temperature tendencies.
+        """
+        # convert temperature tendency to potential temperature tendency
+        theta_tendency = tendency / self.exner
+
+        return self._scalar_spectra(self.theta_p, theta_tendency)
+
+    @transform_io
+    def sfvp(self, vector):
+        """
+            Computes the streamfunction and potential of a vector field on the sphere.
+        """
+        # Create iterable for multiprocessing
+        data_chunks = np.array_split(vector, self.jobs, axis=-1)
+
+        # Wrapper for spherepack function: 'getvrtdivspec'
+        _getpsichi = functools.partial(self.sphere.getpsichi, ntrunc=self.truncation)
+
+        # Create pool of workers
+        pool = mp.Pool(processes=self.jobs)
+
+        # perform computations in parallel
+        result = pool.starmap(_getpsichi, data_chunks, chunksize=self.chunk_size)
+
+        # Freeing all the workers
+        pool.close()
+        pool.join()
+
+        return np.concatenate(result, axis=-1)
 
     def helmholtz(self):
         """
@@ -511,15 +554,17 @@ class EnergyBudget(object):
         """
 
         # compute the streamfunction and velocity potential
-        psigrid, chigrid = self.sfvp(*self.wind)
+        psi_grid, chi_grid = self.sfvp(self.wind)
 
         # Compute non-divergent components from velocity potential
-        vpsi, upsi = self.horizontal_gradient(psigrid)
+        vpsi, upsi = self.horizontal_gradient(psi_grid)
+        psi_vector = np.stack([-upsi, vpsi])
 
         # Compute non-rotational components from streamfunction
-        uchi, vchi = self.horizontal_gradient(chigrid)
+        uchi, vchi = self.horizontal_gradient(chi_grid)
+        chi_vector = np.stack([-uchi, vchi])
 
-        return uchi, vchi, -upsi, vpsi
+        return chi_vector, psi_vector
 
     # --------------------------------------------------------------------
     # Helper methods
@@ -532,13 +577,15 @@ class EnergyBudget(object):
         """
 
         # Chunks of arrays along axis=-1 for the mp mapping ...
-        chunks = np.array_split(scalar, self.jobs, axis=-1)
+        data_chunks = np.array_split(scalar, self.jobs, axis=-1)
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
 
         # perform computations in parallel
-        result = pool.map(functools.partial(self.sphere.grdtospec, ntrunc=self.truncation), chunks)
+        _grdtospec = functools.partial(self.sphere.grdtospec, ntrunc=self.truncation)
+
+        result = pool.map(_grdtospec, data_chunks, chunksize=self.chunk_size)
 
         # Close pool of workers
         pool.close()
@@ -554,13 +601,13 @@ class EnergyBudget(object):
         """
 
         # Chunks of arrays along axis=-1 for the mp mapping ...
-        chunks = np.array_split(scalar_sp, self.jobs, axis=-1)
+        data_chunks = np.array_split(scalar_sp, self.jobs, axis=-1)
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
 
         # perform computations in parallel
-        result = pool.map(self.sphere.spectogrd, chunks)
+        result = pool.map(self.sphere.spectogrd, data_chunks, chunksize=self.chunk_size)
 
         # Close pool of workers
         pool.close()
@@ -582,12 +629,13 @@ class EnergyBudget(object):
         scalar_ml = self._spectral_transform(scalar)
 
         scalar_ml = self._pack_levels(scalar_ml)
+        data_chunks = np.array_split(scalar_ml, self.jobs, axis=-1)
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
 
         # perform computations in parallel
-        result = pool.map(self.sphere.getgrad, np.array_split(scalar_ml, self.jobs, axis=-1))
+        result = pool.map(self.sphere.getgrad, data_chunks, chunksize=self.chunk_size)
 
         # Close pool of workers
         pool.close()
@@ -605,14 +653,14 @@ class EnergyBudget(object):
 
         return self.wind * np.stack(scalar_gradient)
 
-    def _advect_scalar(self, scalar):
+    def _scalar_advection(self, scalar):
         """
         Compute the horizontal advection
         scalar: scalar field to be advected
         """
         return np.nansum(self.horizontal_advection(scalar), axis=0)
 
-    def _advect_wind(self, ugrid, vgrid):
+    def _wind_advection(self, wind):
         r"""
         Compute the horizontal advection of the horizontal wind in 'rotation form'
 
@@ -643,7 +691,7 @@ class EnergyBudget(object):
         """
 
         # Horizontal kinetic energy per unit mass in physical space
-        kinetic_energy = (ugrid ** 2 + vgrid ** 2) / 2.0
+        kinetic_energy = np.sum(wind * wind, axis=0) / 2.0
 
         # Horizontal gradient of horizontal kinetic energy
         # (components stored along the first dimension)
@@ -651,28 +699,28 @@ class EnergyBudget(object):
 
         # Horizontal advection of zonal and meridional wind components
         # (components stored along the first dimension)
-        return ke_gradient + self.vrt * np.stack((-vgrid, ugrid))
+        return ke_gradient + self.vrt * np.stack((-wind[1], wind[0]))
 
     @transform_io
-    def _compute_rotdiv(self, ugrid, vgrid):
+    def _compute_rotdiv(self, vector):
         """
         Compute the spectral coefficients of vorticity and horizontal
         divergence of a vector field with components ugrid and vgrid on the sphere.
         """
 
-        # Chunks of arrays along axis=-1 for the mp mapping ...
-        chunks = [chunk for chunk in zip(
-                  np.array_split(ugrid, self.jobs, axis=-1),
-                  np.array_split(vgrid, self.jobs, axis=-1))]
+        # Create iterable for multiprocessing
+        # the second dimension corresponds to the arguments of 'getvrtdivspec'
+        # or the horizontal components of 'vector'
+        data_chunks = np.array_split(vector, self.jobs, axis=-1)
 
         # Wrapper for spherepack function: 'getvrtdivspec'
-        getvrtdiv = functools.partial(self.sphere.getvrtdivspec, ntrunc=self.truncation)
+        _getvrtdivspec = functools.partial(self.sphere.getvrtdivspec, ntrunc=self.truncation)
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
 
         # perform computations in parallel
-        result = pool.starmap(getvrtdiv, chunks)
+        result = pool.starmap(_getvrtdivspec, data_chunks, chunksize=self.chunk_size)
 
         # Freeing all the workers
         pool.close()
@@ -693,6 +741,7 @@ class EnergyBudget(object):
             scalar1_sp = self._spectral_transform(scalar_other)
             spectrum = self._cross_spectrum(scalar_sp, scalar1_sp)
 
+        spectrum[0] = 0.0
         return spectrum.real
 
     def _vector_spectra(self, a, b=None):
@@ -700,13 +749,12 @@ class EnergyBudget(object):
         Compute spherical harmonic cross spectra between two vector fields on the sphere.
 
         """
-        rot_aml, div_aml = self._compute_rotdiv(*a)
+        rot_aml, div_aml = self._compute_rotdiv(a)
 
         if b is None:
             spectrum = self._cross_spectrum(rot_aml) + self._cross_spectrum(div_aml)
-
         else:
-            rot_bml, div_bml = self._compute_rotdiv(*b)
+            rot_bml, div_bml = self._compute_rotdiv(b)
 
             spectrum = self._cross_spectrum(rot_aml, rot_bml) + \
                        self._cross_spectrum(div_aml, div_bml)
@@ -821,14 +869,14 @@ class EnergyBudget(object):
                                  "got {}".format(self.nlat, degrees.size))
 
         if clm2 is None:
-            clm_sqd = (clm1 * clm1.conjugate()).real
+            clm_sqd = (clm1.conjugate() * clm1).real
         else:
             assert clm2.shape == clm1.shape, \
                 "Arrays 'clm1' and 'clm2' of spectral coefficients " \
                 "must have the same shape. Expected 'clm2' shape: {} got: {}".format(
                     clm1.shape, clm2.shape)
 
-            clm_sqd = (clm1 * clm2.conjugate()).real
+            clm_sqd = (clm1.conjugate() * clm2).real
 
         # define wavenumbers locally
         ls = self.total_wavenumber
@@ -855,15 +903,18 @@ class EnergyBudget(object):
     # Functions for preprocessing data:
     def _pack_levels(self, data, order='C'):
         # pack dimensions of arrays (nlat, nlon, ...) to (nlat, nlon, samples)
-        if np.shape(data)[0] == self.nlat:
-            new_shape = np.shape(data)[:2] + (-1,)
-            return np.reshape(data, new_shape, order=order).squeeze()
-        elif np.shape(data)[0] == self.ncoeffs:
-            new_shape = np.shape(data)[:1] + (-1,)
-            return np.reshape(data, new_shape, order=order).squeeze()
+        data_length = np.shape(data)[0]
+
+        if data_length == 2:
+            new_shape = np.shape(data)[:3]
+        elif data_length == self.nlat:
+            new_shape = np.shape(data)[:2]
+        elif data_length == self.ncoeffs:
+            new_shape = np.shape(data)[:1]
         else:
             raise ValueError("Inconsistent array shape: expecting "
                              "first dimension of size {} or {}.".format(self.nlat, self.ncoeffs))
+        return np.reshape(data, new_shape + (-1,), order=order).squeeze()
 
     def _unpack_levels(self, data, order='C'):
         # unpack dimensions of arrays (nlat, nlon, samples)

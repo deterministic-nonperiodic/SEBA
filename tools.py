@@ -20,12 +20,12 @@ def kappa_from_deg(ls, linear=False):
     return num / cn.earth_radius
 
 
-def lambda_from_deg(ls):
+def lambda_from_deg(ls, linear=False):
     """
     Returns wavelength λ [meters] from total horizontal wavenumber
     λ = 2π / κ
     """
-    return 2.0 * np.pi / kappa_from_deg(ls)
+    return 2.0 * np.pi / kappa_from_deg(ls, linear=linear)
 
 
 def deg_from_lambda(lb):
@@ -36,7 +36,7 @@ def deg_from_lambda(lb):
 
 
 def kappa_from_lambda(lb):
-    return 1.0 / lb
+    return 2.0 * np.pi / lb
 
 
 def coriolis_parameter(latitude):
@@ -50,6 +50,26 @@ def coriolis_parameter(latitude):
     returns coriolis parameter
     """
     return cn.Omega * np.sin(np.deg2rad(latitude))
+
+
+def get_chunk_size(n_workers, len_iterable, factor=4):
+    """Calculate chunk size argument for Pool-methods.
+
+    Resembles source-code within `multiprocessing.pool.Pool._map_async`.
+    """
+    chunk_size, extra = divmod(len_iterable, n_workers * factor)
+    if extra:
+        chunk_size += 1
+    return chunk_size
+
+
+def number_chunks(sample_size, workers):
+    # finds the integer factor of 'sample_size' closest to 'workers'
+    # for parallel computations: ensures maximum cpu usage for chunk_size = 1
+    jobs = workers
+    while sample_size % jobs:
+        jobs -= 1
+    return jobs if jobs != 1 else workers
 
 
 def transform_io(func, order='C'):
@@ -67,6 +87,7 @@ def transform_io(func, order='C'):
         ‘C’ means to read / write the elements using C-like index order, with the last axis index changing fastest,
         back to the first axis index changing slowest. See 'numpy.reshape' for details.
     """
+
     @functools.wraps(func)
     def dimension_packer(*args, **kwargs):
         # self passed as first argument
