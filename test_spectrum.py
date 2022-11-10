@@ -53,7 +53,7 @@ if __name__ == '__main__':
         dset_pwe['omega'].values, dset_uvt['temp'].values, dset_uvt['plev'].values,
         ps=sfcp, ghsl=ghsl, leveltype='pressure', gridtype='gaussian', truncation=None,
         legfunc='stored', axes=(1, 2, 3), sample_axis=0, filter_terrain=False,
-        standard_average=True)
+        standard_average=False)
 
     # visualize profiles
     variables = ['w', 'wind', 'theta_p']
@@ -76,15 +76,16 @@ if __name__ == '__main__':
         if vars_info[variable][0] == 'vector':
             # The global average of the dot product of two vectors must equal the sum
             # of the vectors' cross-spectrum along all spherical harmonic degrees.
-            data_gp = AEB._global_average(data[0] ** 2 + data[1] ** 2).mean(0)
+            data_gp = AEB.global_average(data[0] ** 2 + data[1] ** 2).mean(0)
             data_sc = AEB._vector_spectra(data).sum(0).mean(0)
         else:
-            data_gp = AEB._global_average(data ** 2).mean(0)
+            data_gp = AEB.global_average(data ** 2).mean(0)
             data_sc = AEB._scalar_spectra(data).sum(0).mean(0)
 
         lines = ax.plot(data_gp.T, pressure, '-b', data_sc.T, pressure, '--k')
         ax.legend(lines, ['global mean', 'recovered mean'], title=vars_info[variable][1], loc='lower right')
-        ax.set_ylim(1015, 60)
+        ax.set_ylim(1015, 80)
+    axes[0].set_ylabel('Pressure (hPa)')
 
     plt.show()
     plt.close(fig)

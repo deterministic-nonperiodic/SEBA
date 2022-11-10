@@ -13,8 +13,7 @@ from thermodynamics import geopotential_height as _geopotential_height
 from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import terrain_mask, kappa_from_deg
-from tools import transform_io, number_chunks
+from tools import terrain_mask, kappa_from_deg, transform_io, number_chunks
 
 
 class EnergyBudget(object):
@@ -28,11 +27,11 @@ class EnergyBudget(object):
     """
 
     def __init__(self, u, v, w, t, p, ps=None, ghsl=None, leveltype='pressure',
-                 gridtype='gaussian', truncation=None, rsphere=cn.earth_radius, standard_average=True,
+                 gridtype='gaussian', truncation=None, rsphere=cn.earth_radius, standard_average=False,
                  legfunc='stored', axes=None, sample_axis=None, filter_terrain=False, jobs=None):
 
         """
-        Initializing class EnergyBudget for computing Spectral Energy Budget of the Atmosphere
+        Initializing EnergyBudget instance.
 
         Signature
         -----
@@ -90,11 +89,6 @@ class EnergyBudget(object):
 
             if len(axes) not in (2, 3):
                 raise ValueError('Axes must be at least rank 2 or 3')
-
-        if len(axes) == 3:
-            self.vaxis = axes[0]
-        else:
-            self.vaxis = None
 
         # Get spatial dimensions
         self.leveltype = leveltype.lower()
@@ -159,33 +153,25 @@ class EnergyBudget(object):
                 self.ps = ps
 
             if np.shape(self.ps) != (self.nlat, self.nlon):
-                raise ValueError('Surface pressure must be a scalar or a'
-                                 ' 2D array with shape (nlat, nlon)')
+                raise ValueError('If given, the surface pressure must be a scalar or a'
+                                 ' 2D array with shape (nlat, nlon).'
+                                 'Expected shape {}, but got {}!'.format((self.nlat, self.nlon),
+                                                                         np.shape(self.ps)))
 
         if ghsl is None:
             self.ghsl = 0.0
         else:
             if np.shape(ghsl) != (self.nlat, self.nlon):
-                raise ValueError('Surface pressure must be a scalar or a'
-                                 ' 2D array with shape (nlat, nlon)')
+                raise ValueError('If given, the surface height must be a 2D array with shape (nlat, nlon)'
+                                 'Expected shape {}, but got {}!'.format((self.nlat, self.nlon),
+                                                                         np.shape(ghsl)))
             else:
                 self.ghsl = ghsl
 
         # -----------------------------------------------------------------------------
         # Create a Spharmt object to perform the computations.
         # -----------------------------------------------------------------------------
-        # Get latitude and gaussian quadrature weights: weights ~ cosine(lat)
-        self.lats, self.weights = spharm.gaussian_lats_wts(self.nlat)
-
-        if standard_average:
-            self.weights = None  # 1.0 / nlat
-
-        # reverse latitude array (weights are symmetric around the equator)
-        self.reverse_latitude = self.lats[0] < self.lats[-1]
-        if self.reverse_latitude:
-            self.lats = self.lats[::-1]
-
-        # Create sphere object for spectral transformations
+        # Create sphere object
         self.sphere = spharm.Spharmt(self.nlon, self.nlat,
                                      gridtype=self.gridtype, rsphere=rsphere,
                                      legfunc=legfunc)
@@ -198,16 +184,28 @@ class EnergyBudget(object):
             if self.truncation < 0 or self.truncation > self.nlat - 1:
                 raise ValueError('Truncation must be between 0 and {:d}'.format(self.nlat - 1, ))
 
-        # Get indexes of zonal wavenumber and spherical harmonic degree
+        # Get latitude of the gaussian grid and quadrature weights: weights ~ cosine(lat)
+        self.lats, self.weights = spharm.gaussian_lats_wts(self.nlat)
+
+        if standard_average:
+            self.weights = None  # using uniform weights (1.0 / nlat)
+
+        # reverse latitude array (weights are symmetric around the equator)
+        self.reverse_latitude = self.lats[0] < self.lats[-1]
+        if self.reverse_latitude:
+            self.lats = self.lats[::-1]
+
+        # Get spectral indexes of the zonal wavenumber and spherical harmonic degree
         self.zonal_wavenumber, self.total_wavenumber = spharm.getspecindx(self.truncation)
 
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
         self.ncoeffs = self.total_wavenumber.size
 
-        # get spherical harmonic degree and horizontal wavenumber
+        # get spherical harmonic degree and horizontal wavenumber (rad / meter)
         self.degrees = np.arange(self.truncation + 1, dtype=int)
         self.kappa_h = kappa_from_deg(self.degrees)
 
+        # normalization factor for calculating vector cross-spectrum
         self.vector_norm = np.expand_dims(self.kappa_h ** 2, (-1, -2)).clip(min=cn.epsilon)
 
         # -----------------------------------------------------------------------------
@@ -216,12 +214,13 @@ class EnergyBudget(object):
         #  - Reshape input data to (nlat, nlon, samples * nlevels)
         # -----------------------------------------------------------------------------
         self.filter_terrain = filter_terrain
-        if filter_terrain:
+
+        if self.filter_terrain:
             self.beta = terrain_mask(self.p, self.ps, smoothed=True, jobs=self.jobs)
         else:
             self.beta = np.ones((self.nlat, self.nlon, self.nlevels))
 
-        u = self._transform_data(u, filtered=False)  # avoid filtering before computing divergence
+        u = self._transform_data(u, filtered=False)  # compute divergence with unfiltered winds
         v = self._transform_data(v, filtered=False)
 
         self.wind = np.stack((u, v))
@@ -496,16 +495,35 @@ class EnergyBudget(object):
         wind_theta = self.wind * self.theta_p ** 2
 
         _, div_spc = self._compute_rotdiv(wind_theta)
-        divh_theta = self._global_average(self._inverse_transform(div_spc), axis=0)
+        divh_theta = self.global_average(self._inverse_transform(div_spc), axis=0)
 
         return - self.ganma * divh_theta / 2.0
 
     @transform_io
     def ke_tendency(self, tendency):
-        """
-            Compute kinetic energy tendency from parametrized
+        r"""
+            Compute kinetic energy spectral transfer from parametrized
             or explicit horizontal wind tendencies.
+
+            .. math:: \partial_{t}E_{K}(l) = (\boldsymbol{u}, \partial_{t}\boldsymbol{u})_{l}
+
+            where :math:`\boldsymbol{u}=(u, v)` is the horizontal wind vector,
+            and :math:`\partial_{t}\boldsymbol{u}` is defined by tendency.
+
+            Parameters
+            ----------
+                tendency: ndarray with shape (2, nlat, nlon, ...)
+                    contains momentum tendencies for each horizontal component.
+            Returns
+            -------
+                Kinetic energy tendency due to any process described by 'tendency'
         """
+        tendency = np.asarray(tendency)
+
+        if tendency.shape != self.wind.shape:
+            raise ValueError("The shape of array 'tendency' must be consistent with initialized data."
+                             "Expecting {} but got {}".format(self.wind.shape, tendency.shape))
+
         return self._vector_spectra(self.wind, tendency)
 
     @transform_io
@@ -514,8 +532,21 @@ class EnergyBudget(object):
             Compute Available potential energy tendency from
             parametrized or explicit temperature tendencies.
         """
+        # check dimensions
+        tendency = np.asarray(tendency)
+
+        if tendency.shape != self.theta_p.shape:
+            raise ValueError("The shape of array 'tendency' must be consistent with initialized data."
+                             "Expecting {} but got {}".format(self.theta_p.shape, tendency.shape))
+
+        # remove representative mean from total temperature tendency
+        tendency_prn = tendency - self._representative_mean(tendency)
+
         # convert temperature tendency to potential temperature tendency
-        theta_tendency = tendency / self.exner
+        theta_tendency = tendency_prn / self.exner
+
+        # filter terrain
+        theta_tendency *= np.expand_dims(self.beta, -2)
 
         return self._scalar_spectra(self.theta_p, theta_tendency)
 
@@ -544,25 +575,26 @@ class EnergyBudget(object):
 
     def helmholtz(self):
         """
-        Perform a Helmholtz decomposition of the horizontal wind. This decomposition divides
-        the horizontal wind vector into the irrotational and non-divergent components.
+        Perform a Helmholtz decomposition of the horizontal wind.
+        This decomposition splits the horizontal wind vector into
+        irrotational and non-divergent components.
 
         Returns:
             uchi, vchi, upsi, vpsi:
-            Zonal and meridional components of irrotational and
-            non-divergent wind components respectively.
+            zonal and meridional components of divergent and
+            rotational wind components respectively.
         """
 
-        # compute the streamfunction and velocity potential
+        # streamfunction and velocity potential
         psi_grid, chi_grid = self.sfvp(self.wind)
+
+        # Compute non-rotational components from streamfunction
+        uchi, vchi = self.horizontal_gradient(chi_grid)
+        chi_vector = np.stack([uchi, vchi])
 
         # Compute non-divergent components from velocity potential
         vpsi, upsi = self.horizontal_gradient(psi_grid)
         psi_vector = np.stack([-upsi, vpsi])
-
-        # Compute non-rotational components from streamfunction
-        uchi, vchi = self.horizontal_gradient(chi_grid)
-        chi_vector = np.stack([-uchi, vchi])
 
         return chi_vector, psi_vector
 
@@ -728,38 +760,35 @@ class EnergyBudget(object):
 
         return np.concatenate(result, axis=-1)
 
-    def _scalar_spectra(self, scalar, scalar_other=None):
+    def _scalar_spectra(self, scalar_1, scalar_2=None):
         """
         Compute 2D power spectra as a function of spherical harmonic degree
         of a scalar function on the sphere.
         """
-        scalar_sp = self._spectral_transform(scalar)
+        scalar_1sc = self._spectral_transform(scalar_1)
 
-        if scalar_other is None:
-            spectrum = self._cross_spectrum(scalar_sp)
+        if scalar_2 is None:
+            spectrum = self._cross_spectrum(scalar_1sc)
         else:
-            scalar1_sp = self._spectral_transform(scalar_other)
-            spectrum = self._cross_spectrum(scalar_sp, scalar1_sp)
+            scalar_2sc = self._spectral_transform(scalar_2)
+            spectrum = self._cross_spectrum(scalar_1sc, scalar_2sc)
 
-        spectrum[0] = 0.0
         return spectrum.real
 
     def _vector_spectra(self, a, b=None):
         """
         Compute spherical harmonic cross spectra between two vector fields on the sphere.
-
         """
-        rot_aml, div_aml = self._compute_rotdiv(a)
+        rot_asc, div_asc = self._compute_rotdiv(a)
 
         if b is None:
-            spectrum = self._cross_spectrum(rot_aml) + self._cross_spectrum(div_aml)
+            spectrum = self._cross_spectrum(rot_asc) + self._cross_spectrum(div_asc)
         else:
-            rot_bml, div_bml = self._compute_rotdiv(b)
+            rot_bsc, div_bsc = self._compute_rotdiv(b)
 
-            spectrum = self._cross_spectrum(rot_aml, rot_bml) + \
-                       self._cross_spectrum(div_aml, div_bml)
+            spectrum = self._cross_spectrum(rot_asc, rot_bsc) + \
+                       self._cross_spectrum(div_asc, div_bsc)
 
-        spectrum[0] = 0.0
         spectrum[1:] /= self.vector_norm[1:]
 
         return spectrum
@@ -820,6 +849,43 @@ class EnergyBudget(object):
 
         return self.direction * integrated_scalar
 
+    def global_average(self, scalar, weights=None, axis=None):
+        """
+        Computes the global weighted average of a scalar function on the sphere.
+        The weights are initialized according to 'standard_average':
+        For 'standard_average=True,' uniform weights (1/nlat) are used, giving the global mean;
+        Gaussian (cosine latitude) weights are used otherwise.
+
+        :param scalar: nd-array with data to be averaged
+        :param axis: axis of the meridional dimension.
+        :param weights: 1D-array containing latitudinal weights
+        :return: Global average of a scalar function
+        """
+        if axis is None:
+            axis = 0
+        else:
+            axis = normalize_axis_index(axis, scalar.ndim)
+
+        if weights is None:
+            if hasattr(self, 'weights'):
+                weights = self.weights
+        else:
+            weights = np.asarray(weights)
+
+            if weights.size != scalar.shape[axis]:
+                raise ValueError("If given, 'weights' must be a 1D array of length 'nlat'."
+                                 "Expected length {} but got {}.".format(self.nlat, weights.size))
+
+        if scalar.shape[axis] != self.nlat:
+            raise ValueError("Scalar size along axis must be nlat."
+                             "Expected {} and got {}".format(self.nlat, scalar.shape[axis]))
+
+        if scalar.shape[axis + 1] != self.nlon:
+            raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
+
+        # Compute area-weighted average on the sphere (using either gaussian or linear weights)
+        return np.average(scalar, weights=weights, axis=axis).mean(axis=axis)
+
     def _cross_spectrum(self, clm1, clm2=None, degrees=None, convention='power'):
         """Returns the cross-spectrum of the spherical harmonic coefficients as a
         function of spherical harmonic degree.
@@ -863,10 +929,9 @@ class EnergyBudget(object):
                 degrees = np.arange(ntrunc + 1, dtype=int)
         else:
             degrees = np.asarray(degrees)
-            if (degrees.ndim != 1) or (degrees.size == self.nlat):
-                raise ValueError("If given, 'degrees' must be a 1D array "
-                                 "of length 'nlat'. Expected size {} and "
-                                 "got {}".format(self.nlat, degrees.size))
+            if (degrees.ndim != 1) or (degrees.size > self.nlat):
+                raise ValueError("If given, 'degrees' must be a 1D array of length <= 'nlat'."
+                                 "Expected size {} and got {}".format(self.nlat, degrees.size))
 
         if clm2 is None:
             clm_sqd = (clm1.conjugate() * clm1).real
@@ -890,10 +955,10 @@ class EnergyBudget(object):
         spectrum = np.zeros((degrees.size,) + sample_shape)
 
         # Compute spectrum as a function of total wavenumber by adding up the zonal wavenumbers.
-        for degree in degrees:
+        for ln, degree in enumerate(degrees):
             # Sum over all zonal wavenumbers <= total wavenumber
             degree_range = (ms <= degree) & (ls == degree)
-            spectrum[degree] = clm_sqd[degree_range].sum(axis=0)
+            spectrum[ln] = clm_sqd[degree_range].sum(axis=0)
 
         if convention.lower() == 'energy':
             spectrum *= 4.0 * np.pi
@@ -951,43 +1016,17 @@ class EnergyBudget(object):
         else:
             return data
 
-    def _global_average(self, scalar, axis=None):
-        """
-        Computes the global weighted average of a scalar function on the sphere.
-        The weights are initialized according to 'standard_average':
-        For 'standard_average=True,' uniform weights (1/nlat) are used, giving the global mean;
-        Gaussian (cosine latitude) weights are used otherwise.
-
-        param scalar: nd-array with data to be averaged
-        :param axis: axis of the meridional dimension.
-        :return: Global average of a scalar function
-        """
-        if axis is None:
-            axis = 0
-        else:
-            axis = normalize_axis_index(axis, scalar.ndim)
-
-        if scalar.shape[axis] != self.nlat:
-            raise ValueError("Scalar size along axis must be nlat."
-                             "Expected {} and got {}".format(self.nlat, scalar.shape[axis]))
-
-        if scalar.shape[axis + 1] != self.nlon:
-            raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
-
-        # Compute area-weighted average on the sphere (using either gaussian or linear weights)
-        return np.average(scalar, weights=self.weights, axis=axis).mean(axis=axis)
-
     def _representative_mean(self, scalar):
         # Computes representative mean of a scalar function
         # excluding subterranean interpolated data
 
         # Use global averaged beta as a normalization factor
-        norm = self._global_average(self.beta, axis=0).clip(1.0e-12, None)
+        norm = self.global_average(self.beta, axis=0).clip(1.0e-12, None)
 
         # compute weighted average on gaussian grid and divide by norm
         scalar_beta = np.expand_dims(self.beta, -2) * scalar
 
-        return self._global_average(scalar_beta, axis=0) / norm
+        return self.global_average(scalar_beta, axis=0) / norm
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean

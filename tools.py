@@ -72,6 +72,24 @@ def number_chunks(sample_size, workers):
     return jobs if jobs != 1 else workers
 
 
+def getspecindx(ntrunc):
+    """
+     compute indices of zonal wavenumber (index_m) and degree (index_n)
+     for complex spherical harmonic coefficients.
+     @param ntrunc: spherical harmonic triangular truncation limit.
+     @return: C{B{index_m, index_n}} - rank 1 numpy Int32 arrays
+     containing zonal wavenumber (index_m) and degree (index_n) of
+     spherical harmonic coefficients.
+    """
+    index_m, index_n = np.indices((ntrunc + 1, ntrunc + 1))
+
+    indices = np.nonzero(np.greater(index_n, index_m - 1).flatten())
+    index_n = np.take(index_n.flatten(), indices)
+    index_m = np.take(index_m.flatten(), indices)
+
+    return np.squeeze(index_m), np.squeeze(index_n)
+
+
 def transform_io(func, order='C'):
     """
     Decorator for handling arrays' IO dimensions for calling spharm's spectral functions.
@@ -133,8 +151,7 @@ def convolve_chunk(a, func):
     return np.array([func(ai) for ai in a])
 
 
-def lp_lanczos(data, nw, fc, axis=None, jobs=None):
-    # Grid definition according to the number of weights
+def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
 
     if axis is None:
         axis = -1
@@ -145,7 +162,7 @@ def lp_lanczos(data, nw, fc, axis=None, jobs=None):
         jobs = min(mp.cpu_count(), arr.shape[0])
 
     # compute lanczos 2D window for convolution
-    coefficients = window_2d(fc, nw)
+    coefficients = window_2d(cutoff_freq, window_size)
 
     # wrapper of convolution function for parallel computations
     convolve2d = functools.partial(sig.convolve2d, in2=coefficients, boundary='wrap', mode='same')
@@ -330,21 +347,13 @@ def terrain_mask(p, ps, smoothed=True, jobs=None):
 
     if smoothed:
         # Calculate normalised cut-off frequencies for zonal and meridional directions:
-        resolution = 0.5 * lambda_from_deg(nlat)  # zonal grid spacing at the Equator
-        cutoff_scale = lambda_from_deg(np.array([40, 40]))
+        resolution = lambda_from_deg(nlon)                    # zonal grid spacing at the Equator
+        cutoff_scale = lambda_from_deg(np.array([128, 128]))  # wavenumber 40 (~500 km) from A&L (2013)
 
-        fc = resolution / cutoff_scale  # cut-off at wavenumber 40 (~500 km) from A&L (2013)
+        # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
+        nsc_freq = resolution / cutoff_scale
 
         # Apply low-pass Lanczos filter for smoothing:
-        beta = lp_lanczos(beta, [5, 5], fc, axis=-1, jobs=jobs)
+        beta = lowpass_lanczos(beta, [9, 9], nsc_freq, axis=-1, jobs=jobs)
 
     return beta.clip(0.0, 1.0)
-
-
-def _getvrtdiv(args, func, ntrunc):
-    """
-    Compute the vertical component of vorticity and the horizontal
-    divergence of a vector field with components ugrid and vgrid on the sphere.
-    """
-    ugrid, vgrid = args
-    return func(ugrid, vgrid, ntrunc=ntrunc)

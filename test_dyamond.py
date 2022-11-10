@@ -32,10 +32,10 @@ if __name__ == '__main__':
 
     # Create energy budget object
     AEB = EnergyBudget(
-        dset_uvt['u'].values, dset_uvt['v'].values,
-        dset_pwe['omega'].values, dset_uvt['temp'].values, dset_uvt['plev'].values,
-        ps=sfcp, ghsl=ghsl, leveltype='pressure', gridtype='gaussian', truncation=None,
-        legfunc='stored', axes=(1, 2, 3), sample_axis=0, filter_terrain=True, jobs=None)
+        dset_uvt['u'].values, dset_uvt['v'].values, dset_pwe['omega'].values,
+        dset_uvt['temp'].values, dset_uvt['plev'].values, ps=sfcp, ghsl=ghsl,
+        leveltype='pressure', gridtype='gaussian', truncation=None, legfunc='stored',
+        axes=(1, 2, 3), sample_axis=0, filter_terrain=True, jobs=None, standard_average=False)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
@@ -49,12 +49,12 @@ if __name__ == '__main__':
 
     # Kinetic energy in vector form accumulate and integrate vertically
     Ek_trp = AEB.vertical_integration(Ek, pressure_range=prange_trp).mean(-1)[1:-1]  # average over samples
-    Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]  # average over samples
-    Ea_trp = AEB.vertical_integration(Ea, pressure_range=prange_trp).mean(-1)[1:-1]  # average over samples
+    Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]
+    Ea_trp = AEB.vertical_integration(Ea, pressure_range=prange_trp).mean(-1)[1:-1]
 
-    Ek_stp = AEB.vertical_integration(Ek, pressure_range=prange_stp).mean(-1)[1:-1]  # average over samples
-    Ew_stp = AEB.vertical_integration(Ew, pressure_range=prange_stp).mean(-1)[1:-1]  # average over samples
-    Ea_stp = AEB.vertical_integration(Ea, pressure_range=prange_stp).mean(-1)[1:-1]  # average over samples
+    Ek_stp = AEB.vertical_integration(Ek, pressure_range=prange_stp).mean(-1)[1:-1]
+    Ew_stp = AEB.vertical_integration(Ew, pressure_range=prange_stp).mean(-1)[1:-1]
+    Ea_stp = AEB.vertical_integration(Ea, pressure_range=prange_stp).mean(-1)[1:-1]
 
     # -----------------------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
