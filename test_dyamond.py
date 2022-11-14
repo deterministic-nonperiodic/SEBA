@@ -6,7 +6,7 @@ import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
 from AtmosphericEnergyBudget import EnergyBudget
-from tools import kappa_from_deg, kappa_from_lambda
+from spectral_analysis import kappa_from_deg, kappa_from_lambda
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     # Load dyamond dataset
-    resolution = 'n128'
+    resolution = 'n200'
     data_path = 'data/'
     date_time = '20200128'
 
@@ -35,7 +35,7 @@ if __name__ == '__main__':
         dset_uvt['u'].values, dset_uvt['v'].values, dset_pwe['omega'].values,
         dset_uvt['temp'].values, dset_uvt['plev'].values, ps=sfcp, ghsl=ghsl,
         leveltype='pressure', gridtype='gaussian', truncation=None, legfunc='stored',
-        axes=(1, 2, 3), sample_axis=0, filter_terrain=True, jobs=None, standard_average=False)
+        axes='tzyx', filter_terrain=True, jobs=None, standard_average=False)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
@@ -150,7 +150,7 @@ if __name__ == '__main__':
     ax.set_xticks(1e3 * kappa_from_deg(xticks))
     ax.set_xticklabels(xticks)
 
-    ax.set_xlabel(r'Spherical wavenumber', fontsize=14, labelpad=4)
+    ax.set_xlabel(r'Spherical harmonic degree', fontsize=14, labelpad=4)
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)

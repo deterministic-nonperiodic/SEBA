@@ -6,50 +6,85 @@ import scipy.signal as sig
 import scipy.special as spec
 from scipy.spatial import cKDTree
 
-import constants as cn
+from spectral_analysis import lambda_from_deg
 
 
-def kappa_from_deg(ls, linear=False):
+def prepare_data(data, dim_order):
     """
-        Returns total horizontal wavenumber [radians / meter]
-        from spherical harmonics degree (ls) on the surface
-        of a sphere of radius Re using the Jeans formula.
-        κ = sqrt[l(l + 1)] / Re ~ l / Re  for l>>1
+    Prepare data for input to `EnergyBudget` method calls.
+
+    Parameters:
+    -----------
+        data: `ndarray`
+          Data array. The array must be at least 3D.
+        dim_order: `string`,
+          String specifying the order of dimensions in the data array. The
+          characters 'x' and 'y' represent longitude and latitude
+          respectively. Any other characters can be used to represent
+          other dimensions.
+    Returns:
+    --------
+        pdata: `ndarray`
+          data reshaped/reordered to (latitude, longitude, other, levels).
+
+        info_dict: `dict`
+            A dictionary of information required to recover data.
+
+    Examples:
+    _________
+    Prepare an array with dimensions (12, 17, 73, 144, 2) where the
+    dimensions are (time, level, latitude, longitude, other):
+      pdata, out_order = prep_data(data, 'tzyxs')
+
+    The ordering of the output data dimensions is out_order = 'yx(ts)z',
+    where the non-spatial dimensions between brackets are packed into a single axis:
+    pdata.shape = (73, 144, 24, 17)
     """
-    num = ls if linear else np.sqrt(ls * (ls + 1.0))
-    return num / cn.earth_radius
+    if data.ndim < 3:
+        raise ValueError('Input fields must be at least 3D')
+
+    if len(dim_order) > data.ndim:
+        raise ValueError("Inconsistent number dimensions"
+                         "'dim_order' must have length {}".format(data.ndim))
+
+    if 'x' not in dim_order or 'y' not in dim_order:
+        raise ValueError('A latitude-longitude grid is required')
+
+    if 'z' not in dim_order:
+        raise ValueError('A vertical grid is required')
+
+    spatial_dims = [dim_order.lower().find(dim) for dim in 'yxz']
+
+    data = np.moveaxis(data, spatial_dims, [0, 1, -1])
+
+    # pack sample dimension
+    inter_shape = data.shape
+
+    data = data.reshape(inter_shape[:2] + (-1, inter_shape[-1])).squeeze()
+
+    out_order = dim_order.replace('x', '')
+    out_order = out_order.replace('y', '')
+    out_order = out_order.replace('z', '')
+    out_order = 'yx(' + out_order + ')z'
+
+    info_dict = {
+        'interm_shape': inter_shape,
+        'origin_order': dim_order,
+        'output_order': out_order,
+    }
+    return data, info_dict
 
 
-def lambda_from_deg(ls, linear=False):
+def recover_data(data, info_dict):
     """
-    Returns wavelength λ [meters] from total horizontal wavenumber
-    λ = 2π / κ
+    Recover the shape and dimension order of an array output
+    after calling 'prepare_data'.
     """
-    return 2.0 * np.pi / kappa_from_deg(ls, linear=linear)
+    data = data.reshape(info_dict['interm_shape'])
 
+    spatial_dims = [info_dict['origin_order'].find(dim) for dim in 'yxz']
 
-def deg_from_lambda(lb):
-    """
-        Returns wavelength from spherical harmonics degree (ls)
-    """
-    return np.floor(np.sqrt(0.25 + (2.0 * np.pi * cn.earth_radius / lb) ** 2) - 0.5).astype(int)
-
-
-def kappa_from_lambda(lb):
-    return 2.0 * np.pi / lb
-
-
-def coriolis_parameter(latitude):
-    r"""Calculate the coriolis parameter at each point.
-    The implementation uses the formula outlined in [Hobbs1977]_ pg.370-371.
-    Parameters
-    ----------
-    :param latitude: array
-        Latitude at each point
-
-    returns coriolis parameter
-    """
-    return cn.Omega * np.sin(np.deg2rad(latitude))
+    return np.moveaxis(data, [0, 1, -1], spatial_dims)
 
 
 def get_chunk_size(n_workers, len_iterable, factor=4):
@@ -152,7 +187,6 @@ def convolve_chunk(a, func):
 
 
 def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
-
     if axis is None:
         axis = -1
 
@@ -347,7 +381,7 @@ def terrain_mask(p, ps, smoothed=True, jobs=None):
 
     if smoothed:
         # Calculate normalised cut-off frequencies for zonal and meridional directions:
-        resolution = lambda_from_deg(nlon)                    # zonal grid spacing at the Equator
+        resolution = lambda_from_deg(nlon)  # zonal grid spacing at the Equator
         cutoff_scale = lambda_from_deg(np.array([128, 128]))  # wavenumber 40 (~500 km) from A&L (2013)
 
         # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)

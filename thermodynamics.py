@@ -4,6 +4,19 @@ from scipy.integrate import cumulative_trapezoid
 import constants as cn
 
 
+def coriolis_parameter(latitude):
+    r"""Calculate the coriolis parameter at each point.
+    The implementation uses the formula outlined in [Hobbs1977]_ pg.370-371.
+    Parameters
+    ----------
+    :param latitude: array
+        Latitude at each point
+
+    returns coriolis parameter
+    """
+    return cn.Omega * np.sin(np.deg2rad(latitude))
+
+
 def height_to_pressure_std(height):
     r"""Convert height data to pressures using the U.S. standard atmosphere.
 
@@ -49,13 +62,14 @@ def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
     return - (cn.Rd / cn.g) * mean_temp
 
 
-def geopotential_height(temperature, psfc, pressure, axis=0):
+def geopotential_height(temperature, sfc_p, sfc_h, pressure, axis=0):
     """
     Computes geopotential height from pressure and temperature profiles
 
     :param temperature: temperature profile
     :param pressure: pressure profile
-    :param psfc: surface pressure
+    :param sfc_p: surface pressure
+    :param sfc_h: surface height
     :param axis: specifies axis of vertical dimension
     :return: geopotential height
     """
@@ -69,7 +83,8 @@ def geopotential_height(temperature, psfc, pressure, axis=0):
     height = np.zeros_like(temp)
 
     # Search last level pierced by terrain for each vertical column
-    level_m = nlevels - np.searchsorted(np.sort(pressure), psfc)
+    # works for data ordered from the surface to the model top
+    level_m = nlevels - np.searchsorted(np.sort(pressure), sfc_p)
 
     for ij in np.ndindex(ashape):
         # mask data above the surface
@@ -78,11 +93,12 @@ def geopotential_height(temperature, psfc, pressure, axis=0):
         # approximate surface temperature with first level above the ground
         ts = temp[ij][ind_atm:ind_atm + 1]
 
-        pres_m = np.append(psfc[ij], pressure[ind_atm:])
+        pres_m = np.append(sfc_p[ij], pressure[ind_atm:])
         temp_m = np.append(ts, temp[ij][ind_atm:], axis=0)
 
         # Integrating the hypsometric equation
-        height[ij][ind_atm:] = hydrostatic_thickness(pres_m, temp_m, initial=None, axis=0)
+        layer_thickness = hydrostatic_thickness(pres_m, temp_m, initial=None, axis=0)
+        height[ij][ind_atm:] = sfc_h[ij] + layer_thickness
 
     # return geopotential height (m)
     return np.moveaxis(height, 1, axis)

@@ -3,22 +3,23 @@ import multiprocessing as mp
 
 import numpy as np
 import spharm
-from numpy.core.numeric import normalize_axis_tuple, normalize_axis_index
+from numpy.core.numeric import normalize_axis_index
 from scipy.integrate import simpson
 
 import constants as cn
+from spectral_analysis import triangular_truncation, kappa_from_deg
 from thermodynamics import density as _density
 from thermodynamics import exner_function as _exner_function
 from thermodynamics import geopotential_height as _geopotential_height
 from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import terrain_mask, kappa_from_deg, transform_io, number_chunks
+from tools import terrain_mask, number_chunks, transform_io, prepare_data
 
 
 class EnergyBudget(object):
     """
-        Spectral Energy Budget of the Atmosphere.
+        Spectral Energy Budget of a dry hydrostatic Atmosphere.
         Implements the formulation introduced by Augier and Lindborg (2013)
 
         Augier, P., and E. Lindborg (2013), A new formulation of the spectral energy budget
@@ -27,8 +28,8 @@ class EnergyBudget(object):
     """
 
     def __init__(self, u, v, w, t, p, ps=None, ghsl=None, leveltype='pressure',
-                 gridtype='gaussian', truncation=None, rsphere=cn.earth_radius, standard_average=False,
-                 legfunc='stored', axes=None, sample_axis=None, filter_terrain=False, jobs=None):
+                 gridtype='gaussian', truncation=None, rsphere=None, standard_average=False,
+                 legfunc='stored', axes=None, filter_terrain=False, jobs=None):
 
         """
         Initializing EnergyBudget instance.
@@ -53,7 +54,6 @@ class EnergyBudget(object):
         :param legfunc: Indicates whether the associated Legendre polynomials are stored or recomputed every time
         :param axes: tuple containing axis of the spatial dimensions (z, lat, lon)
         """
-        self.rsphere = rsphere
 
         # For both the input components check if there are missing values by
         # attempting to fill missing values with NaN and detect them. If the
@@ -67,79 +67,82 @@ class EnergyBudget(object):
         if np.isnan(u).any() or np.isnan(v).any():
             raise ValueError('u and v cannot contain missing values')
 
+        data_shape = u.shape
+
         # Make sure the shapes of the two components match.
-        if u.shape != v.shape:
+        if data_shape != v.shape:
             raise ValueError('u and v must be the same shape')
 
-        if t.shape != u.shape:
+        if t.shape != data_shape:
             raise ValueError('Temperature must be the same shape as u and v')
 
-        if w.shape != u.shape:
+        if w.shape != data_shape:
             raise ValueError('w must be the same shape as u and v')
 
-        self.datadim = u.ndim
+        data_dim = u.ndim
 
-        if self.datadim not in (2, 3, 4):
-            raise ValueError('variables must be rank 2, 3 or 4 arrays')
+        if data_dim < 3:
+            raise ValueError('variables must be at least 3D')
 
         if axes is None:
-            axes = (0, 1, 2)
+            axes = 'tzyx'  # Assuming input arrays with dimensions (time, levels, latitude, longitude)
+        elif isinstance(axes, str):
+            pass
         else:
-            axes = normalize_axis_tuple(axes, self.datadim)
+            raise ValueError("Wrong type for 'axes', Expecting a string of length {}".format(data_dim))
 
-            if len(axes) not in (2, 3):
-                raise ValueError('Axes must be at least rank 2 or 3')
+        if len(axes) != data_dim:
+            raise ValueError("Inconsistent number dimensions 'axes'"
+                             " must be a string of length {}".format(data_dim))
+
+        # Get the dimensions for levels, latitude and longitudes in the input arrays.
+        self.axes = axes.lower()
+        self.nlon, self.nlat, self.nlevels = [data_shape[self.axes.find(dim)] for dim in 'xyz']
+
+        # size of the non-spatial dimensions
+        self.nsamples = np.prod(data_shape) // (self.nlon * self.nlat * self.nlevels)
 
         # Get spatial dimensions
         self.leveltype = leveltype.lower()
 
-        if leveltype == 'pressure':
-            assert p.size == u.shape[axes[0]], "Pressure must be a 1D array with" \
-                                               "size nlevels when using pressure coordinates"
+        if self.leveltype == 'pressure':
+            assert p.size == self.nlevels, "Pressure must be a 1D array with" \
+                                            "size nlevels when using pressure coordinates"
             omega = w.copy()
             # compute vertical velocity in height coordinates
             w = vertical_velocity(p, omega, t, axis=1)
 
-        elif leveltype == 'height':
+        elif self.leveltype == 'height':
             assert p.shape == u.shape, "Pressure must have same shape as u" \
                                        "when using height coordinates"
             # compute or load z coordinate
             omega = pressure_vertical_velocity(p, w, t)
             # perform vertical interpolation to pressure levels
         else:
-            raise ValueError('Invalid level type: {}'.format(leveltype))
+            raise ValueError("Invalid level type: {}. Options are ('pressure', 'height')".format(leveltype))
 
         self.gridtype = gridtype.lower()
+
         if self.gridtype not in ('regular', 'gaussian'):
-            raise ValueError('invalid grid type: {0:s}'.format(repr(gridtype)))
+            raise ValueError("Invalid grid type: {0:s}. "
+                             "Options are ('regular', 'gaussian')".format(repr(gridtype)))
 
-        # The dimensions for levels, latitude and longitudes must be in consecutive order.
-        self.axes = axes
-
-        self.nlevels, self.nlat, self.nlon = [u.shape[axis] for axis in axes]
-
-        if sample_axis is None:
-            self.samples = 1
-        else:
-            self.samples = u.shape[sample_axis]
-
-        # making sure array splitting gives more chunks than jobs
+        # making sure array splitting gives more chunks than jobs for parallel computations
         # if not given, the chunk size is set to the cpu count.
-        sample_size = self.samples * self.nlevels
+        packed_size = self.nsamples * self.nlevels
         if jobs is None:
-            self.jobs = min(mp.cpu_count(), sample_size)
+            self.jobs = min(mp.cpu_count(), packed_size)
         else:
-            self.jobs = min(int(jobs), sample_size)
+            self.jobs = min(int(jobs), packed_size)
 
-        self.jobs = number_chunks(sample_size, self.jobs)
+        self.jobs = number_chunks(packed_size, self.jobs)
         self.chunk_size = 1
 
         print("Running with {} workers ...".format(self.jobs))
 
+        # Infer direction of the vertical axis and flip accordingly
         self.direction = np.sign(p[0] - p[-1]).astype(int)
         self.p = np.asarray(sorted(p, reverse=True))
-
-        assert self.nlevels == self.p.size, "Array p must have size nlevels"
 
         if ps is None:
             # Set first pressure level as surface pressure
@@ -171,10 +174,17 @@ class EnergyBudget(object):
         # -----------------------------------------------------------------------------
         # Create a Spharmt object to perform the computations.
         # -----------------------------------------------------------------------------
+        if rsphere is None:
+            self.rsphere = cn.earth_radius
+        elif type(rsphere) == int or type(rsphere) == float:
+            self.rsphere = abs(rsphere)
+        else:
+            raise ValueError("Incorrect value for 'rsphere'. If given, it must be a positive number.")
+
         # Create sphere object
-        self.sphere = spharm.Spharmt(self.nlon, self.nlat,
-                                     gridtype=self.gridtype, rsphere=rsphere,
-                                     legfunc=legfunc)
+        self.sphere = spharm.Spharmt(self.nlon, self.nlat, gridtype=self.gridtype,
+                                     rsphere=self.rsphere, legfunc=legfunc)
+
         # define truncation
         if truncation is None:
             self.truncation = self.nlat - 1
@@ -220,10 +230,10 @@ class EnergyBudget(object):
         else:
             self.beta = np.ones((self.nlat, self.nlon, self.nlevels))
 
-        u = self._transform_data(u, filtered=False)  # compute divergence with unfiltered winds
-        v = self._transform_data(v, filtered=False)
+        # compute divergence with unfiltered winds
+        self.wind = np.stack((self._transform_data(u, filtered=False),
+                              self._transform_data(v, filtered=False)))
 
-        self.wind = np.stack((u, v))
         self.t = self._transform_data(t)
         self.w = self._transform_data(w)
         self.omega = self._transform_data(omega)
@@ -285,14 +295,16 @@ class EnergyBudget(object):
         # Chunks of arrays along axis=-1 for the mp mapping ...
         data_shape = self.t.shape
 
-        sf_pressure = self.ps.reshape(-1)
-
+        sfc_pressure = self.ps.reshape(-1)
+        sfc_height = self.ghsl.reshape(-1)
         temperature = np.reshape(self.t, (-1,) + data_shape[2:])
 
         # create data chunks for parallel computations
         data_chunks = [chunk for chunk in zip(
             np.array_split(temperature, self.jobs, axis=0),
-            np.array_split(sf_pressure, self.jobs, axis=0))]
+            np.array_split(sfc_pressure, self.jobs, axis=0),
+            np.array_split(sfc_height, self.jobs, axis=0)
+        )]
 
         # Create pool of workers
         pool = mp.Pool(processes=self.jobs)
@@ -306,14 +318,9 @@ class EnergyBudget(object):
         pool.close()
         pool.join()
 
-        height = np.concatenate(height, axis=0)
+        height = np.concatenate(height, axis=0).reshape(data_shape)
 
-        height = np.reshape(height, data_shape)
-
-        if not self.filter_terrain:
-            # Adding the topographic height in meters above sea level
-            height += self.ghsl[..., np.newaxis, np.newaxis]
-
+        # if not self.filter_terrain:
         return height
 
     def geopotential(self):
@@ -326,9 +333,12 @@ class EnergyBudget(object):
             geopotential (J/kg)
         """
 
-        # Compute the geopotential height in meters
-        # (levels below the surface are set to zero)
-        height = self.geopotential_height()
+        if hasattr(self, 'height'):
+            height = self.height
+        else:
+            # Compute the geopotential height in meters
+            # (levels below the surface are set to zero)
+            height = self.geopotential_height()
 
         # Convert geopotential height to geopotential
         return height_to_geopotential(height)
@@ -341,15 +351,12 @@ class EnergyBudget(object):
         Horizontal kinetic energy after Augier and Lindborg (2013), Eq.13
         :return:
         """
-        vrt_sqd = self._cross_spectrum(self.vrt_spc)
-        div_sqd = self._cross_spectrum(self.div_spc)
+        vrt_sqd = self.cross_spectrum(self.vrt_spc)
+        div_sqd = self.cross_spectrum(self.div_spc)
 
         kinetic_energy = (vrt_sqd + div_sqd) / 2.0
 
-        kinetic_energy[0] = 0.0
-        kinetic_energy[1:] /= self.vector_norm[1:]
-
-        return kinetic_energy
+        return kinetic_energy / self.vector_norm
 
     def vertical_kinetic_energy(self):
         """
@@ -727,11 +734,11 @@ class EnergyBudget(object):
 
         # Horizontal gradient of horizontal kinetic energy
         # (components stored along the first dimension)
-        ke_gradient = self.horizontal_gradient(kinetic_energy)
+        kinetic_energy_grad = self.horizontal_gradient(kinetic_energy)
 
         # Horizontal advection of zonal and meridional wind components
         # (components stored along the first dimension)
-        return ke_gradient + self.vrt * np.stack((-wind[1], wind[0]))
+        return kinetic_energy_grad + self.vrt * np.stack((-wind[1], wind[0]))
 
     @transform_io
     def _compute_rotdiv(self, vector):
@@ -768,30 +775,28 @@ class EnergyBudget(object):
         scalar_1sc = self._spectral_transform(scalar_1)
 
         if scalar_2 is None:
-            spectrum = self._cross_spectrum(scalar_1sc)
+            spectrum = self.cross_spectrum(scalar_1sc)
         else:
             scalar_2sc = self._spectral_transform(scalar_2)
-            spectrum = self._cross_spectrum(scalar_1sc, scalar_2sc)
+            spectrum = self.cross_spectrum(scalar_1sc, scalar_2sc)
 
-        return spectrum.real
+        return spectrum
 
-    def _vector_spectra(self, a, b=None):
+    def _vector_spectra(self, vector_1, vector_2=None):
         """
         Compute spherical harmonic cross spectra between two vector fields on the sphere.
         """
-        rot_asc, div_asc = self._compute_rotdiv(a)
+        rot_asc, div_asc = self._compute_rotdiv(vector_1)
 
-        if b is None:
-            spectrum = self._cross_spectrum(rot_asc) + self._cross_spectrum(div_asc)
+        if vector_2 is None:
+            spectrum = self.cross_spectrum(rot_asc) + self.cross_spectrum(div_asc)
         else:
-            rot_bsc, div_bsc = self._compute_rotdiv(b)
+            rot_bsc, div_bsc = self._compute_rotdiv(vector_2)
 
-            spectrum = self._cross_spectrum(rot_asc, rot_bsc) + \
-                       self._cross_spectrum(div_asc, div_bsc)
+            spectrum = self.cross_spectrum(rot_asc, rot_bsc) + \
+                       self.cross_spectrum(div_asc, div_bsc)
 
-        spectrum[1:] /= self.vector_norm[1:]
-
-        return spectrum
+        return spectrum / self.vector_norm
 
     def _vertical_gradient(self, scalar, z=None, axis=-1):
         """
@@ -854,7 +859,7 @@ class EnergyBudget(object):
         Computes the global weighted average of a scalar function on the sphere.
         The weights are initialized according to 'standard_average':
         For 'standard_average=True,' uniform weights (1/nlat) are used, giving the global mean;
-        Gaussian (cosine latitude) weights are used otherwise.
+        Gaussian weights (cosine of latitude) are used otherwise.
 
         :param scalar: nd-array with data to be averaged
         :param axis: axis of the meridional dimension.
@@ -886,7 +891,7 @@ class EnergyBudget(object):
         # Compute area-weighted average on the sphere (using either gaussian or linear weights)
         return np.average(scalar, weights=weights, axis=axis).mean(axis=axis)
 
-    def _cross_spectrum(self, clm1, clm2=None, degrees=None, convention='power'):
+    def cross_spectrum(self, clm1, clm2=None, degrees=None, convention='power'):
         """Returns the cross-spectrum of the spherical harmonic coefficients as a
         function of spherical harmonic degree.
 
@@ -923,10 +928,10 @@ class EnergyBudget(object):
                 degrees = self.degrees
             else:
                 if hasattr(self, 'truncation'):
-                    ntrunc = self.truncation
+                    ntrunc = self.truncation + 1
                 else:
-                    ntrunc = -1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(coeffs_size)))
-                degrees = np.arange(ntrunc + 1, dtype=int)
+                    ntrunc = triangular_truncation(coeffs_size)
+                degrees = np.arange(ntrunc, dtype=int)
         else:
             degrees = np.asarray(degrees)
             if (degrees.ndim != 1) or (degrees.size > self.nlat):
@@ -934,14 +939,13 @@ class EnergyBudget(object):
                                  "Expected size {} and got {}".format(self.nlat, degrees.size))
 
         if clm2 is None:
-            clm_sqd = (clm1.conjugate() * clm1).real
+            clm_sqd = (clm1 * clm1.conjugate()).real
         else:
             assert clm2.shape == clm1.shape, \
-                "Arrays 'clm1' and 'clm2' of spectral coefficients " \
-                "must have the same shape. Expected 'clm2' shape: {} got: {}".format(
-                    clm1.shape, clm2.shape)
+                "Arrays 'clm1' and 'clm2' of spectral coefficients must have the same shape. " \
+                "Expected 'clm2' shape: {} got: {}".format(clm1.shape, clm2.shape)
 
-            clm_sqd = (clm1.conjugate() * clm2).real
+            clm_sqd = (clm1 * clm2.conjugate()).real
 
         # define wavenumbers locally
         ls = self.total_wavenumber
@@ -983,8 +987,8 @@ class EnergyBudget(object):
 
     def _unpack_levels(self, data, order='C'):
         # unpack dimensions of arrays (nlat, nlon, samples)
-        if np.shape(data)[-1] == self.samples * self.nlevels:
-            new_shape = np.shape(data)[:-1] + (self.samples, self.nlevels)
+        if np.shape(data)[-1] == self.nsamples * self.nlevels:
+            new_shape = np.shape(data)[:-1] + (self.nsamples, self.nlevels)
             return np.reshape(data, new_shape, order=order).squeeze()
         else:
             return data
@@ -998,7 +1002,7 @@ class EnergyBudget(object):
 
         # Move dimensions (nlat, nlon) forward and vertical axis last
         # (Useful for cleaner vectorized operations)
-        data = np.moveaxis(scalar, self.axes, (-1, 0, 1))
+        data, data_info = prepare_data(scalar, self.axes)
 
         # Ensure the latitude dimension is ordered north-to-south
         if self.reverse_latitude:

@@ -18,6 +18,45 @@
     'per_l' spectrum divided by (2l+1).
 """
 import numpy as np
+import constants as cn
+
+
+def kappa_from_deg(ls, linear=False):
+    """
+        Returns total horizontal wavenumber [radians / meter]
+        from spherical harmonics degree (ls) on the surface
+        of a sphere of radius Re using the Jeans formula.
+        κ = sqrt[l(l + 1)] / Re ~ l / Re  for l>>1
+    """
+    num = ls if linear else np.sqrt(ls * (ls + 1.0))
+    return num / cn.earth_radius
+
+
+def lambda_from_deg(ls, linear=False):
+    """
+    Returns wavelength λ [meters] from total horizontal wavenumber
+    λ = 2π / κ
+    """
+    return 2.0 * np.pi / kappa_from_deg(ls, linear=linear)
+
+
+def deg_from_lambda(lb):
+    """
+        Returns wavelength from spherical harmonics degree (ls)
+    """
+    return np.floor(np.sqrt(0.25 + (2.0 * np.pi * cn.earth_radius / lb) ** 2) - 0.5).astype(int)
+
+
+def kappa_from_lambda(lb):
+    return 2.0 * np.pi / lb
+
+
+def triangular_truncation(nspc):
+    # Computes the triangular truncation from the number of spectral coefficients 'nspc'.
+    # Solves (ntrunc + 1)(ntrunc + 2)/2 - nspc = 0, to obtain original grid dimensions.
+    # If no truncation was applied to compute the spectral coefficients, then ntrunc
+    # corresponds the number of latitude points in the original grid.
+    return 1 + int(-1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(nspc))))
 
 
 def spectrum(clm, normalization='4pi', degrees=None,
