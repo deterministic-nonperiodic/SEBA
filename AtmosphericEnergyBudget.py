@@ -28,8 +28,8 @@ class EnergyBudget(object):
     """
 
     def __init__(self, u, v, w, t, p, ps=None, ghsl=None, leveltype='pressure',
-                 gridtype='gaussian', truncation=None, rsphere=None, standard_average=False,
-                 legfunc='stored', axes=None, filter_terrain=False, jobs=None):
+                 gridtype='gaussian', truncation=None, rsphere=None, legfunc='stored',
+                 axes=None, filter_terrain=False, jobs=None):
 
         """
         Initializing EnergyBudget instance.
@@ -48,16 +48,14 @@ class EnergyBudget(object):
         :param p: atmospheric pressure
         :param gridtype: type of horizontal grid ('regular', 'gaussian')
         :param truncation:
-            Truncation limit (triangular truncation) for the spherical
-            harmonic computation.
+            Truncation limit (triangular truncation) for the spherical harmonic computation.
         :param rsphere: averaged earth radius (meters)
         :param legfunc: Indicates whether the associated Legendre polynomials are stored or recomputed every time
-        :param axes: tuple containing axis of the spatial dimensions (z, lat, lon)
+        :param axes: string containing the order of the spatial dimensions: e.g. 'z' for levels,
+                    'y' latitude, and 'x' for longitude. Default is 'tzyx' or (time, levels, lat, lon)
         """
 
-        # For both the input components check if there are missing values by
-        # attempting to fill missing values with NaN and detect them. If the
-        # inputs are not masked arrays then take copies and check for NaN.
+        # Initialize variables
         u = np.asanyarray(u).copy()
         v = np.asanyarray(v).copy()
         w = np.asanyarray(w).copy()
@@ -65,7 +63,7 @@ class EnergyBudget(object):
         p = np.asanyarray(p).copy()
 
         if np.isnan(u).any() or np.isnan(v).any():
-            raise ValueError('u and v cannot contain missing values')
+            raise ValueError('Arrays u and v cannot contain missing values')
 
         data_shape = u.shape
 
@@ -100,14 +98,14 @@ class EnergyBudget(object):
         self.nlon, self.nlat, self.nlevels = [data_shape[self.axes.find(dim)] for dim in 'xyz']
 
         # size of the non-spatial dimensions
-        self.nsamples = np.prod(data_shape) // (self.nlon * self.nlat * self.nlevels)
+        self.samples = np.prod(data_shape) // (self.nlon * self.nlat * self.nlevels)
 
         # Get spatial dimensions
         self.leveltype = leveltype.lower()
 
         if self.leveltype == 'pressure':
             assert p.size == self.nlevels, "Pressure must be a 1D array with" \
-                                            "size nlevels when using pressure coordinates"
+                                           "size nlevels when using pressure coordinates"
             omega = w.copy()
             # compute vertical velocity in height coordinates
             w = vertical_velocity(p, omega, t, axis=1)
@@ -129,7 +127,7 @@ class EnergyBudget(object):
 
         # making sure array splitting gives more chunks than jobs for parallel computations
         # if not given, the chunk size is set to the cpu count.
-        packed_size = self.nsamples * self.nlevels
+        packed_size = self.samples * self.nlevels
         if jobs is None:
             self.jobs = min(mp.cpu_count(), packed_size)
         else:
@@ -197,8 +195,8 @@ class EnergyBudget(object):
         # Get latitude of the gaussian grid and quadrature weights: weights ~ cosine(lat)
         self.lats, self.weights = spharm.gaussian_lats_wts(self.nlat)
 
-        if standard_average:
-            self.weights = None  # using uniform weights (1.0 / nlat)
+        # using uniform weights (1.0 / nlat)
+        # self.weights = None
 
         # reverse latitude array (weights are symmetric around the equator)
         self.reverse_latitude = self.lats[0] < self.lats[-1]
@@ -220,8 +218,9 @@ class EnergyBudget(object):
 
         # -----------------------------------------------------------------------------
         # Preprocessing data:
-        #  - Exclude interpolated subterranean data from spectral calculations
-        #  - Reshape input data to (nlat, nlon, samples * nlevels)
+        #  - Exclude interpolated subterranean data from spectral calculations.
+        #  - Ensure latitude axis is oriented north-to-south.
+        #  - Reverse vertical axis from the surface to the model top.
         # -----------------------------------------------------------------------------
         self.filter_terrain = filter_terrain
 
@@ -238,10 +237,13 @@ class EnergyBudget(object):
         self.w = self._transform_data(w)
         self.omega = self._transform_data(omega)
 
+        # free up some memory
+        del u, v, t, w, omega
+
         # Compute vorticity and divergence of the wind field
         self.vrt_spc, self.div_spc = self.vorticity_divergence()
 
-        # Transform of divergence/vorticity to grid-point space
+        # Transform of divergence and vorticity to the gaussian/regular grid
         self.div = self._inverse_transform(self.div_spc)
         self.vrt = self._inverse_transform(self.vrt_spc)
 
@@ -392,7 +394,7 @@ class EnergyBudget(object):
         advection_term = self._wind_advection(self.wind) + self.div * self.wind / 2.0
 
         # compute nonlinear spectral fluxes
-        advective_flux = - self._vector_spectra(self.wind, advection_term)
+        advective_flux = - self.kinetic_energy_tendency(advection_term)
 
         turbulent_flux = self._vector_spectra(self.wind_shear, self.omega * self.wind)
         turbulent_flux -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
@@ -506,8 +508,7 @@ class EnergyBudget(object):
 
         return - self.ganma * divh_theta / 2.0
 
-    @transform_io
-    def ke_tendency(self, tendency):
+    def kinetic_energy_tendency(self, tendency):
         r"""
             Compute kinetic energy spectral transfer from parametrized
             or explicit horizontal wind tendencies.
@@ -528,12 +529,11 @@ class EnergyBudget(object):
         tendency = np.asarray(tendency)
 
         if tendency.shape != self.wind.shape:
-            raise ValueError("The shape of array 'tendency' must be consistent with initialized data."
-                             "Expecting {} but got {}".format(self.wind.shape, tendency.shape))
+            raise ValueError("The shape of 'tendency' array must be consistent with the initialized wind."
+                             " The expected shape is {}, but got {}".format(self.wind.shape, tendency.shape))
 
         return self._vector_spectra(self.wind, tendency)
 
-    @transform_io
     def ape_tendency(self, tendency):
         """
             Compute Available potential energy tendency from
@@ -987,8 +987,8 @@ class EnergyBudget(object):
 
     def _unpack_levels(self, data, order='C'):
         # unpack dimensions of arrays (nlat, nlon, samples)
-        if np.shape(data)[-1] == self.nsamples * self.nlevels:
-            new_shape = np.shape(data)[:-1] + (self.nsamples, self.nlevels)
+        if np.shape(data)[-1] == self.samples * self.nlevels:
+            new_shape = np.shape(data)[:-1] + (self.samples, self.nlevels)
             return np.reshape(data, new_shape, order=order).squeeze()
         else:
             return data
