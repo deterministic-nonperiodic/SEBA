@@ -21,7 +21,7 @@ if __name__ == '__main__':
     # Load dyamond dataset
     resolution = 'n128'
     data_path = 'data/'
-    date_time = '20200128'
+    date_time = '20200127'
     file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 
     dset_dyn = xr.merge([
@@ -30,16 +30,16 @@ if __name__ == '__main__':
 
     # load earth topography and surface pressure
     dset_sfc = xr.merge([
-            xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution)),
+            xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
             xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
 
-    height_sfc = dset_sfc.topography_c.values
-    pres_sfc = dset_sfc.pres_sfc.values
+    sfc_hgt = dset_sfc.topography_c.values
+    sfc_pres = dset_sfc.pres_sfc.values
 
     # Create energy budget object
     AEB = EnergyBudget(
         dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
-        dset_dyn['temp'].values, dset_dyn['plev'].values, ps=pres_sfc, ghsl=height_sfc,
+        dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
         leveltype='pressure', gridtype='gaussian', truncation=None, legfunc='stored',
         axes='tzyx', filter_terrain=True, jobs=None)
 
@@ -132,20 +132,27 @@ if __name__ == '__main__':
     kappa = 1e3 * kappa_from_deg(np.arange(AEB.truncation + 1))
 
     # Accumulated fluxes
-    prange = [50e2, 500e2]
+    prange = [50e2, 950e2]
 
-    Tk_l, Ta_l = AEB.accumulated_fluxes(pressure_range=prange)
+    pik_l, pia_l = AEB.cumulative_energy_fluxes(pressure_range=prange)
 
-    Cka = AEB.energy_conversion()
-    Cka_l = AEB.vertical_integration(Cka, pressure_range=prange).mean(-1)
+    # Energy conversion from APE to KE
+    cka = AEB.energy_conversion()
+    cka_l = AEB.vertical_integration(cka, pressure_range=prange).mean(-1)
 
-    # visualize
+    # linear spectral transfer due to coriolis
+    lc = AEB.coriolis_linear_transfer()
+    lc_l = AEB.vertical_integration(lc, pressure_range=prange).mean(-1)
+
+    # Create figure
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
+    xlimits = 1e3 * kappa_from_deg(np.array([1, 1000]))
 
-    ax.semilogx(kappa, Tk_l + Ta_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=1.2, linestyle='-', color='k')
-    ax.semilogx(kappa, Tk_l, label=r'$\Pi_K$', linewidth=1., linestyle='-', color='red')
-    ax.semilogx(kappa, Ta_l, label=r'$\Pi_A$', linewidth=1., linestyle='-', color='navy')
-    ax.semilogx(kappa, Cka_l, label=r'$C_{AK}$', linewidth=1., linestyle='-.', color='green')
+    ax.semilogx(kappa, pik_l + pia_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=1.2, linestyle='-', color='k')
+    ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=1., linestyle='-', color='red')
+    ax.semilogx(kappa, pia_l, label=r'$\Pi_A$', linewidth=1., linestyle='-', color='navy')
+    ax.semilogx(kappa, cka_l, label=r'$C_{AK}$', linewidth=1., linestyle='--', color='green')
+    ax.semilogx(kappa, lc_l, label=r'$L_{c}$', linewidth=1., linestyle='-.', color='magenta')
     ax.set_ylabel(r'Cumulative energy flux ($W / m^2$)', fontsize=14)
 
     ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=0.8, linestyle='dashed', alpha=0.25)
@@ -156,14 +163,15 @@ if __name__ == '__main__':
     ax.set_xticks(1e3 * kappa_from_deg(xticks))
     ax.set_xticklabels(xticks)
 
-    ax.set_xlabel(r'Spherical harmonic degree', fontsize=14, labelpad=4)
+    ax.set_xlabel(r'Spherical wavenumber', fontsize=14, labelpad=4)
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
-    ax.set_ylim(-0.8, 0.8)
-    ax.legend(title=r"  $100 \leq p \leq 500$ hPa ", loc='upper right', fontsize=12)
+    ax.set_ylim(-1., 1.4)
+    ax.legend(title=r"  $100 \leq p \leq 950$ hPa ", loc='upper right', fontsize=12)
 
     plt.show()
 
-    fig.savefig('figures/icon_nonlinear_fluxes_{}_test.pdf'.format(resolution), dpi=300)
+    prange_str = [int(1e-2 * p) for p in prange]
+    fig.savefig('figures/icon_nonlinear_fluxes_{}_{}-{}.pdf'.format(resolution, *prange_str), dpi=300)
     plt.close(fig)

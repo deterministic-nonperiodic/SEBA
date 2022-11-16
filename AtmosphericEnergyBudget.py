@@ -14,7 +14,8 @@ from thermodynamics import geopotential_height as _geopotential_height
 from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import terrain_mask, number_chunks, transform_io, prepare_data
+from tools import terrain_mask, number_chunks, transform_io
+from tools import prepare_data, cumulative_flux
 
 
 class EnergyBudget(object):
@@ -268,12 +269,12 @@ class EnergyBudget(object):
 
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
-        self.theta_avg, self.theta_p = self._split_mean_perturbation(self.theta)
+        self.theta_avg, self.theta_pbn = self._split_mean_perturbation(self.theta)
 
         # Compute vertical gradient of averaged potential temperature profile
-        self.ddp_theta_p = self._vertical_gradient(self.theta_p)
+        self.ddp_theta_pbn = self._vertical_gradient(self.theta_pbn)
 
-        # Factor ganma(p) to convert from temperature variance to APE
+        # Static stability parameter ganma(p) used to convert from temperature variance to APE
         # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
         ddlp_theta_avg = self._vertical_gradient(self.theta_avg, z=np.log(self.p))
         self.ganma = - cn.Rd * self.exner / ddlp_theta_avg
@@ -372,7 +373,7 @@ class EnergyBudget(object):
         Total available potential energy after Augier and Lindborg (2013), Eq.10
         :return:
         """
-        return self.ganma * self._scalar_spectra(self.theta_p) / 2.0
+        return self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
 
     def vorticity_divergence(self):
         # computes the spectral coefficients of vertical
@@ -387,19 +388,21 @@ class EnergyBudget(object):
         Kinetic energy spectral transfer due to nonlinear interactions
         after Augier and Lindborg (2013), Eq.A2
         :return:
-            Spherical harmonic coefficients of KE transfer across scales
+            Spectrum of KE transfer across scales
         """
 
-        # compute advection of the horizontal wind
+        # compute advection of the horizontal wind (using the rotational form)
         advection_term = self._wind_advection(self.wind) + self.div * self.wind / 2.0
 
-        # compute nonlinear spectral fluxes
-        advective_flux = - self.kinetic_energy_tendency(advection_term)
+        # compute nonlinear spectral transfer related to horizontal advection
+        advective_flux = - self._vector_spectra(self.wind, advection_term)
 
-        turbulent_flux = self._vector_spectra(self.wind_shear, self.omega * self.wind)
-        turbulent_flux -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
+        # This term effectively cancels out after summing over all zonal wavenumber
+        # vertical_trans = self._vector_spectra(self.wind_shear, self.omega * self.wind)
+        # vertical_trans -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
+        vertical_trans = 0.0
 
-        return advective_flux + turbulent_flux / 2.0
+        return advective_flux + vertical_trans / 2.0
 
     def ape_nonlinear_transfer(self):
         """
@@ -410,14 +413,14 @@ class EnergyBudget(object):
         """
 
         # compute horizontal advection of potential temperature
-        theta_advection = self._scalar_advection(self.theta_p) + self.div * self.theta_p / 2.0
+        theta_advection = self._scalar_advection(self.theta_pbn) + self.div * self.theta_pbn / 2.0
 
-        # compute turbulent horizontal transfer
-        advection_term = - self._scalar_spectra(self.theta_p, theta_advection)
+        # compute nonlinear spectral transfer related to horizontal advection
+        advection_term = - self._scalar_spectra(self.theta_pbn, theta_advection)
 
-        # compute vertical turbulent transfer
-        vertical_trans = self._scalar_spectra(self.ddp_theta_p, self.omega * self.theta_p)
-        vertical_trans -= self._scalar_spectra(self.theta_p, self.omega * self.ddp_theta_p)
+        # compute vertical transfer
+        vertical_trans = self._scalar_spectra(self.ddp_theta_pbn, self.omega * self.theta_pbn)
+        vertical_trans -= self._scalar_spectra(self.theta_pbn, self.omega * self.ddp_theta_pbn)
 
         return self.ganma * (advection_term + vertical_trans / 2.0)
 
@@ -435,7 +438,7 @@ class EnergyBudget(object):
 
     def ape_vertical_flux(self):
         # Total APE vertical flux (Eq. A10)
-        vertical_flux = self._scalar_spectra(self.theta_p, self.omega * self.theta_p)
+        vertical_flux = self._scalar_spectra(self.theta_pbn, self.omega * self.theta_pbn)
 
         return - self.ganma * vertical_flux / 2.0
 
@@ -479,29 +482,29 @@ class EnergyBudget(object):
 
         return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
 
-    def accumulated_fluxes(self, pressure_range=None):
+    def cumulative_energy_fluxes(self, pressure_range=None):
 
         # Compute spectral energy fluxes accumulated over zonal wavenumbers
         tk_l = self.ke_nonlinear_transfer()
         ta_l = self.ape_nonlinear_transfer()
 
         # Accumulate fluxes from the smallest resolved scale (l=truncation+1) to wavenumber l.
-        pi_k = np.nansum(tk_l, axis=0) - np.cumsum(tk_l, axis=0)
-        pi_a = np.nansum(ta_l, axis=0) - np.cumsum(ta_l, axis=0)
+        pi_k = cumulative_flux(tk_l)
+        pi_a = cumulative_flux(ta_l)
 
         # Perform vertical integration along last axis
-        pik_p = self.vertical_integration(pi_k, pressure_range=pressure_range)
-        pia_p = self.vertical_integration(pi_a, pressure_range=pressure_range)
+        pik_l = self.vertical_integration(pi_k, pressure_range=pressure_range)
+        pia_l = self.vertical_integration(pi_a, pressure_range=pressure_range)
 
         if pi_k.ndim > 1:
-            # compute mean over samples (time or any other dimension)
-            return pik_p.mean(-1), pia_p.mean(-1)
+            # compute mean over samples (time or any other dimension if needed)
+            return pik_l.mean(axis=-1), pia_l.mean(axis=-1)
         else:
-            return pik_p, pia_p
+            return pik_l, pia_l
 
     def global_diagnostics(self):
 
-        wind_theta = self.wind * self.theta_p ** 2
+        wind_theta = self.wind * self.theta_pbn ** 2
 
         _, div_spc = self._compute_rotdiv(wind_theta)
         divh_theta = self.global_average(self._inverse_transform(div_spc), axis=0)
@@ -521,16 +524,17 @@ class EnergyBudget(object):
             Parameters
             ----------
                 tendency: ndarray with shape (2, nlat, nlon, ...)
-                    contains momentum tendencies for each horizontal component.
+                    contains momentum tendencies for each horizontal component stacked along the first axis.
             Returns
             -------
-                Kinetic energy tendency due to any process described by 'tendency'
+                Kinetic energy tendency due to any process given by 'tendency'.
         """
         tendency = np.asarray(tendency)
 
         if tendency.shape != self.wind.shape:
-            raise ValueError("The shape of 'tendency' array must be consistent with the initialized wind."
-                             " The expected shape is {}, but got {}".format(self.wind.shape, tendency.shape))
+            raise ValueError("The shape of 'tendency' array must be "
+                             "consistent with the initialized wind. Expecting {}, "
+                             "but got {}".format(self.wind.shape, tendency.shape))
 
         return self._vector_spectra(self.wind, tendency)
 
@@ -542,20 +546,21 @@ class EnergyBudget(object):
         # check dimensions
         tendency = np.asarray(tendency)
 
-        if tendency.shape != self.theta_p.shape:
-            raise ValueError("The shape of array 'tendency' must be consistent with initialized data."
-                             "Expecting {} but got {}".format(self.theta_p.shape, tendency.shape))
+        if tendency.shape != self.theta_pbn.shape:
+            raise ValueError("The shape of 'tendency' array must be "
+                             "consistent with the initialized temperature. Expecting {}, "
+                             "but got {}".format(self.wind.shape, tendency.shape))
 
         # remove representative mean from total temperature tendency
-        tendency_prn = tendency - self._representative_mean(tendency)
+        tendency_pbn = tendency - self._representative_mean(tendency)
 
         # convert temperature tendency to potential temperature tendency
-        theta_tendency = tendency_prn / self.exner
+        theta_tendency = tendency_pbn / self.exner
 
-        # filter terrain
+        # filtering terrain
         theta_tendency *= np.expand_dims(self.beta, -2)
 
-        return self._scalar_spectra(self.theta_p, theta_tendency)
+        return self.ganma * self._scalar_spectra(self.theta_pbn, theta_tendency)
 
     @transform_io
     def sfvp(self, vector):
@@ -703,8 +708,7 @@ class EnergyBudget(object):
         r"""
         Compute the horizontal advection of the horizontal wind in 'rotation form'
 
-        .. math:: \boldsymbol{u}\cdot\nabla_h\boldsymbol{u}=\nabla_h|\boldsymbol{u}|^2
-        .. math:: + \boldsymbol{\zeta}\times\boldsymbol{u}
+        .. math:: (u\cdot\nabla_h)u = \nabla_h|u|^{2}/2 + \boldsymbol{\zeta}\times u
 
         where :math:`\boldsymbol{u}=(u, v)` is the horizontal wind vector,
         and :math:`\boldsymbol{\zeta}` is the vertical vorticity.
@@ -729,16 +733,16 @@ class EnergyBudget(object):
                 Array containing the zonal and meridional components of advection
         """
 
-        # Horizontal kinetic energy per unit mass in physical space
+        # Horizontal kinetic energy per unit mass in grid-point space
         kinetic_energy = np.sum(wind * wind, axis=0) / 2.0
 
         # Horizontal gradient of horizontal kinetic energy
         # (components stored along the first dimension)
-        kinetic_energy_grad = self.horizontal_gradient(kinetic_energy)
+        kinetic_energy_gradient = self.horizontal_gradient(kinetic_energy)
 
         # Horizontal advection of zonal and meridional wind components
         # (components stored along the first dimension)
-        return kinetic_energy_grad + self.vrt * np.stack((-wind[1], wind[0]))
+        return kinetic_energy_gradient + self.vrt * np.stack((-wind[1], wind[0]))
 
     @transform_io
     def _compute_rotdiv(self, vector):
@@ -843,14 +847,13 @@ class EnergyBudget(object):
         assert pressure_range[0] != pressure_range[1], "Inconsistent pressure levels for vertical integration"
 
         # find pressure surfaces where integration takes place
-        press_lmask = (self.p >= pressure_range[0]) & (self.p <= pressure_range[1])
-        press_layer = self.p[press_lmask]
+        level_mask = (self.p >= pressure_range[0]) & (self.p <= pressure_range[1])
 
         # Get data inside integration interval along the vertical axis
-        scalar = np.take(scalar, np.where(press_lmask)[0], axis=axis)
+        scalar = np.take(scalar, np.where(level_mask)[0], axis=axis)
 
         # Integrate scalar at pressure levels
-        integrated_scalar = simpson(scalar, x=press_layer, axis=axis, even='avg') / cn.g
+        integrated_scalar = simpson(scalar, x=self.p[level_mask], axis=axis, even='avg') / cn.g
 
         return self.direction * integrated_scalar
 

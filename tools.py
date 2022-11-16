@@ -157,6 +157,19 @@ def transform_io(func, order='C'):
     return dimension_packer
 
 
+def cumulative_flux(spectra):
+    """
+    Computes cumulative spectral energy transfer. The spectra are added starting
+    from the largest wave number N (triangular truncation) to a given degree l.
+    """
+    spectral_flux = np.empty_like(spectra)
+
+    for ln in range(spectra.shape[0]):
+        spectral_flux[ln] = spectra[ln:].sum(axis=0)
+
+    return spectral_flux
+
+
 def window_2d(fc, n):
     n_x, n_y = n
     k_x, k_y = np.meshgrid(np.arange(-n[0], n[0] + 1), np.arange(-n[1], n[1] + 1))
