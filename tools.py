@@ -9,6 +9,26 @@ from scipy.spatial import cKDTree
 from spectral_analysis import lambda_from_deg
 
 
+# def parse_dataset(dataset, variables=None):
+#
+#     if variables is None:
+#         variables = ['u', 'v', 'w', 't', 'omega']
+#
+#     # Get coordinates and dimensions
+#     coords = {name: dataset.coords[name].axis for name in dataset.dims}
+#
+#     dims_size = dict(dataset.dims)
+#
+#     # string needed for data preparation
+#     info_coords = ''.join(coords.values()).lower()
+#
+#     # get coordinates
+#     for var in dataset:
+#        coords = {name: var.coords[name].axis for name in var.dims}
+#
+#     return
+
+
 def prepare_data(data, dim_order):
     """
     Prepare data for input to `EnergyBudget` method calls.
@@ -155,6 +175,20 @@ def transform_io(func, order='C'):
         return self._unpack_levels(results, order=order)
 
     return dimension_packer
+
+
+def regular_lats_wts(nlat):
+    """
+        Computes the latitude points and weights of a regular grid
+        (equally spaced in longitude and latitude). Regular grids
+        will include the poles and equator if nlat is odd. The sampling
+        is a constant 180 deg/nlat. Weights are defined as the cosine of latitudes.
+    """
+    start_end = 90. - (nlat + 1) % 2 * (90. / nlat)
+
+    lats = np.linspace(start_end, - start_end, nlat)
+
+    return lats, np.cos(np.deg2rad(lats))
 
 
 def cumulative_flux(spectra):
@@ -370,7 +404,7 @@ def search_closet(points, target_points):
         return nn_idx
 
 
-def terrain_mask(p, ps, smoothed=True, jobs=None):
+def terrain_mask(p, ps, smooth=True, jobs=None):
     """
     Creates a terrain mask based on surface pressure and pressure profile
     :param: smoothed, optional
@@ -392,15 +426,15 @@ def terrain_mask(p, ps, smoothed=True, jobs=None):
     for ij in np.ndindex(*level_m.shape):
         beta[ij][level_m[ij]:] = 1.0
 
-    if smoothed:
+    if smooth:
         # Calculate normalised cut-off frequencies for zonal and meridional directions:
         resolution = lambda_from_deg(nlon)  # zonal grid spacing at the Equator
-        cutoff_scale = lambda_from_deg(np.array([128, 128]))  # wavenumber 40 (~500 km) from A&L (2013)
+        cutoff_scale = lambda_from_deg(np.array([40, 40]))  # wavenumber 40 (~500 km) from A&L (2013)
 
         # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
         nsc_freq = resolution / cutoff_scale
 
         # Apply low-pass Lanczos filter for smoothing:
-        beta = lowpass_lanczos(beta, [9, 9], nsc_freq, axis=-1, jobs=jobs)
+        beta = lowpass_lanczos(beta, [12, 12], nsc_freq, axis=-1, jobs=jobs)
 
     return beta.clip(0.0, 1.0)

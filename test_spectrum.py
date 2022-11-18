@@ -39,28 +39,34 @@ if __name__ == '__main__':
     # Load dyamond dataset
     resolution = 'n128'
     data_path = 'data/'
-    date_time = '20200126'
+    date_time = '20200127'
+    file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 
-    dset_uvt = xr.open_dataset(data_path + 'ICON_atm_3d_inst_uvt_PL_{}_{}.nc'.format(resolution, date_time))
-    dset_pwe = xr.open_dataset(data_path + 'ICON_atm_3d_inst_pwe_PL_{}_{}.nc'.format(resolution, date_time))
+    dset_dyn = xr.merge([
+        xr.open_mfdataset(file_names.format(idv, resolution, date_time))
+        for idv in ['uvt', 'pwe']])
 
     # load earth topography and surface pressure
-    sfcp = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution)).pres_sfc.values
-    ghsl = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution)).topography_c.values
+    dset_sfc = xr.merge([
+        xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
+        xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
+
+    sfc_hgt = dset_sfc.topography_c.values
+    sfc_pres = dset_sfc.pres_sfc.values
 
     # Create energy budget object
     AEB = EnergyBudget(
-        dset_uvt['u'].values, dset_uvt['v'].values,
-        dset_pwe['omega'].values, dset_uvt['temp'].values, dset_uvt['plev'].values,
-        ps=sfcp, ghsl=ghsl, leveltype='pressure', gridtype='gaussian', truncation=None,
-        legfunc='stored', axes='tzyx', filter_terrain=False, standard_average=False)
+        dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
+        dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
+        level_type='pressure', grid_type='gaussian', truncation=None, legfunc='stored',
+        axes='tzyx', filter_terrain=False, jobs=None)
 
     # visualize profiles
-    variables = ['w', 'omega', 'wind', 'theta_p']
+    variables = ['w', 'omega', 'wind', 'theta_pbn']
     vars_info = {
         'w': ('scalar', r'Vertical kinetic energy $(m^{2}~s^{-2})$'),
         'omega': ('scalar', r'Pressure velocity $(Pa^{2}~s^{-2})$'),
-        'theta_p': ('scalar', r'${\theta^{\prime}}^{2}~(K^{2})$'),
+        'theta_pbn': ('scalar', r'${\theta^{\prime}}^{2}~(K^{2})$'),
         'wind': ('vector', r'Horizontal kinetic energy  $(m^{2}~s^{-2})$')
     }
     pressure = 1e-2 * AEB.p

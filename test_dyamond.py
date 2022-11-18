@@ -19,8 +19,8 @@ warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     # Load dyamond dataset
-    resolution = 'n128'
-    data_path = 'data/'
+    resolution = 'n256'
+    data_path = '/mnt/levante/energy_budget/grid_data/'
     date_time = '20200127'
     file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 
@@ -40,8 +40,8 @@ if __name__ == '__main__':
     AEB = EnergyBudget(
         dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
         dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
-        leveltype='pressure', gridtype='gaussian', truncation=None, legfunc='stored',
-        axes='tzyx', filter_terrain=True, jobs=None)
+        level_type='pressure', grid_type='gaussian', truncation=None, legfunc='stored',
+        axes='tzyx', filter_terrain=False, jobs=None)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
@@ -85,7 +85,7 @@ if __name__ == '__main__':
     s_lscale = r'$l^{-3}$'
     s_sscale = r'$l^{-5/3}$'
 
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.0, 5.8), constrained_layout=True)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
 
     ax.loglog(kappa, Ek_trp, label=r'$E_K$', linewidth=1.5, linestyle='-', color='red', alpha=0.85)
     ax.loglog(kappa, Ea_trp, label=r'$E_A$', linewidth=1.5, linestyle='-', color='navy')
@@ -106,7 +106,7 @@ if __name__ == '__main__':
                 xy=(x_sscale_pos, y_sscale_pos), xycoords='data', color='gray',
                 horizontalalignment='left', verticalalignment='top', fontsize=14)
 
-    ax.set_ylabel(r'Energy ($J~/~m^2$)', fontsize=14)
+    ax.set_ylabel(r'Energy ($J~m^{-2}$)', fontsize=14)
 
     secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
 
@@ -119,7 +119,7 @@ if __name__ == '__main__':
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
-    ax.legend(title=r"  $p \geq 400$    $p < 400$ hPa ", loc='upper right', fontsize=12, ncol=2)
+    ax.legend(title=r"  $p \geq 500$    $p < 500$ hPa ", loc='upper right', fontsize=12, ncol=2)
 
     plt.show()
 
@@ -146,7 +146,7 @@ if __name__ == '__main__':
 
     # Create figure
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
-    xlimits = 1e3 * kappa_from_deg(np.array([1, 1000]))
+    xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
 
     ax.semilogx(kappa, pik_l + pia_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=1.2, linestyle='-', color='k')
     ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=1., linestyle='-', color='red')
@@ -167,7 +167,7 @@ if __name__ == '__main__':
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
-    ax.set_ylim(-1., 1.4)
+    ax.set_ylim(-1., 1.5)
     ax.legend(title=r"  $100 \leq p \leq 950$ hPa ", loc='upper right', fontsize=12)
 
     plt.show()

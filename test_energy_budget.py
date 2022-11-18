@@ -105,7 +105,7 @@ if __name__ == '__main__':
 
     # Create energy budget object
     AEB = EnergyBudget(dset['u'], dset['v'], dset['w'], dset['t'], dset['p'],
-                       ps=sfcp, ghsl=ghsl, leveltype='pressure', gridtype='gaussian',
+                       ps=sfcp, ghsl=ghsl, level_type='pressure', grid_type='gaussian',
                        truncation=None, legfunc='stored', axes=(1, 2, 3), sample_axis=0)
 
     # Testing AEB

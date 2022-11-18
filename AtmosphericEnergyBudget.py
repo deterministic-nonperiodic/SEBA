@@ -14,11 +14,13 @@ from thermodynamics import geopotential_height as _geopotential_height
 from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
+from tools import prepare_data, cumulative_flux, regular_lats_wts
 from tools import terrain_mask, number_chunks, transform_io
-from tools import prepare_data, cumulative_flux
+
+_private_vars = ['nlon', 'nlat', 'nlevels', 'grid_type', 'legfunc', 'rsphere']
 
 
-class EnergyBudget(object):
+class EnergyBudget:
     """
         Spectral Energy Budget of a dry hydrostatic Atmosphere.
         Implements the formulation introduced by Augier and Lindborg (2013)
@@ -28,15 +30,33 @@ class EnergyBudget(object):
         J. Atmos. Sci., 70, 2293–2308.
     """
 
-    def __init__(self, u, v, w, t, p, ps=None, ghsl=None, leveltype='pressure',
-                 gridtype='gaussian', truncation=None, rsphere=None, legfunc='stored',
+    def __setattr__(self, key, val):
+        """
+        Prevent modification of read-only instance variables.
+        """
+        if key in self.__dict__ and key in _private_vars:
+            raise AttributeError('Attempt to rebind read-only instance variable ' + key)
+        else:
+            self.__dict__[key] = val
+
+    def __delattr__(self, key):
+        """
+        Prevent deletion of read-only instance variables.
+        """
+        if key in self.__dict__ and key in _private_vars:
+            raise AttributeError('Attempt to unbind read-only instance variable ' + key)
+        else:
+            del self.__dict__[key]
+
+    def __init__(self, u, v, w, t, p, ps=None, ghsl=None, lats=None, level_type='pressure',
+                 grid_type='gaussian', truncation=None, rsphere=None, legfunc='stored',
                  axes=None, filter_terrain=False, jobs=None):
 
         """
         Initializing EnergyBudget instance.
 
         Signature
-        -----
+        ---------
         energy_budget =  EnergyBudget(u, v, w, t, p, [ps, ghsl, leveltype='pressure',
                  gridtype, truncation, rsphere, legfunc, axes, sample_axis, filter_terrain, jobs])
 
@@ -47,13 +67,15 @@ class EnergyBudget(object):
         :param w: height/pressure vertical velocity depending on leveltype
         :param t: air temperature
         :param p: atmospheric pressure
-        :param gridtype: type of horizontal grid ('regular', 'gaussian')
+        :param grid_type: type of horizontal grid ('regular', 'gaussian')
         :param truncation:
             Truncation limit (triangular truncation) for the spherical harmonic computation.
         :param rsphere: averaged earth radius (meters)
-        :param legfunc: Indicates whether the associated Legendre polynomials are stored or recomputed every time
-        :param axes: string containing the order of the spatial dimensions: e.g. 'z' for levels,
-                    'y' latitude, and 'x' for longitude. Default is 'tzyx' or (time, levels, lat, lon)
+        :param legfunc: Indicates whether the associated Legendre polynomials are stored [using O(nlat**3) memory]
+                        or recomputed on the fly when transforms are requested [O(nlat**2) memory] but slower.
+        :param axes: string containing the order of the spatial dimensions: 'z' for levels,
+                    'y' latitude, and 'x' for longitude are mandatory, while any other character
+                    may be used for other dimensions. Default is 'tzyx' or (time, levels, lat, lon)
         """
 
         # Initialize variables
@@ -102,7 +124,7 @@ class EnergyBudget(object):
         self.samples = np.prod(data_shape) // (self.nlon * self.nlat * self.nlevels)
 
         # Get spatial dimensions
-        self.leveltype = leveltype.lower()
+        self.leveltype = level_type.lower()
 
         if self.leveltype == 'pressure':
             assert p.size == self.nlevels, "Pressure must be a 1D array with" \
@@ -118,13 +140,13 @@ class EnergyBudget(object):
             omega = pressure_vertical_velocity(p, w, t)
             # perform vertical interpolation to pressure levels
         else:
-            raise ValueError("Invalid level type: {}. Options are ('pressure', 'height')".format(leveltype))
+            raise ValueError("Invalid level type: {}. Options are ('pressure', 'height')".format(level_type))
 
-        self.gridtype = gridtype.lower()
+        self.grid_type = grid_type.lower()
 
-        if self.gridtype not in ('regular', 'gaussian'):
+        if self.grid_type not in ('regular', 'gaussian'):
             raise ValueError("Invalid grid type: {0:s}. "
-                             "Options are ('regular', 'gaussian')".format(repr(gridtype)))
+                             "Options are ('regular', 'gaussian')".format(repr(grid_type)))
 
         # making sure array splitting gives more chunks than jobs for parallel computations
         # if not given, the chunk size is set to the cpu count.
@@ -181,7 +203,7 @@ class EnergyBudget(object):
             raise ValueError("Incorrect value for 'rsphere'. If given, it must be a positive number.")
 
         # Create sphere object
-        self.sphere = spharm.Spharmt(self.nlon, self.nlat, gridtype=self.gridtype,
+        self.sphere = spharm.Spharmt(self.nlon, self.nlat, gridtype=self.grid_type,
                                      rsphere=self.rsphere, legfunc=legfunc)
 
         # define truncation
@@ -193,11 +215,16 @@ class EnergyBudget(object):
             if self.truncation < 0 or self.truncation > self.nlat - 1:
                 raise ValueError('Truncation must be between 0 and {:d}'.format(self.nlat - 1, ))
 
-        # Get latitude of the gaussian grid and quadrature weights: weights ~ cosine(lat)
-        self.lats, self.weights = spharm.gaussian_lats_wts(self.nlat)
-
-        # using uniform weights (1.0 / nlat)
-        # self.weights = None
+        if self.grid_type == 'gaussian':
+            # Get latitude of the gaussian grid and quadrature weights
+            self.lats, self.weights = spharm.gaussian_lats_wts(self.nlat)
+        else:
+            if lats is not None:
+                self.lats = lats
+                self.weights = np.cos(np.deg2rad(lats))
+            else:
+                # For gridtype='regular' the poles and equator are included when nlat is odd.
+                self.lats, self.weights = regular_lats_wts(self.nlat)
 
         # reverse latitude array (weights are symmetric around the equator)
         self.reverse_latitude = self.lats[0] < self.lats[-1]
@@ -226,17 +253,19 @@ class EnergyBudget(object):
         self.filter_terrain = filter_terrain
 
         if self.filter_terrain:
-            self.beta = terrain_mask(self.p, self.ps, smoothed=True, jobs=self.jobs)
+            self.beta = terrain_mask(self.p, self.ps, smooth=True, jobs=self.jobs)
         else:
             self.beta = np.ones((self.nlat, self.nlon, self.nlevels))
 
-        # compute divergence with unfiltered winds
+        # create wind array from unfiltered wind components
         self.wind = np.stack((self._transform_data(u, filtered=False),
                               self._transform_data(v, filtered=False)))
 
-        self.t = self._transform_data(t)
         self.w = self._transform_data(w)
-        self.omega = self._transform_data(omega)
+
+        # compute thermodynamic quantities with unfiltered temperature
+        self.t = self._transform_data(t, filtered=False)
+        self.omega = self._transform_data(omega, filtered=False)
 
         # free up some memory
         del u, v, t, w, omega
@@ -248,11 +277,12 @@ class EnergyBudget(object):
         self.div = self._inverse_transform(self.div_spc)
         self.vrt = self._inverse_transform(self.vrt_spc)
 
-        # compute the vertical wind shear before filtering
+        # compute the vertical wind shear before filtering to avoid sharp gradients.
         self.wind_shear = self._vertical_gradient(self.wind)
 
         # filtering horizontal wind after computing divergence/vorticity
         self.wind = self.filter_topography(self.wind)
+        self.wind_shear = self.filter_topography(self.wind_shear)
 
         # -----------------------------------------------------------------------------
         # Thermodynamic diagnostics:
@@ -263,18 +293,29 @@ class EnergyBudget(object):
 
         # Compute specific volume (volume per unit mass)
         self.alpha = self.specific_volume()
+        self.alpha = self.filter_topography(self.alpha)
 
         # Compute geopotential (Compute before applying mask!)
         self.phi = self.geopotential()
 
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
-        self.theta_avg, self.theta_pbn = self._split_mean_perturbation(self.theta)
+        # Using A&L13 formula for the representative mean results in unstable
+        # profiles in most cases! We use global average instead.
 
-        # Compute vertical gradient of averaged potential temperature profile
+        # self.theta_avg = self._representative_mean(self.theta)
+        self.theta_avg = self.global_average(self.theta)
+        self.theta_pbn = self.theta - self.theta_avg
+
+        # Compute vertical gradient of potential temperature perturbations
+        # (done before filtering to avoid sharp gradients at interfaces)
         self.ddp_theta_pbn = self._vertical_gradient(self.theta_pbn)
 
-        # Static stability parameter ganma(p) used to convert from temperature variance to APE
+        # Apply filter to 'theta_pbn' and 'ddp_theta_pbn'
+        self.theta_pbn = self.filter_topography(self.theta_pbn)
+        self.ddp_theta_pbn = self.filter_topography(self.ddp_theta_pbn)
+
+        # Static stability parameter ganma to convert from temperature variance to APE
         # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
         ddlp_theta_avg = self._vertical_gradient(self.theta_avg, z=np.log(self.p))
         self.ganma = - cn.Rd * self.exner / ddlp_theta_avg
@@ -398,9 +439,9 @@ class EnergyBudget(object):
         advective_flux = - self._vector_spectra(self.wind, advection_term)
 
         # This term effectively cancels out after summing over all zonal wavenumber
-        # vertical_trans = self._vector_spectra(self.wind_shear, self.omega * self.wind)
-        # vertical_trans -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
-        vertical_trans = 0.0
+        vertical_trans = self._vector_spectra(self.wind_shear, self.omega * self.wind)
+        vertical_trans -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
+        # vertical_trans = 0.0
 
         return advective_flux + vertical_trans / 2.0
 
@@ -447,7 +488,9 @@ class EnergyBudget(object):
 
     def energy_conversion(self):
         # Conversion of APE to KE
-        return - self._scalar_spectra(self.omega, self.alpha)
+        omega = self.filter_topography(self.omega)
+
+        return - self._scalar_spectra(omega, self.alpha)
 
     def diabatic_conversion(self):
         # need to estimate Latent heat release*
@@ -504,12 +547,13 @@ class EnergyBudget(object):
 
     def global_diagnostics(self):
 
-        wind_theta = self.wind * self.theta_pbn ** 2
+        wind_theta = 0.5 * self.wind * self.theta_pbn ** 2
 
         _, div_spc = self._compute_rotdiv(wind_theta)
+
         divh_theta = self.global_average(self._inverse_transform(div_spc), axis=0)
 
-        return - self.ganma * divh_theta / 2.0
+        return - self.ganma * divh_theta
 
     def kinetic_energy_tendency(self, tendency):
         r"""
@@ -687,22 +731,20 @@ class EnergyBudget(object):
 
         return np.concatenate(result, axis=-1)
 
-    def horizontal_advection(self, scalar):
+    def _scalar_advection(self, scalar):
         """
-        Compute the horizontal advection
+        Compute the horizontal advection as dot product between
+        the wind vector and scalar gradient.
+
         scalar: scalar field to be advected
         """
         # computes the two components of the horizontal gradient: (2, nlat, nlon, ...)
         scalar_gradient = self.horizontal_gradient(scalar)
 
-        return self.wind * np.stack(scalar_gradient)
+        # components of the scalar advection
+        scalar_advection = self.wind * np.stack(scalar_gradient)
 
-    def _scalar_advection(self, scalar):
-        """
-        Compute the horizontal advection
-        scalar: scalar field to be advected
-        """
-        return np.nansum(self.horizontal_advection(scalar), axis=0)
+        return np.sum(scalar_advection, axis=0)
 
     def _wind_advection(self, wind):
         r"""
@@ -842,27 +884,37 @@ class EnergyBudget(object):
             The vertically integrated scalar
         """
         if pressure_range is None:
-            pressure_range = np.sort([self.p[0], self.p[-1]])
+            pressure_range = [self.p[0], self.p[-1]]
+        else:
+            assert pressure_range[0] != pressure_range[1], "Inconsistent pressure levels" \
+                                                           " for vertical integration."
 
-        assert pressure_range[0] != pressure_range[1], "Inconsistent pressure levels for vertical integration"
+        pressure_range = np.sort(pressure_range)
 
         # find pressure surfaces where integration takes place
-        level_mask = (self.p >= pressure_range[0]) & (self.p <= pressure_range[1])
+        pressure = self.p
+        level_mask = (pressure >= pressure_range[0]) & (pressure <= pressure_range[1])
+        # Excluding boundary points in vertical integration.
+        level_mask &= (pressure != pressure[0]) & (pressure != pressure[-1])
+
+        # convert mask to array indexes
+        level_mask = np.where(level_mask)[0]
 
         # Get data inside integration interval along the vertical axis
-        scalar = np.take(scalar, np.where(level_mask)[0], axis=axis)
+        scalar = np.take(scalar, level_mask, axis=axis)
 
         # Integrate scalar at pressure levels
-        integrated_scalar = simpson(scalar, x=self.p[level_mask], axis=axis, even='avg') / cn.g
+        integrated_scalar = simpson(scalar, x=pressure[level_mask], axis=axis, even='avg')
 
-        return self.direction * integrated_scalar
+        return self.direction * integrated_scalar / cn.g
 
     def global_average(self, scalar, weights=None, axis=None):
         """
         Computes the global weighted average of a scalar function on the sphere.
-        The weights are initialized according to 'standard_average':
-        For 'standard_average=True,' uniform weights (1/nlat) are used, giving the global mean;
-        Gaussian weights (cosine of latitude) are used otherwise.
+        The weights are initialized according to 'grid_type':
+        for grid_type='gaussian' we use gaussian quadrature weights. If grid_type='regular'
+        the weights are defined as the cosine of latitude. If the grid is regular and latitude
+        points are not given it returns global mean with weights = 1/nlat (not recommended).
 
         :param scalar: nd-array with data to be averaged
         :param axis: axis of the meridional dimension.
@@ -1024,21 +1076,21 @@ class EnergyBudget(object):
             return data
 
     def _representative_mean(self, scalar):
-        # Computes representative mean of a scalar function
-        # excluding subterranean interpolated data
+        # Computes representative mean of a scalar function:
+        # Mean over a constant pressure level excluding subterranean data.
 
-        # Use global averaged beta as a normalization factor
-        norm = self.global_average(self.beta, axis=0).clip(1.0e-12, None)
+        # Use globally averaged beta as a normalization factor
+        # gives a profile of the % of points above the surface at a given level.
+        norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, None)
 
         # compute weighted average on gaussian grid and divide by norm
-        scalar_beta = np.expand_dims(self.beta, -2) * scalar
+        weighted_scalar = np.expand_dims(self.beta, -2) * scalar
 
-        return self.global_average(scalar_beta, axis=0) / norm
+        return self.global_average(weighted_scalar, axis=0) / norm
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean
         # and perturbations with respect to the mean
-        scalar_m = self._representative_mean(scalar)
+        scalar_avg = self._representative_mean(scalar)
 
-        scalar_p = scalar - np.expand_dims(self.beta, -2) * scalar_m
-        return scalar_m, scalar_p
+        return scalar_avg, scalar - scalar_avg
