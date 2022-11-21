@@ -240,12 +240,12 @@ def kernel_2d(fc, n):
     ns = 2 * n + 1
 
     # construct wavenumbers
-    kappa = np.moveaxis(np.indices([ns, ns]) - n, 0, -1)
+    k = np.moveaxis(np.indices([ns, ns]) - n, 0, -1)
 
-    z = np.sqrt(np.sum((fc * kappa) ** 2, axis=-1))
+    z = np.sqrt(np.sum((fc * k) ** 2, axis=-1))
     w = fc_sq * spec.j1(2 * np.pi * z) / z.clip(1e-12)
 
-    w *= np.prod(spec.sinc(np.pi * kappa / n), axis=-1)
+    w *= np.prod(spec.sinc(np.pi * k / n), axis=-1)
 
     w[n, n] = np.pi * fc_sq
 
