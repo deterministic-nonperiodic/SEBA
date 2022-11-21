@@ -42,7 +42,11 @@ def height_to_pressure_std(height):
 
 
 def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
-    """Calculate the thickness of a layer via the hypsometric equation.
+    r"""Calculate the cumulative thickness of layers from temperature profiles
+        via the hypsometric equation. Returns the thickness of layers between
+        every level and the first level.
+
+    .. math:: Z_2 - Z_1 = -\frac{R_d}{g} \int_{p_1}^{p_2} T(p) d\ln p,
 
     Parameters
     ----------

@@ -242,7 +242,8 @@ class EnergyBudget:
         self.kappa_h = kappa_from_deg(self.degrees)
 
         # normalization factor for calculating vector cross-spectrum
-        self.vector_norm = np.expand_dims(self.kappa_h ** 2, (-1, -2)).clip(min=cn.epsilon)
+        self.vector_norm = np.expand_dims(self.kappa_h ** 2, (-1, -2))
+        self.vector_norm[0] = 1.0
 
         # -----------------------------------------------------------------------------
         # Preprocessing data:
@@ -436,7 +437,7 @@ class EnergyBudget:
         advection_term = self._wind_advection(self.wind) + self.div * self.wind / 2.0
 
         # compute nonlinear spectral transfer related to horizontal advection
-        advective_flux = - self._vector_spectra(self.wind, advection_term)
+        advective_flux = - self.get_ke_tendency(advection_term)
 
         # This term effectively cancels out after summing over all zonal wavenumber
         vertical_trans = self._vector_spectra(self.wind_shear, self.omega * self.wind)
@@ -488,9 +489,7 @@ class EnergyBudget:
 
     def energy_conversion(self):
         # Conversion of APE to KE
-        omega = self.filter_topography(self.omega)
-
-        return - self._scalar_spectra(omega, self.alpha)
+        return - self._scalar_spectra(self.omega, self.alpha)
 
     def diabatic_conversion(self):
         # need to estimate Latent heat release*
@@ -555,7 +554,7 @@ class EnergyBudget:
 
         return - self.ganma * divh_theta
 
-    def kinetic_energy_tendency(self, tendency):
+    def get_ke_tendency(self, tendency):
         r"""
             Compute kinetic energy spectral transfer from parametrized
             or explicit horizontal wind tendencies.
@@ -582,7 +581,7 @@ class EnergyBudget:
 
         return self._vector_spectra(self.wind, tendency)
 
-    def ape_tendency(self, tendency):
+    def get_ape_tendency(self, tendency):
         """
             Compute Available potential energy tendency from
             parametrized or explicit temperature tendencies.
@@ -602,7 +601,7 @@ class EnergyBudget:
         theta_tendency = tendency_pbn / self.exner
 
         # filtering terrain
-        theta_tendency *= np.expand_dims(self.beta, -2)
+        theta_tendency = self.filter_topography(theta_tendency)
 
         return self.ganma * self._scalar_spectra(self.theta_pbn, theta_tendency)
 
@@ -750,15 +749,15 @@ class EnergyBudget:
         r"""
         Compute the horizontal advection of the horizontal wind in 'rotation form'
 
-        .. math:: (u\cdot\nabla_h)u = \nabla_h|u|^{2}/2 + \boldsymbol{\zeta}\times u
+        .. math:: (\mathbf{u}\cdot\nabla_h)\mathbf{u}=\nabla_h|\mathbf{u}|^{2}/2 + \mathbf{\zeta}\times \mathbf{u}
 
-        where :math:`\boldsymbol{u}=(u, v)` is the horizontal wind vector,
-        and :math:`\boldsymbol{\zeta}` is the vertical vorticity.
+        where :math:`\mathbf{u}=(u, v)` is the horizontal wind vector,
+        and :math:`\mathbf{\zeta}` is the vertical vorticity.
 
         Notes
         -----
         Advection calculated in rotation form is more robust than the standard convective form
-        :math:`(\boldsymbol{u}\cdot\nabla_h)\boldsymbol{u}` around sharp discontinuities (Zang, 1991).
+        :math:`(\mathbf{u}\cdot\nabla_h)\mathbf{u}` around sharp discontinuities (Zang, 1991).
 
         Thomas A. Zang, On the rotation and skew-symmetric forms for incompressible flow simulations.
         https://doi.org/10.1016/0168-9274(91)90102-6.
@@ -993,6 +992,10 @@ class EnergyBudget:
                 raise ValueError("If given, 'degrees' must be a 1D array of length <= 'nlat'."
                                  "Expected size {} and got {}".format(self.nlat, degrees.size))
 
+        if convention not in ['energy', 'power']:
+            raise ValueError("Parameter 'convention' must be one of"
+                             " ['energy', 'power']. Given {}".format(convention))
+
         if clm2 is None:
             clm_sqd = (clm1 * clm1.conjugate()).real
         else:
@@ -1006,9 +1009,8 @@ class EnergyBudget:
         ls = self.total_wavenumber
         ms = self.zonal_wavenumber
 
-        # Spectrum scaled by 2 to account for symmetric coefficients (ms != 0)
-        # Using the normalization in equation (7) of Lambert [1984].
-        clm_sqd = (np.where(ms == 0, 0.5, 1.0) * clm_sqd.T).T
+        # Multiplying by 2 to account for symmetric coefficients (ms != 0)
+        clm_sqd = (np.where(ms == 0, 1.0, 2.0) * clm_sqd.T).T
 
         # Initialize array for the 1D energy/power spectrum shaped (truncation, ...)
         spectrum = np.zeros((degrees.size,) + sample_shape)
@@ -1018,6 +1020,9 @@ class EnergyBudget:
             # Sum over all zonal wavenumbers <= total wavenumber
             degree_range = (ms <= degree) & (ls == degree)
             spectrum[ln] = clm_sqd[degree_range].sum(axis=0)
+
+        # Using the normalization in equation (7) of Lambert [1984].
+        spectrum /= 2.0
 
         if convention.lower() == 'energy':
             spectrum *= 4.0 * np.pi
@@ -1081,10 +1086,10 @@ class EnergyBudget:
 
         # Use globally averaged beta as a normalization factor
         # gives a profile of the % of points above the surface at a given level.
-        norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, None)
+        norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, 1.0)
 
         # compute weighted average on gaussian grid and divide by norm
-        weighted_scalar = np.expand_dims(self.beta, -2) * scalar
+        weighted_scalar = self.filter_topography(scalar)
 
         return self.global_average(weighted_scalar, axis=0) / norm
 

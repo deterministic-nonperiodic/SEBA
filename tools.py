@@ -9,10 +9,36 @@ from scipy.spatial import cKDTree
 from spectral_analysis import lambda_from_deg
 
 
+def _find_variable_and_coordinates(array, predicate, name):
+    """
+    Find a dimension coordinate in an `xarray.DataArray` that satisfies
+    a predicate function.
+    """
+    candidates = [coord
+                  for coord in [array.coords[n] for n in array.dims]
+                  if predicate(coord)]
+    if not candidates:
+        raise ValueError('cannot find a {!s} coordinate'.format(name))
+    if len(candidates) > 1:
+        msg = 'multiple {!s} coordinates are not allowed'
+        raise ValueError(msg.format(name))
+    coord = candidates[0]
+    dim = array.dims.index(coord.name)
+    return coord, dim
+
+
+def _find_latitude_coordinate(array):
+    """Find a latitude dimension coordinate in an `xarray.DataArray`."""
+    return _find_variable_and_coordinates(
+        array,
+        lambda c: (c.name in ('latitude', 'lat') or
+                   c.attrs.get('units') == 'degrees_north' or
+                   c.attrs.get('axis') == 'Y'), 'latitude')
+
 # def parse_dataset(dataset, variables=None):
 #
 #     if variables is None:
-#         variables = ['u', 'v', 'w', 't', 'omega']
+#         variables = ['u', 'v', 'w', 't', 'p']
 #
 #     # Get coordinates and dimensions
 #     coords = {name: dataset.coords[name].axis for name in dataset.dims}
@@ -204,32 +230,29 @@ def cumulative_flux(spectra):
     return spectral_flux
 
 
-def window_2d(fc, n):
-    n_x, n_y = n
-    k_x, k_y = np.meshgrid(np.arange(-n[0], n[0] + 1), np.arange(-n[1], n[1] + 1))
+def kernel_2d(fc, n):
+    """ Generate a low-pass Lanczos kernel
+        :param fc: float or  iterable [float, float],
+            cutoff frequencies for each dimension (normalized by the sampling frequency)
+        :param n: size of one quadrant of the circular kernel.
+    """
+    fc_sq = np.prod(fc)
+    ns = 2 * n + 1
 
-    fc_xy = fc[0] * fc[1]
+    # construct wavenumbers
+    kappa = np.moveaxis(np.indices([ns, ns]) - n, 0, -1)
 
-    # normalized wavenumbers:
-    kx_n = k_x / n_x
-    ky_n = k_y / n_y
+    z = np.sqrt(np.sum((fc * kappa) ** 2, axis=-1))
+    w = fc_sq * spec.j1(2 * np.pi * z) / z.clip(1e-12)
 
-    # Computation of the response weight on the grid
-    z = np.sqrt((fc[0] * k_x) ** 2 + (fc[1] * k_y) ** 2)
-    w_rect = fc_xy * spec.j1(2.0 * np.pi * z) / z.clip(min=1e-18)
-    w = w_rect * spec.sinc(np.pi * kx_n) * spec.sinc(np.pi * ky_n)
+    w *= np.prod(spec.sinc(np.pi * kappa / n), axis=-1)
 
-    # Particular case where z=0
-    w[:, n_x] = w_rect[:, n_x] * spec.sinc(np.pi * ky_n[:, n_x])
-    w[n_y, :] = w_rect[n_y, :] * spec.sinc(np.pi * kx_n[n_y, :])
-    w[n_y, n_x] = np.pi * fc_xy
+    w[n, n] = np.pi * fc_sq
 
-    # Normalization of coefficients
-    return w / np.nansum(w)
+    return w / w.sum()
 
 
 def convolve_chunk(a, func):
-    #
     return np.array([func(ai) for ai in a])
 
 
@@ -242,11 +265,13 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     if jobs is None:
         jobs = min(mp.cpu_count(), arr.shape[0])
 
-    # compute lanczos 2D window for convolution
-    coefficients = window_2d(cutoff_freq, window_size)
+    # compute lanczos 2D kernel for convolution
+    kernel = kernel_2d(cutoff_freq, window_size)
+    kernel = np.expand_dims(kernel, 0)
 
     # wrapper of convolution function for parallel computations
-    convolve2d = functools.partial(sig.convolve2d, in2=coefficients, boundary='wrap', mode='same')
+    # convolve_2d = functools.partial(sig.convolve2d, in2=kernel, boundary='symm', mode='same')
+    convolve_2d = functools.partial(sig.fftconvolve, in2=kernel, mode='same', axes=(1, 2))
 
     # Chunks of arrays along axis=0 for the mp mapping ...
     chunks = np.array_split(arr, jobs, axis=0)
@@ -255,7 +280,8 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     pool = mp.Pool(processes=jobs)
 
     # Applying 2D lanczos filter to data chunks
-    result = pool.map(functools.partial(convolve_chunk, func=convolve2d), chunks)
+    # result = pool.map(functools.partial(convolve_chunk, func=convolve2d), chunks)
+    result = pool.map(convolve_2d, chunks)
 
     # Freeing the workers:
     pool.close()
@@ -426,15 +452,16 @@ def terrain_mask(p, ps, smooth=True, jobs=None):
     for ij in np.ndindex(*level_m.shape):
         beta[ij][level_m[ij]:] = 1.0
 
-    if smooth:
+    if smooth:  # generate a smoothed heavy-side function
         # Calculate normalised cut-off frequencies for zonal and meridional directions:
-        resolution = lambda_from_deg(nlon)  # zonal grid spacing at the Equator
-        cutoff_scale = lambda_from_deg(np.array([40, 40]))  # wavenumber 40 (~500 km) from A&L (2013)
+        resolution = lambda_from_deg(nlon)  # grid spacing at the Equator
+        cutoff_scale = lambda_from_deg(80)  # wavenumber 40 (scale ~500 km) from A&L (2013)
 
         # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
-        nsc_freq = resolution / cutoff_scale
+        cutoff_freq = resolution / cutoff_scale
+        window_size = (2.0 / np.min(cutoff_freq)).astype(int)  # window size set to cutoff scale
 
         # Apply low-pass Lanczos filter for smoothing:
-        beta = lowpass_lanczos(beta, [12, 12], nsc_freq, axis=-1, jobs=jobs)
+        beta = lowpass_lanczos(beta, window_size, cutoff_freq, axis=-1, jobs=jobs)
 
     return beta.clip(0.0, 1.0)

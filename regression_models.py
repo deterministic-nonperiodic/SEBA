@@ -79,7 +79,7 @@ def brunt_vaisala_frequency(z, squared=False):
         return result
 
 
-def compute_vwn(omega, kappa, height=20, lat=40.0, scale=8., squared=False):
+def compute_vwn(omega, kappa, height=20., lat=40.0, scale=8., squared=False):
     # ----------------------------------------------------------------------
     # Compute vertical wavenumber for linear non-hydrostatic gravity waves
     # ----------------------------------------------------------------------

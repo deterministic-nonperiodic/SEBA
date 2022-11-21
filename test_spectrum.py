@@ -72,7 +72,7 @@ if __name__ == '__main__':
     pressure = 1e-2 * AEB.p
     lats, weights_gs = spharm.gaussian_lats_wts(AEB.nlat)
 
-    weights_ln = np.ones_like(lats) / lats.size
+    weights_ln = np.cos(np.deg2rad(lats))  # np.ones_like(lats) / lats.size
 
     n_cols = len(variables)
     fig, axes = plt.subplots(nrows=1, ncols=n_cols, figsize=(n_cols * 5, 10.0), constrained_layout=True)

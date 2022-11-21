@@ -19,8 +19,8 @@ warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     # Load dyamond dataset
-    resolution = 'n256'
-    data_path = '/mnt/levante/energy_budget/grid_data/'
+    resolution = 'n128'
+    data_path = 'data/'  # '/mnt/levante/energy_budget/grid_data/'
     date_time = '20200127'
     file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 
@@ -30,8 +30,8 @@ if __name__ == '__main__':
 
     # load earth topography and surface pressure
     dset_sfc = xr.merge([
-            xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
-            xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
+        xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
+        xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
 
     sfc_hgt = dset_sfc.topography_c.values
     sfc_pres = dset_sfc.pres_sfc.values
@@ -40,8 +40,7 @@ if __name__ == '__main__':
     AEB = EnergyBudget(
         dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
         dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
-        level_type='pressure', grid_type='gaussian', truncation=None, legfunc='stored',
-        axes='tzyx', filter_terrain=False, jobs=None)
+        level_type='pressure', grid_type='gaussian', axes='tzyx', filter_terrain=False)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
