@@ -1,6 +1,7 @@
 import functools
 import multiprocessing as mp
 
+import _spherepack
 import numpy as np
 import scipy.signal as sig
 import scipy.special as spec
@@ -9,7 +10,7 @@ from scipy.spatial import cKDTree
 from spectral_analysis import lambda_from_deg
 
 
-def _find_variable_and_coordinates(array, predicate, name):
+def _find_coordinates(array, predicate, name):
     """
     Find a dimension coordinate in an `xarray.DataArray` that satisfies
     a predicate function.
@@ -29,11 +30,40 @@ def _find_variable_and_coordinates(array, predicate, name):
 
 def _find_latitude_coordinate(array):
     """Find a latitude dimension coordinate in an `xarray.DataArray`."""
-    return _find_variable_and_coordinates(
+    return _find_coordinates(
         array,
         lambda c: (c.name in ('latitude', 'lat') or
                    c.attrs.get('units') == 'degrees_north' or
                    c.attrs.get('axis') == 'Y'), 'latitude')
+
+
+def _find_variable(dataset, var_info):
+    """
+    Find a dimension coordinate in an `xarray.DataArray` that satisfies
+    a predicate function.
+    """
+    # try by name selection
+    array = dataset.variables.get(var_info['name'])
+
+    if array is None:
+        # try flexible candidates for the variable based on 'info_dict'
+        def predicate(d):
+            return (var_info['name'] == d.name or
+                    var_info['units'] == d.attrs.get('units').lower() or
+                    d.attrs.get('axis') == 'TZ--')
+
+        # look for candidates
+        candidates = [dataset.variables.get(name)
+                      for name, values in dataset.variables.items()
+                      if predicate(values)]
+
+        if not candidates:
+            raise ValueError('cannot find a variable {!s}'.format(var_info['name']))
+
+        array = candidates[0].values
+
+    return array
+
 
 # def parse_dataset(dataset, variables=None):
 #
@@ -106,7 +136,7 @@ def prepare_data(data, dim_order):
     # pack sample dimension
     inter_shape = data.shape
 
-    data = data.reshape(inter_shape[:2] + (-1, inter_shape[-1])).squeeze()
+    data = data.reshape(inter_shape[:2] + (-1, inter_shape[-1]))  # .squeeze()
 
     out_order = dim_order.replace('x', '')
     out_order = out_order.replace('y', '')
@@ -210,11 +240,87 @@ def regular_lats_wts(nlat):
         will include the poles and equator if nlat is odd. The sampling
         is a constant 180 deg/nlat. Weights are defined as the cosine of latitudes.
     """
-    start_end = 90. - (nlat + 1) % 2 * (90. / nlat)
+    ns_latitude = 90. - (nlat + 1) % 2 * (90. / nlat)
 
-    lats = np.linspace(start_end, - start_end, nlat)
+    lats = np.linspace(ns_latitude, -ns_latitude, nlat)
 
     return lats, np.cos(np.deg2rad(lats))
+
+
+def gaussian_lats_wts(nlat):
+    """
+     compute the gaussian latitudes (in degrees) and quadrature weights.
+     @param nlat: number of gaussian latitudes desired.
+     @return: C{B{lats, wts}} - rank 1 numpy float64 arrays containing
+     gaussian latitudes (in degrees north) and gaussian quadrature weights.
+    """
+
+    # get the gaussian co-latitudes and weights using gaqd.
+    colats, wts, ierror = _spherepack.gaqd(nlat)
+
+    if ierror:
+        raise ValueError('In return from call to _spherepack.gaqd'
+                         'ierror =  {:d}'.format(ierror))
+
+    # convert co-latitude to degrees north latitude.
+    lats = 90.0 - colats * 180.0 / np.pi
+    return lats, wts
+
+
+def latitudes_weights(nlat, gridtype):
+    # Calculate latitudes and weights based on gridtype
+    if gridtype == 'gaussian':
+        # Get latitude of the gaussian grid and quadrature weights
+        lats, weights = gaussian_lats_wts(nlat)
+    else:
+        # Get latitude of the regular grid and quadrature weights
+        lats, weights = regular_lats_wts(nlat)
+    return lats, weights
+
+
+def infer_gridtype(latitudes):
+    """
+    Determine a grid type by examining the points of a latitude
+    dimension.
+    Raises a ValueError if the grid type cannot be determined.
+    **Argument:**
+    *latitudes*
+        An iterable of latitude point values.
+    **Returns:**
+    *gridtype*
+        Either 'gaussian' for a Gaussian grid or 'regular' for an
+        equally-spaced grid.
+    *reference latitudes*
+    *quadrature weights*
+    """
+    # Define a tolerance value for differences, this value must be much
+    # smaller than expected grid spacings.
+    tolerance = 5e-8
+
+    # Get the number of latitude points in the dimension.
+    nlat = len(latitudes)
+    diffs = np.abs(np.diff(latitudes))
+    equally_spaced = (np.abs(diffs - diffs[0]) < tolerance).all()
+
+    if equally_spaced:
+        # The latitudes are equally-spaced. Construct reference global
+        # equally spaced latitudes and check that the two match.
+        reference, wts = regular_lats_wts(nlat)
+
+        if not np.allclose(latitudes, reference, atol=tolerance):
+            raise ValueError('Invalid equally-spaced latitudes (they may be non-global)')
+        gridtype = 'regular'
+    else:
+        # The latitudes are not equally-spaced, which suggests they might
+        # be gaussian. Construct sample gaussian latitudes and check if
+        # the two match.
+        reference, wts = gaussian_lats_wts(nlat)
+
+        if not np.allclose(latitudes, reference, atol=tolerance):
+            raise ValueError('latitudes are neither equally-spaced or Gaussian')
+        gridtype = 'gaussian'
+
+    return gridtype, reference, wts
 
 
 def cumulative_flux(spectra):
@@ -222,9 +328,10 @@ def cumulative_flux(spectra):
     Computes cumulative spectral energy transfer. The spectra are added starting
     from the largest wave number N (triangular truncation) to a given degree l.
     """
-    spectral_flux = np.empty_like(spectra)
+    spectral_flux = np.zeros_like(spectra)
 
-    for ln in range(spectra.shape[0]):
+    # Set fluxes to 0 at ls=0 to avoid small truncation errors.
+    for ln in range(2, spectra.shape[0]):
         spectral_flux[ln] = spectra[ln:].sum(axis=0)
 
     return spectral_flux
@@ -244,7 +351,6 @@ def kernel_2d(fc, n):
 
     z = np.sqrt(np.sum((fc * k) ** 2, axis=-1))
     w = fc_sq * spec.j1(2 * np.pi * z) / z.clip(1e-12)
-
     w *= np.prod(spec.sinc(np.pi * k / n), axis=-1)
 
     w[n, n] = np.pi * fc_sq

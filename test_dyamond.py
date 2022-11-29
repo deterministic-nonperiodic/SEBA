@@ -24,30 +24,41 @@ if __name__ == '__main__':
     date_time = '20200127'
     file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 
-    dset_dyn = xr.merge([
-        xr.open_mfdataset(file_names.format(idv, resolution, date_time))
-        for idv in ['uvt', 'pwe']])
+    # dset_dyn = xr.merge([
+    #     xr.open_mfdataset(file_names.format(idv, resolution, date_time))
+    #     for idv in ['uvt', 'pwe']])
+    #
+    # # load earth topography and surface pressure
+    # dset_sfc = xr.merge([
+    #     xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
+    #     xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
+    #
+    # sfc_hgt = dset_sfc.topography_c.values
+    # sfc_pres = dset_sfc.pres_sfc.values
+    #
+    # # Create energy budget object
+    # AEB = EnergyBudget(
+    #     dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
+    #     dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
+    #     level_type='pressure', grid_type='gaussian', axes='tzyx', filter_terrain=False)
+
+    dset_dyn = xr.open_mfdataset(data_path + 'IFS_atm_3d_inst_{}_000.nc'.format(resolution))
 
     # load earth topography and surface pressure
-    dset_sfc = xr.merge([
-        xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
-        xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
+    dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
 
     sfc_hgt = dset_sfc.topography_c.values
-    sfc_pres = dset_sfc.pres_sfc.values
 
     # Create energy budget object
     AEB = EnergyBudget(
         dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
-        dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
-        level_type='pressure', grid_type='gaussian', axes='tzyx', filter_terrain=False)
+        dset_dyn['temp'].values, dset_dyn['plev'].values, ps=None, ghsl=sfc_hgt,
+        leveltype='pressure', gridtype='gaussian', axes='tzyx', filter_terrain=False)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
     Ea = AEB.available_potential_energy()
     Ew = AEB.vertical_kinetic_energy()
-
-    nlat = AEB.nlat
 
     prange_trp = [500e2, 950e2]
     prange_stp = [50e2, 500e2]
@@ -68,6 +79,8 @@ if __name__ == '__main__':
 
     xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
     xticks = np.array([1, 10, 100, 1000])
+
+    ylimits = [0.5e-3, 5e6]
 
     x_lscale = kappa_from_lambda(np.linspace(3200, 650., 2))
     x_sscale = kappa_from_lambda(np.linspace(500, 100., 2))
@@ -118,6 +131,7 @@ if __name__ == '__main__':
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
+    ax.set_ylim(*ylimits)
     ax.legend(title=r"  $p \geq 500$    $p < 500$ hPa ", loc='upper right', fontsize=12, ncol=2)
 
     plt.show()
@@ -130,17 +144,21 @@ if __name__ == '__main__':
     # -----------------------------------------------------------------------------------------------------------
     kappa = 1e3 * kappa_from_deg(np.arange(AEB.truncation + 1))
 
-    # Accumulated fluxes
-    prange = [50e2, 950e2]
-
-    pik_l, pia_l = AEB.cumulative_energy_fluxes(pressure_range=prange)
+    # Cumulative fluxes
+    pik_lp, pia_lp = AEB.cumulative_energy_fluxes()
 
     # Energy conversion from APE to KE
     cka = AEB.energy_conversion()
-    cka_l = AEB.vertical_integration(cka, pressure_range=prange).mean(-1)
 
     # linear spectral transfer due to coriolis
     lc = AEB.coriolis_linear_transfer()
+
+    # Perform vertical integration along last axis
+    prange = [50e2, 450e2]
+
+    pik_l = AEB.vertical_integration(pik_lp, pressure_range=prange)
+    pia_l = AEB.vertical_integration(pia_lp, pressure_range=prange)
+    cka_l = AEB.vertical_integration(cka, pressure_range=prange).mean(-1)
     lc_l = AEB.vertical_integration(lc, pressure_range=prange).mean(-1)
 
     # Create figure
@@ -162,15 +180,17 @@ if __name__ == '__main__':
     ax.set_xticks(1e3 * kappa_from_deg(xticks))
     ax.set_xticklabels(xticks)
 
-    ax.set_xlabel(r'Spherical wavenumber', fontsize=14, labelpad=4)
-    secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
+    ax.set_xlabel(r'wavenumber', fontsize=14, labelpad=4)
+    secax.set_xlabel(r'wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
     ax.set_ylim(-1., 1.5)
-    ax.legend(title=r"  $100 \leq p \leq 950$ hPa ", loc='upper right', fontsize=12)
+
+    prange_str = [int(1e-2 * p) for p in sorted(prange)]
+
+    ax.legend(title=r"  {:4d} $\leq p \leq$ {:4d} hPa ".format(*prange_str), loc='upper right', fontsize=12)
 
     plt.show()
 
-    prange_str = [int(1e-2 * p) for p in prange]
     fig.savefig('figures/icon_nonlinear_fluxes_{}_{}-{}.pdf'.format(resolution, *prange_str), dpi=300)
     plt.close(fig)

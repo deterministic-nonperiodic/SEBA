@@ -44,7 +44,8 @@ def deg_from_lambda(lb):
     """
         Returns wavelength from spherical harmonics degree (ls)
     """
-    return np.floor(np.sqrt(0.25 + (2.0 * np.pi * cn.earth_radius / lb) ** 2) - 0.5).astype(int)
+    deg = np.sqrt(0.25 + (2.0 * np.pi * cn.earth_radius / lb) ** 2)
+    return np.floor(deg - 0.5).astype(int)
 
 
 def kappa_from_lambda(lb):
@@ -55,8 +56,8 @@ def triangular_truncation(nspc):
     # Computes the triangular truncation from the number of spectral coefficients 'nspc'.
     # Solves (ntrunc + 1)(ntrunc + 2)/2 - nspc = 0, to obtain original grid dimensions.
     # If no truncation was applied to compute the spectral coefficients, then ntrunc
-    # corresponds the number of latitude points in the original grid.
-    return 1 + int(-1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(nspc))))
+    # corresponds the number of latitude points in the original grid nlat - 1.
+    return int(-1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(nspc))))
 
 
 def spectrum(clm, normalization='4pi', degrees=None,

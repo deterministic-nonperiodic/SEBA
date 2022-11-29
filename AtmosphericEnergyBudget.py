@@ -14,10 +14,10 @@ from thermodynamics import geopotential_height as _geopotential_height
 from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import prepare_data, cumulative_flux, regular_lats_wts
-from tools import terrain_mask, number_chunks, transform_io
+from tools import prepare_data, cumulative_flux, latitudes_weights
+from tools import terrain_mask, number_chunks, transform_io, infer_gridtype
 
-_private_vars = ['nlon', 'nlat', 'nlevels', 'grid_type', 'legfunc', 'rsphere']
+_private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
 
 
 class EnergyBudget:
@@ -48,8 +48,8 @@ class EnergyBudget:
         else:
             del self.__dict__[key]
 
-    def __init__(self, u, v, w, t, p, ps=None, ghsl=None, lats=None, level_type='pressure',
-                 grid_type='gaussian', truncation=None, rsphere=None, legfunc='stored',
+    def __init__(self, u, v, w, t, p, ps=None, ghsl=None, lats=None, leveltype='pressure',
+                 gridtype='gaussian', truncation=None, rsphere=None, legfunc='stored',
                  axes=None, filter_terrain=False, jobs=None):
 
         """
@@ -67,7 +67,7 @@ class EnergyBudget:
         :param w: height/pressure vertical velocity depending on leveltype
         :param t: air temperature
         :param p: atmospheric pressure
-        :param grid_type: type of horizontal grid ('regular', 'gaussian')
+        :param gridtype: type of horizontal grid ('regular', 'gaussian', 'spectral')
         :param truncation:
             Truncation limit (triangular truncation) for the spherical harmonic computation.
         :param rsphere: averaged earth radius (meters)
@@ -118,13 +118,15 @@ class EnergyBudget:
 
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.axes = axes.lower()
-        self.nlon, self.nlat, self.nlevels = [data_shape[self.axes.find(dim)] for dim in 'xyz']
+        self.nlon, self.nlat, self.nlevels = [int(data_shape[self.axes.find(dim)]) for dim in 'xyz']
+
+        self.grid_shape = (self.nlat, self.nlon)
 
         # size of the non-spatial dimensions
-        self.samples = np.prod(data_shape) // (self.nlon * self.nlat * self.nlevels)
+        self.samples = np.prod(data_shape) // (np.prod(self.grid_shape) * self.nlevels)
 
         # Get spatial dimensions
-        self.leveltype = level_type.lower()
+        self.leveltype = leveltype.lower()
 
         if self.leveltype == 'pressure':
             assert p.size == self.nlevels, "Pressure must be a 1D array with" \
@@ -140,13 +142,7 @@ class EnergyBudget:
             omega = pressure_vertical_velocity(p, w, t)
             # perform vertical interpolation to pressure levels
         else:
-            raise ValueError("Invalid level type: {}. Options are ('pressure', 'height')".format(level_type))
-
-        self.grid_type = grid_type.lower()
-
-        if self.grid_type not in ('regular', 'gaussian'):
-            raise ValueError("Invalid grid type: {0:s}. "
-                             "Options are ('regular', 'gaussian')".format(repr(grid_type)))
+            raise ValueError("Invalid level type: {}. Options are ('pressure', 'height')".format(leveltype))
 
         # making sure array splitting gives more chunks than jobs for parallel computations
         # if not given, the chunk size is set to the cpu count.
@@ -167,34 +163,51 @@ class EnergyBudget:
 
         if ps is None:
             # Set first pressure level as surface pressure
-            self.ps = p.max()
+            dp = np.mean(abs(np.diff(self.p)))  # extrapolate linearly from first level
+            self.ps = np.broadcast_to(p.max() - dp, (self.nlat, self.nlon))
         elif np.isscalar(ps):
-            self.ps = ps
+            self.ps = np.broadcast_to(ps, (self.nlat, self.nlon))
         else:
             if np.ndim(ps) > 2:
                 self.ps = np.nanmean(ps, axis=0)
             else:
                 self.ps = ps
 
-            if np.shape(self.ps) != (self.nlat, self.nlon):
-                raise ValueError('If given, the surface pressure must be a scalar or a'
-                                 ' 2D array with shape (nlat, nlon).'
-                                 'Expected shape {}, but got {}!'.format((self.nlat, self.nlon),
-                                                                         np.shape(self.ps)))
+            if np.shape(self.ps) != self.grid_shape:
+                raise ValueError('If given, the surface pressure must be a scalar or a '
+                                 '2D array with shape (nlat, nlon). '
+                                 'Expected shape {}, but got {}!'.format(self.grid_shape, np.shape(self.ps)))
 
         if ghsl is None:
             self.ghsl = 0.0
         else:
-            if np.shape(ghsl) != (self.nlat, self.nlon):
+            if np.shape(ghsl) != self.grid_shape:
                 raise ValueError('If given, the surface height must be a 2D array with shape (nlat, nlon)'
-                                 'Expected shape {}, but got {}!'.format((self.nlat, self.nlon),
-                                                                         np.shape(ghsl)))
-            else:
-                self.ghsl = ghsl
+                                 'Expected shape {}, but got {}!'.format(self.grid_shape, np.shape(ghsl)))
+            self.ghsl = ghsl
 
         # -----------------------------------------------------------------------------
         # Create a Spharmt object to perform the computations.
         # -----------------------------------------------------------------------------
+
+        # Inspect grid type and latitude sampling
+        if lats is None:
+            self.gridtype = gridtype.lower()
+
+            if self.gridtype not in ('regular', 'gaussian'):
+                raise ValueError("Invalid grid type: {0:s}. "
+                                 "Options are ('regular', 'gaussian')".format(repr(gridtype)))
+
+            self.lats, self.weights = latitudes_weights(self.nlat, self.gridtype)
+        else:
+            # Infers grid type from latitude points. This overrides the parameter 'gridtype'
+            # if given at initialization.
+            if len(lats) != self.nlat:
+                raise ValueError("Inconsistent size of array 'lats' and data along the y axis. "
+                                 'Expected size is {}, but got {}.'.format(self.nlat, len(lats)))
+
+            self.gridtype, self.lats, self.weights = infer_gridtype(lats)
+
         if rsphere is None:
             self.rsphere = cn.earth_radius
         elif type(rsphere) == int or type(rsphere) == float:
@@ -203,7 +216,7 @@ class EnergyBudget:
             raise ValueError("Incorrect value for 'rsphere'. If given, it must be a positive number.")
 
         # Create sphere object
-        self.sphere = spharm.Spharmt(self.nlon, self.nlat, gridtype=self.grid_type,
+        self.sphere = spharm.Spharmt(self.nlon, self.nlat, gridtype=self.gridtype,
                                      rsphere=self.rsphere, legfunc=legfunc)
 
         # define truncation
@@ -214,17 +227,6 @@ class EnergyBudget:
 
             if self.truncation < 0 or self.truncation > self.nlat - 1:
                 raise ValueError('Truncation must be between 0 and {:d}'.format(self.nlat - 1, ))
-
-        if self.grid_type == 'gaussian':
-            # Get latitude of the gaussian grid and quadrature weights
-            self.lats, self.weights = spharm.gaussian_lats_wts(self.nlat)
-        else:
-            if lats is not None:
-                self.lats = lats
-                self.weights = np.cos(np.deg2rad(lats))
-            else:
-                # For gridtype='regular' the poles and equator are included when nlat is odd.
-                self.lats, self.weights = regular_lats_wts(self.nlat)
 
         # reverse latitude array (weights are symmetric around the equator)
         self.reverse_latitude = self.lats[0] < self.lats[-1]
@@ -285,6 +287,8 @@ class EnergyBudget:
         self.wind = self.filter_topography(self.wind)
         self.wind_shear = self.filter_topography(self.wind_shear)
 
+        self.div_wind, self.rot_wind = self.helmholtz()
+
         # -----------------------------------------------------------------------------
         # Thermodynamic diagnostics:
         # -----------------------------------------------------------------------------
@@ -304,9 +308,11 @@ class EnergyBudget:
         # Using A&L13 formula for the representative mean results in unstable
         # profiles in most cases! We use global average instead.
 
-        # self.theta_avg = self._representative_mean(self.theta)
-        self.theta_avg = self.global_average(self.theta)
+        self.theta_avg = self._representative_mean(self.theta)
         self.theta_pbn = self.theta - self.theta_avg
+
+        # self.theta_pbn = self._scalar_perturbation(self.theta)
+        # self.theta_avg = self.global_average(self.theta)
 
         # Compute vertical gradient of potential temperature perturbations
         # (done before filtering to avoid sharp gradients at interfaces)
@@ -318,7 +324,8 @@ class EnergyBudget:
 
         # Static stability parameter ganma to convert from temperature variance to APE
         # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
-        ddlp_theta_avg = self._vertical_gradient(self.theta_avg, z=np.log(self.p))
+        # ddlp_theta_avg = self._vertical_gradient(self.theta_avg, z=np.log(self.p))
+        ddlp_theta_avg = self._vertical_gradient(self.theta_avg) * self.p
         self.ganma = - cn.Rd * self.exner / ddlp_theta_avg
 
     # -------------------------------------------------------------------------------
@@ -524,7 +531,7 @@ class EnergyBudget:
 
         return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
 
-    def cumulative_energy_fluxes(self, pressure_range=None):
+    def cumulative_energy_fluxes(self):
 
         # Compute spectral energy fluxes accumulated over zonal wavenumbers
         tk_l = self.ke_nonlinear_transfer()
@@ -534,15 +541,11 @@ class EnergyBudget:
         pi_k = cumulative_flux(tk_l)
         pi_a = cumulative_flux(ta_l)
 
-        # Perform vertical integration along last axis
-        pik_l = self.vertical_integration(pi_k, pressure_range=pressure_range)
-        pia_l = self.vertical_integration(pi_a, pressure_range=pressure_range)
-
-        if pi_k.ndim > 1:
+        if pi_k.ndim > 2:
             # compute mean over samples (time or any other dimension if needed)
-            return pik_l.mean(axis=-1), pia_l.mean(axis=-1)
+            return pi_k.mean(axis=1), pi_a.mean(axis=1)
         else:
-            return pik_l, pia_l
+            return pi_k, pi_a
 
     def global_diagnostics(self):
 
@@ -783,17 +786,17 @@ class EnergyBudget:
 
         # Horizontal advection of zonal and meridional wind components
         # (components stored along the first dimension)
-        return kinetic_energy_gradient + self.vrt * np.stack((-wind[1], wind[0]))
+        return kinetic_energy_gradient - self.vrt * np.stack((wind[1], -wind[0]))
 
     @transform_io
     def _compute_rotdiv(self, vector):
         """
         Compute the spectral coefficients of vorticity and horizontal
-        divergence of a vector field with components ugrid and vgrid on the sphere.
+        divergence of a vector field on the sphere.
         """
 
         # Create iterable for multiprocessing
-        # the second dimension corresponds to the arguments of 'getvrtdivspec'
+        # the first dimension corresponds to the arguments of 'getvrtdivspec'
         # or the horizontal components of 'vector'
         data_chunks = np.array_split(vector, self.jobs, axis=-1)
 
@@ -854,7 +857,7 @@ class EnergyBudget:
             else:
                 raise ValueError('Height based vertical coordinate not implemented')
 
-        return np.gradient(scalar, z, axis=axis, edge_order=2)
+        return np.gradient(scalar, z, axis=axis, edge_order=1)
 
     def vertical_integration(self, scalar, pressure_range=None, axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
@@ -896,16 +899,16 @@ class EnergyBudget:
         # Excluding boundary points in vertical integration.
         level_mask &= (pressure != pressure[0]) & (pressure != pressure[-1])
 
-        # convert mask to array indexes
+        # convert boolean mask to array index
         level_mask = np.where(level_mask)[0]
 
         # Get data inside integration interval along the vertical axis
         scalar = np.take(scalar, level_mask, axis=axis)
 
         # Integrate scalar at pressure levels
-        integrated_scalar = simpson(scalar, x=pressure[level_mask], axis=axis, even='avg')
+        integrated_scalar = - simpson(scalar, x=pressure[level_mask], axis=axis, even='avg')
 
-        return self.direction * integrated_scalar / cn.g
+        return integrated_scalar / cn.g
 
     def global_average(self, scalar, weights=None, axis=None):
         """
@@ -925,6 +928,14 @@ class EnergyBudget:
         else:
             axis = normalize_axis_index(axis, scalar.ndim)
 
+        # check array dimensions
+        if scalar.shape[axis] != self.nlat:
+            raise ValueError("Scalar size along axis must be nlat."
+                             "Expected {} and got {}".format(self.nlat, scalar.shape[axis]))
+
+        if scalar.shape[axis + 1] != self.nlon:
+            raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
+
         if weights is None:
             if hasattr(self, 'weights'):
                 weights = self.weights
@@ -934,13 +945,6 @@ class EnergyBudget:
             if weights.size != scalar.shape[axis]:
                 raise ValueError("If given, 'weights' must be a 1D array of length 'nlat'."
                                  "Expected length {} but got {}.".format(self.nlat, weights.size))
-
-        if scalar.shape[axis] != self.nlat:
-            raise ValueError("Scalar size along axis must be nlat."
-                             "Expected {} and got {}".format(self.nlat, scalar.shape[axis]))
-
-        if scalar.shape[axis + 1] != self.nlon:
-            raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
 
         # Compute area-weighted average on the sphere (using either gaussian or linear weights)
         return np.average(scalar, weights=weights, axis=axis).mean(axis=axis)
@@ -982,10 +986,10 @@ class EnergyBudget:
                 degrees = self.degrees
             else:
                 if hasattr(self, 'truncation'):
-                    ntrunc = self.truncation + 1
+                    ntrunc = self.truncation
                 else:
                     ntrunc = triangular_truncation(coeffs_size)
-                degrees = np.arange(ntrunc, dtype=int)
+                degrees = np.arange(ntrunc + 1, dtype=int)
         else:
             degrees = np.asarray(degrees)
             if (degrees.ndim != 1) or (degrees.size > self.nlat):
@@ -1027,7 +1031,7 @@ class EnergyBudget:
         if convention.lower() == 'energy':
             spectrum *= 4.0 * np.pi
 
-        return spectrum.squeeze()
+        return spectrum
 
     # Functions for preprocessing data:
     def _pack_levels(self, data, order='C'):
@@ -1049,7 +1053,7 @@ class EnergyBudget:
         # unpack dimensions of arrays (nlat, nlon, samples)
         if np.shape(data)[-1] == self.samples * self.nlevels:
             new_shape = np.shape(data)[:-1] + (self.samples, self.nlevels)
-            return np.reshape(data, new_shape, order=order).squeeze()
+            return np.reshape(data, new_shape, order=order)
         else:
             return data
 
@@ -1099,3 +1103,13 @@ class EnergyBudget:
         scalar_avg = self._representative_mean(scalar)
 
         return scalar_avg, scalar - scalar_avg
+
+    def _scalar_perturbation(self, scalar):
+        # Compute scalar perturbations
+        scalar_spc = self._spectral_transform(scalar)
+
+        # set mean coefficient (ls=ms=0) to 0.0
+        mean_index = (self.zonal_wavenumber == 0) & (self.total_wavenumber == 0)
+        scalar_spc[mean_index] = 0.0
+
+        return self._inverse_transform(scalar_spc)

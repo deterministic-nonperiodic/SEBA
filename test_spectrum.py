@@ -58,7 +58,7 @@ if __name__ == '__main__':
     AEB = EnergyBudget(
         dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
         dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
-        level_type='pressure', grid_type='gaussian', truncation=None, legfunc='stored',
+        leveltype='pressure', gridtype='gaussian', truncation=None, legfunc='stored',
         axes='tzyx', filter_terrain=False, jobs=None)
 
     # visualize profiles
