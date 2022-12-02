@@ -5,8 +5,10 @@ import numpy as np
 import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
-from AtmosphericEnergyBudget import EnergyBudget
+from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
+
+# from AtmosphericEnergyBudget import EnergyBudget
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -24,36 +26,30 @@ if __name__ == '__main__':
     date_time = '20200127'
     file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 
-    # dset_dyn = xr.merge([
-    #     xr.open_mfdataset(file_names.format(idv, resolution, date_time))
-    #     for idv in ['uvt', 'pwe']])
-    #
-    # # load earth topography and surface pressure
-    # dset_sfc = xr.merge([
-    #     xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
-    #     xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
-    #
-    # sfc_hgt = dset_sfc.topography_c.values
-    # sfc_pres = dset_sfc.pres_sfc.values
-    #
-    # # Create energy budget object
-    # AEB = EnergyBudget(
-    #     dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
-    #     dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
-    #     level_type='pressure', grid_type='gaussian', axes='tzyx', filter_terrain=False)
-
-    dset_dyn = xr.open_mfdataset(data_path + 'IFS_atm_3d_inst_{}_000.nc'.format(resolution))
+    dset_dyn = xr.merge([
+        xr.open_mfdataset(file_names.format(idv, resolution, date_time))
+        for idv in ['uvt', 'pwe']])
 
     # load earth topography and surface pressure
-    dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
+    dset_sfc = xr.merge([
+        xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
+        xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
 
     sfc_hgt = dset_sfc.topography_c.values
+    sfc_pres = dset_sfc.pres_sfc.values
 
     # Create energy budget object
-    AEB = EnergyBudget(
-        dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
-        dset_dyn['temp'].values, dset_dyn['plev'].values, ps=None, ghsl=sfc_hgt,
-        leveltype='pressure', gridtype='gaussian', axes='tzyx', filter_terrain=False)
+    AEB = EnergyBudget(dset_dyn, ps=sfc_pres, ghsl=sfc_hgt,
+                       leveltype='pressure', filter_terrain=False)
+
+    # dset_dyn = xr.open_mfdataset(data_path + 'IFS_atm_3d_inst_{}_000.nc'.format(resolution))
+
+    # load earth topography and surface pressure
+    # dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
+    # sfc_hgt = dset_sfc.topography_c.values
+
+    # Create energy budget object
+    # AEB = EnergyBudget(dset_dyn, ghsl=sfc_hgt, leveltype='pressure', filter_terrain=False)
 
     # Compute diagnostics
     Ek = AEB.horizontal_kinetic_energy()
@@ -64,7 +60,8 @@ if __name__ == '__main__':
     prange_stp = [50e2, 500e2]
 
     # Kinetic energy in vector form accumulate and integrate vertically
-    Ek_trp = AEB.vertical_integration(Ek, pressure_range=prange_trp).mean(-1)[1:-1]  # average over samples
+    # average over samples
+    Ek_trp = AEB.vertical_integration(Ek, pressure_range=prange_trp).mean(-1)[1:-1]
     Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]
     Ea_trp = AEB.vertical_integration(Ea, pressure_range=prange_trp).mean(-1)[1:-1]
 
@@ -72,9 +69,9 @@ if __name__ == '__main__':
     Ew_stp = AEB.vertical_integration(Ew, pressure_range=prange_stp).mean(-1)[1:-1]
     Ea_stp = AEB.vertical_integration(Ea, pressure_range=prange_stp).mean(-1)[1:-1]
 
-    # -----------------------------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
-    # -----------------------------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------
     kappa = 1e3 * kappa_from_deg(np.arange(AEB.truncation + 1))[1:-1]  # km^-1
 
     xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
@@ -139,13 +136,13 @@ if __name__ == '__main__':
     fig.savefig('figures/icon_total_energy_spectra_{}.pdf'.format(resolution), dpi=300)
     plt.close(fig)
 
-    # -----------------------------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
-    # -----------------------------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------
     kappa = 1e3 * kappa_from_deg(np.arange(AEB.truncation + 1))
 
     # Cumulative fluxes
-    pik_lp, pia_lp = AEB.cumulative_energy_fluxes()
+    pik, pia = AEB.cumulative_energy_fluxes()
 
     # Energy conversion from APE to KE
     cka = AEB.energy_conversion()
@@ -156,8 +153,8 @@ if __name__ == '__main__':
     # Perform vertical integration along last axis
     prange = [50e2, 450e2]
 
-    pik_l = AEB.vertical_integration(pik_lp, pressure_range=prange)
-    pia_l = AEB.vertical_integration(pia_lp, pressure_range=prange)
+    pik_l = AEB.vertical_integration(pik, pressure_range=prange)
+    pia_l = AEB.vertical_integration(pia, pressure_range=prange)
     cka_l = AEB.vertical_integration(cka, pressure_range=prange).mean(-1)
     lc_l = AEB.vertical_integration(lc, pressure_range=prange).mean(-1)
 
@@ -165,7 +162,8 @@ if __name__ == '__main__':
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
     xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
 
-    ax.semilogx(kappa, pik_l + pia_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=1.2, linestyle='-', color='k')
+    ax.semilogx(kappa, pik_l + pia_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=1.2, linestyle='-',
+                color='k')
     ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=1., linestyle='-', color='red')
     ax.semilogx(kappa, pia_l, label=r'$\Pi_A$', linewidth=1., linestyle='-', color='navy')
     ax.semilogx(kappa, cka_l, label=r'$C_{AK}$', linewidth=1., linestyle='--', color='green')
@@ -188,9 +186,11 @@ if __name__ == '__main__':
 
     prange_str = [int(1e-2 * p) for p in sorted(prange)]
 
-    ax.legend(title=r"  {:4d} $\leq p \leq$ {:4d} hPa ".format(*prange_str), loc='upper right', fontsize=12)
+    ax.legend(title=r"  {:4d} $\leq p \leq$ {:4d} hPa ".format(*prange_str), loc='upper right',
+              fontsize=12)
 
     plt.show()
 
-    fig.savefig('figures/icon_nonlinear_fluxes_{}_{}-{}.pdf'.format(resolution, *prange_str), dpi=300)
+    fig.savefig('figures/icon_nonlinear_fluxes_{}_{}-{}.pdf'.format(resolution, *prange_str),
+                dpi=300)
     plt.close(fig)

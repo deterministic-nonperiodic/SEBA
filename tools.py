@@ -5,6 +5,7 @@ import _spherepack
 import numpy as np
 import scipy.signal as sig
 import scipy.special as spec
+import scipy.stats as stats
 from scipy.spatial import cKDTree
 
 from spectral_analysis import lambda_from_deg
@@ -24,11 +25,11 @@ def _find_coordinates(array, predicate, name):
         msg = 'multiple {!s} coordinates are not allowed'
         raise ValueError(msg.format(name))
     coord = candidates[0]
-    dim = array.dims.index(coord.name)
+    dim = array.dims[coord.name]
     return coord, dim
 
 
-def _find_latitude_coordinate(array):
+def _find_latitude(array):
     """Find a latitude dimension coordinate in an `xarray.DataArray`."""
     return _find_coordinates(
         array,
@@ -37,52 +38,100 @@ def _find_latitude_coordinate(array):
                    c.attrs.get('axis') == 'Y'), 'latitude')
 
 
-def _find_variable(dataset, var_info):
+def _find_longitude(array):
+    """Find a latitude dimension coordinate in an `xarray.DataArray`."""
+    return _find_coordinates(
+        array,
+        lambda c: (c.name in ('longitude', 'lon') or
+                   c.attrs.get('units') == 'degrees_east' or
+                   c.attrs.get('axis') == 'X'), 'longitude')
+
+
+def _find_levels(array):
+    """Find a latitude dimension coordinate in an `xarray.DataArray`."""
+    return _find_coordinates(
+        array,
+        lambda c: (c.name in ('p', 'plev', 'pressure') or
+                   c.attrs.get('units') in ('Pa', 'hPa', 'millibar') or
+                   c.attrs.get('axis') == 'Z'), 'pressure')
+
+
+def _find_variable(dataset, name, var_attrs):
     """
     Find a dimension coordinate in an `xarray.DataArray` that satisfies
     a predicate function.
     """
-    # try by name selection
-    array = dataset.variables.get(var_info['name'])
+
+    # trying variable selection by name
+    array = dataset.variables.get(name)
 
     if array is None:
-        # try flexible candidates for the variable based on 'info_dict'
+        # trying flexible candidates for the variable based on attributes
         def predicate(d):
-            return (var_info['name'] == d.name or
-                    var_info['units'] == d.attrs.get('units').lower() or
-                    d.attrs.get('axis') == 'TZ--')
+            return any([d.attrs.get(key) in values for key, values in var_attrs.items()])
 
-        # look for candidates
-        candidates = [dataset.variables.get(name)
-                      for name, values in dataset.variables.items()
-                      if predicate(values)]
+        # list all candidates
+        candidates = [data for name, data in dataset.variables.items() if predicate(data)]
 
         if not candidates:
-            raise ValueError('cannot find a variable {!s}'.format(var_info['name']))
+            raise ValueError('Cannot find variable {!s} in dataset.'.format(name))
 
-        array = candidates[0].values
+        array = candidates[0]
 
     return array
 
 
-# def parse_dataset(dataset, variables=None):
-#
-#     if variables is None:
-#         variables = ['u', 'v', 'w', 't', 'p']
-#
-#     # Get coordinates and dimensions
-#     coords = {name: dataset.coords[name].axis for name in dataset.dims}
-#
-#     dims_size = dict(dataset.dims)
-#
-#     # string needed for data preparation
-#     info_coords = ''.join(coords.values()).lower()
-#
-#     # get coordinates
-#     for var in dataset:
-#        coords = {name: var.coords[name].axis for name in var.dims}
-#
-#     return
+def parse_dataset(dataset, variables=None):
+    """
+        Parse input xarray dataset
+
+        Returns
+        _______
+        arrays: a list of requested DataArray objects
+
+        info_coords: string containing the order of the spatial dimensions: 'z' for levels,
+              'y' latitude, and 'x' for longitude are mandatory, while any other character
+              may be used for other dimensions. Default is 'tzyx' or (time, levels, lat, lon)
+    """
+    var_map = {
+        'u': {'long_name': ['zonal_wind', 'zonal wind'],
+              'units': ['m s**-1', 'm/s'], 'code': [131]},
+        'v': {'long_name': ['meridional_wind', 'meridional wind'],
+              'units': ['m s**-1', 'm/s'], 'code': [132]},
+        'w': {'long_name': ['vertical_velocity', 'vertical velocity'],
+              'units': ['m s**-1', 'm/s'], 'code': [120]},
+        'omega': {'long_name': ['pressure_velocity', 'pressure velocity'],
+                  'units': ['Pa s**-1', 'Pa/s'], 'code': [135]},
+        't': {'long_name': ['temperature', 'air_temperature'],
+              'units': ['K', 'kelvin'], 'code': [130]},
+        'p': {'long_name': ['pressure', 'air_pressure'], 'units': ['Pa', 'hPa', 'mb']}
+    }
+
+    if variables is None:
+        variables = var_map.keys()
+
+    arrays = {var_key: _find_variable(dataset, name, attrs)
+              for (var_key, attrs), name in zip(var_map.items(), variables)}
+
+    if len(arrays) != len(variables):
+        raise ValueError("Missing variables!")
+
+    # check sanity of 3D fields
+    for name, values in arrays.items():
+
+        if np.isnan(values).any():
+            raise ValueError('Array {} contain missing values'.format(name))
+
+        # Make sure the shapes of the two components match.
+        if (name != 'p') and values.ndim < 3:
+            raise ValueError('Fields must be at least 3D.'
+                             'Variable {} has {} dimensions'.format(name, values.ndim))
+
+    # Get coordinates and dimensions
+    coords = [dataset.coords[name] for name in arrays['u'].dims]
+
+    # get coordinates
+    return arrays, coords
 
 
 def prepare_data(data, dim_order):
@@ -201,20 +250,36 @@ def getspecindx(ntrunc):
     return np.squeeze(index_m), np.squeeze(index_n)
 
 
+def lmtosp(clm, ntrunc):
+    # transpose to spharm ordering (m, l)
+    clm = np.moveaxis(clm, 1, 2)
+    # pack coefficients into 1d with spharm index convention
+    return _spherepack.twodtooned(*clm, ntrunc).squeeze()
+
+
+def sptolm(cn, lmax):
+    # unpack coefficients into 2d
+    clm = _spherepack.onedtotwod(cn, lmax)
+    # transpose to spharm ordering (m, l)
+    return np.moveaxis(clm, 2, 1)
+
+
 def transform_io(func, order='C'):
     """
     Decorator for handling arrays' IO dimensions for calling spharm's spectral functions.
-    The dimensions of the input arrays with shapes (nlat, nlon, nlev, ntime, ...) or (ncoeffs, nlev, ntime, ...)
-    are packed to (nlat, nlon, samples) and (ncoeffs, samples) respectively, where ncoeffs = (ntrunc+1)*(ntrunc+2)/2.
-    Finally, the outputs are transformed back to the original shape where needed.
+    The dimensions of the input arrays with shapes (nlat, nlon, nlev, ntime, ...)
+    or (ncoeffs, nlev, ntime, ...) are packed to (nlat, nlon, samples) and (ncoeffs, samples)
+    respectively, where ncoeffs = (ntrunc+1)*(ntrunc+2)/2. Finally, the outputs are transformed
+    back to the original shape where needed.
 
     Parameters:
     -----------
     func: decorated function
     order: {‘C’, ‘F’, ‘A’}, optional
         Reshape the elements of the input arrays using this index order.
-        ‘C’ means to read / write the elements using C-like index order, with the last axis index changing fastest,
-        back to the first axis index changing slowest. See 'numpy.reshape' for details.
+        ‘C’ means to read / write the elements using C-like index order, with the last axis index
+        changing fastest, back to the first axis index changing slowest. See 'numpy.reshape' for
+        details.
     """
 
     @functools.wraps(func)
@@ -399,15 +464,141 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     return np.moveaxis(result, 0, axis)
 
 
-def intersections(coords, a, b, direction='all'):
-    #
-    index_coords, _ = find_intersections(coords, a, b, direction=direction)
-
-    if len(index_coords) == 0:
-        # print('No intersections found in data')
-        return np.nan
+def search_closet(points, target_points):
+    if target_points is None:
+        return slice(None)
     else:
-        return index_coords
+        points = np.atleast_2d(points).T
+        target_points = np.atleast_2d(target_points).T
+        # creates a search tree
+        # noinspection PyArgumentList
+        search_tree = cKDTree(points)
+        # nearest neighbour (k=1) in levels to each point in target levels
+        _, nn_idx = search_tree.query(target_points, k=1)
+
+        return nn_idx
+
+
+def terrain_mask(p, ps, smooth=True, jobs=None):
+    """
+    Creates a terrain mask based on surface pressure and pressure profile
+    :param: smoothed, optional
+        Apply a low-pass filter to the terrain mask
+    :return: 'np.array'
+        beta contains 0 for levels satisfying p > ps and 1 otherwise
+    """
+
+    nlevels = p.size
+    nlat, nlon = ps.shape
+
+    # Search last level pierced by terrain for each vertical column
+    level_m = p.size - np.searchsorted(np.sort(p), ps)
+    # level_m = search_closet(p, ps)
+
+    # create mask
+    beta = np.zeros((nlat, nlon, nlevels))
+
+    for ij in np.ndindex(*level_m.shape):
+        beta[ij][level_m[ij]:] = 1.0
+
+    if smooth:  # generate a smoothed heavy-side function
+        # Calculate normalised cut-off frequencies for zonal and meridional directions:
+        resolution = lambda_from_deg(nlon)  # grid spacing at the Equator
+        cutoff_scale = lambda_from_deg(80)  # wavenumber 40 (scale ~500 km) from A&L (2013)
+
+        # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
+        cutoff_freq = resolution / cutoff_scale
+        window_size = (2.0 / np.min(cutoff_freq)).astype(int)  # window size set to cutoff scale
+
+        # Apply low-pass Lanczos filter for smoothing:
+        beta = lowpass_lanczos(beta, window_size, cutoff_freq, axis=-1, jobs=jobs)
+
+    return beta.clip(0.0, 1.0)
+
+
+def _select_by_distance(priority, distance):
+    """
+    Evaluate which peaks fulfill the distance condition.
+    Parameters
+    ----------
+    priority : ndarray
+        An array matching `peaks` used to determine priority of each peak. A
+        peak with a higher priority value is kept over one with a lower one.
+    distance :
+        Minimal distance that peaks must be spaced.
+    Returns
+    -------
+    keep : ndarray[bool]
+        A boolean mask evaluating to true where `peaks` fulfill the distance
+        condition.
+    """
+
+    peaks_size = priority.shape[0]
+    # Round up because actual peak distance can only be natural number
+    keep = np.ones(peaks_size, dtype=np.uint8)  # Prepare array of flags
+
+    distance_ = np.ceil(distance)
+    # Create map from `i` (index for `peaks` sorted by `priority`) to `j` (index
+    # for `peaks` sorted by position). This allows to iterate `peaks` and `keep`
+    # with `j` by order of `priority` while still maintaining the ability to
+    # step to neighbouring peaks with (`j` + 1) or (`j` - 1).
+    priority_to_position = np.argsort(priority)
+
+    # Highest priority first -> iterate in reverse order (decreasing)
+    for i in range(peaks_size - 1, -1, -1):
+        # "Translate" `i` to `j` which points to current peak whose
+        # neighbours are to be evaluated
+        j = priority_to_position[i]
+        if keep[j] == 0:
+            # Skip evaluation for peak already marked as "don't keep"
+            continue
+
+        k = j - 1
+        # Flag "earlier" peaks for removal until minimal distance is exceeded
+        while 0 <= k and j - k < distance_:
+            keep[k] = 0
+            k -= 1
+
+        k = j + 1
+        # Flag "later" peaks for removal until minimal distance is exceeded
+        while k < peaks_size and k - j < distance_:
+            keep[k] = 0
+            k += 1
+
+    return keep.astype(bool)  # Return as boolean array
+
+
+def intersections(coords, a, b, direction='all', return_y=False):
+    # Return intersections between arrays a and b with common coordinate 'coords'
+    coords = np.asarray(coords)
+    a = np.asarray(a)
+    b = np.asarray(b)
+
+    if a.size == 1:
+        if b.size != 1:
+            a = np.repeat(a, b.size)
+    else:
+        if b.size == 1:
+            b = np.repeat(b, a.size)
+        else:
+            assert a.size == b.size, "Arrays 'a' and 'b' must be the same size"
+
+    assert coords.size == a.size, "Array 'coords' must be the same size as 'a' and 'b'"
+
+    x, y = find_intersections(coords, a, b, direction=direction)
+
+    if len(x) == 0:
+        x = y = np.nan
+    elif len(x) == 1:
+        x = x[0]
+        y = y[0]
+    else:
+        pass
+
+    if return_y:
+        return x, y
+    else:
+        return x
 
 
 def find_intersections(x, a, b, direction='all'):
@@ -521,53 +712,16 @@ def _next_non_masked_element(x, idx):
         return idx, x[idx]
 
 
-def search_closet(points, target_points):
-    if target_points is None:
-        return slice(None)
-    else:
-        points = np.atleast_2d(points).T
-        target_points = np.atleast_2d(target_points).T
-        # creates a search tree
-        # noinspection PyArgumentList
-        search_tree = cKDTree(points)
-        # nearest neighbour (k=1) in levels to each point in target levels
-        _, nn_idx = search_tree.query(target_points, k=1)
+def mean_confidence_interval(data, confidence=0.95, axis=0):
+    a = np.asanyarray(data)
+    n = a.shape[axis]
 
-        return nn_idx
+    m, se = np.nanmean(a, axis=axis), stats.sem(a, axis=axis)
+    h = se * stats.t.ppf((1 + confidence) / 2., n - 1)
+    return m, m - h, m + h
 
 
-def terrain_mask(p, ps, smooth=True, jobs=None):
-    """
-    Creates a terrain mask based on surface pressure and pressure profile
-    :param: smoothed, optional
-        Apply a low-pass filter to the terrain mask
-    :return: 'np.array'
-        beta contains 0 for levels satisfying p > ps and 1 otherwise
-    """
+def transform_spectra(s):
+    st = np.reshape(s, (-1, s.shape[-1]))
 
-    nlevels = p.size
-    nlat, nlon = ps.shape
-
-    # Search last level pierced by terrain for each vertical column
-    level_m = p.size - np.searchsorted(np.sort(p), ps)
-    # level_m = search_closet(p, ps)
-
-    # create mask
-    beta = np.zeros((nlat, nlon, nlevels))
-
-    for ij in np.ndindex(*level_m.shape):
-        beta[ij][level_m[ij]:] = 1.0
-
-    if smooth:  # generate a smoothed heavy-side function
-        # Calculate normalised cut-off frequencies for zonal and meridional directions:
-        resolution = lambda_from_deg(nlon)  # grid spacing at the Equator
-        cutoff_scale = lambda_from_deg(80)  # wavenumber 40 (scale ~500 km) from A&L (2013)
-
-        # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
-        cutoff_freq = resolution / cutoff_scale
-        window_size = (2.0 / np.min(cutoff_freq)).astype(int)  # window size set to cutoff scale
-
-        # Apply low-pass Lanczos filter for smoothing:
-        beta = lowpass_lanczos(beta, window_size, cutoff_freq, axis=-1, jobs=jobs)
-
-    return beta.clip(0.0, 1.0)
+    return mean_confidence_interval(st, confidence=0.95, axis=0)

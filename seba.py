@@ -4,8 +4,9 @@ from functools import partial
 import numpy as np
 import spharm
 import xarray as xr
+from cdo import *
 from numpy.core.numeric import normalize_axis_index
-from pyshtools.shtools import SHExpandGLQ, MakeGridGLQ
+
 from scipy.integrate import simpson
 
 import constants as cn
@@ -16,10 +17,14 @@ from thermodynamics import geopotential_height as _geopotential_height
 from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import prepare_data, recover_data, cumulative_flux, latitudes_weights
-from tools import terrain_mask, number_chunks, transform_io, infer_gridtype, lmtosp, sptolm
+from tools import _find_latitude, _find_longitude, _find_levels
+from tools import parse_dataset, prepare_data, recover_data, cumulative_flux
+from tools import terrain_mask, number_chunks, transform_io, infer_gridtype, getspecindx
 
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
+
+# cdo backend
+cdo_cmd = Cdo()
 
 
 class EnergyBudget:
@@ -50,106 +55,96 @@ class EnergyBudget:
         else:
             del self.__dict__[key]
 
-    def __init__(self, u, v, w, t, p, ps=None, ghsl=None, lats=None, leveltype='pressure',
-                 gridtype='gaussian', truncation=None, rsphere=None, legfunc='stored',
-                 backend='spharm', axes=None, filter_terrain=False, jobs=None):
+    def __init__(self, dataset, variables=None, ps=None, ghsl=None, leveltype='pressure',
+                 truncation=None, rsphere=None, legfunc='stored', filter_terrain=False, jobs=None):
 
         """
         Initializing EnergyBudget instance.
 
         Signature
         ---------
-        energy_budget =  EnergyBudget(u, v, w, t, p, [ps, ghsl, leveltype='pressure',
+        energy_budget =  EnergyBudget(dataset, [ps, ghsl, leveltype='pressure',
                  gridtype, truncation, rsphere, legfunc, axes, sample_axis, filter_terrain, jobs])
 
         Parameters
         ----------
-        :param u: horizontal wind component in the zonal direction
-        :param v: horizontal wind component in the meridional direction
-        :param w: height/pressure vertical velocity depending on leveltype
-        :param t: air temperature
-        :param p: atmospheric pressure
-        :param gridtype: type of horizontal grid ('regular', 'gaussian', 'spectral')
+        :param dataset: xarray.Dataset, contains 3D analysis fields
+            u: horizontal wind component in the zonal direction
+            v: horizontal wind component in the meridional direction
+            w: height/pressure vertical velocity depending on leveltype
+            t: air temperature
+            p: atmospheric pressure
+
+        # :param gridtype: type of horizontal grid ('regular', 'gaussian', 'spectral')
         :param truncation:
             Truncation limit (triangular truncation) for the spherical harmonic computation.
         :param rsphere: averaged earth radius (meters)
         :param legfunc: Indicates whether the associated Legendre polynomials are stored
                         [using O(nlat**3) memory] or recomputed on the fly when transforms are
                         requested [O(nlat**2) memory] but slower.
-        :param backend: Spherical harmonics library to use for spectral transformations. Options
-                       are 'spharm' or 'shtools'.
-        :param axes: string containing the order of the spatial dimensions: 'z' for levels,
-                    'y' latitude, and 'x' for longitude are mandatory, while any other character
-                    may be used for other dimensions. Default is 'tzyx' or (time, levels, lat, lon)
         """
 
+        if not isinstance(dataset, xr.Dataset):
+            raise TypeError("Input 'dataset' must be xarray.Dataset instance.")
+
+        if variables is None:
+            print("No variable names given: I am just guessing now ...")
+
         # Initialize variables
-        u = np.asanyarray(u).copy()
-        v = np.asanyarray(v).copy()
-        w = np.asanyarray(w).copy()
-        t = np.asanyarray(t).copy()
-        p = np.asanyarray(p).copy()
+        data, self.coords = parse_dataset(dataset, variables=variables)
 
-        if np.isnan(u).any() or np.isnan(v).any():
-            raise ValueError('Arrays u and v cannot contain missing values')
+        # string needed for data preparation
+        self.info_coords = ''.join([c.axis for c in self.coords]).lower()
 
-        data_shape = u.shape
+        # Get 3D fields
+        t = data.get('t')
+        p = data.get('p')
+        w = data.get('w')
+        omega = data.get('omega')
 
-        # Make sure the shapes of the two components match.
-        if data_shape != v.shape:
-            raise ValueError('u and v must be the same shape')
+        if w is None and omega is None:
 
-        if t.shape != data_shape:
-            raise ValueError('Temperature must be the same shape as u and v')
+            raise ValueError("Vertical velocity not found!")
 
-        if w.shape != data_shape:
-            raise ValueError('w must be the same shape as u and v')
+        elif (omega is not None) and (w is None):
+            # compute vertical velocity in height coordinates
+            w = vertical_velocity(p, omega, t, axis=1).transpose(*t.dims)
 
-        data_dim = u.ndim
+        elif (w is not None) and (omega is None):
+            # compute or load z coordinate
+            omega = pressure_vertical_velocity(p, w, t).transpose(*t.dims)
 
-        if data_dim < 3:
-            raise ValueError('variables must be at least 3D')
-
-        if axes is None:
-            axes = 'tzyx'  # Assuming input arrays with (time, levels, latitude, longitude)
-        elif isinstance(axes, str):
-            pass
         else:
-            raise ValueError(
-                "Wrong type for 'axes', Expecting a string of length {}".format(data_dim))
+            pass
 
-        if len(axes) != data_dim:
-            raise ValueError("Inconsistent number dimensions 'axes'"
-                             " must be a string of length {}".format(data_dim))
+        u = data.get('u').values
+        v = data.get('v').values
+        w = w.values
+        omega = omega.values
+        t = t.values
+        p = p.values
+
+        # find coordinates
+        self.latitude, self.nlat = _find_latitude(dataset)
+        self.longitude, self.nlon = _find_longitude(dataset)
+        self.levels, self.nlevels = _find_levels(dataset)
 
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
-        self.axes = axes.lower()
-        self.nlon, self.nlat, self.nlevels = [int(data_shape[self.axes.find(dim)]) for dim in 'xyz']
-
         self.grid_shape = (self.nlat, self.nlon)
 
         # size of the non-spatial dimensions
-        self.samples = np.prod(data_shape) // (np.prod(self.grid_shape) * self.nlevels)
+        self.samples = np.prod(u.shape) // (np.prod(self.grid_shape) * self.nlevels)
 
         # Get spatial dimensions
         self.leveltype = leveltype.lower()
 
         if self.leveltype == 'pressure':
-            assert p.size == self.nlevels, "Pressure must be a 1D array with" \
+            assert p.size == self.nlevels, "Pressure must be a 1D field with" \
                                            "size nlevels when using pressure coordinates"
-            omega = w.copy()
-            # compute vertical velocity in height coordinates
-            w = vertical_velocity(p, omega, t, axis=1)
-
         elif self.leveltype == 'height':
-            assert p.shape == u.shape, "Pressure must have same shape as u" \
-                                       "when using height coordinates"
-            # compute or load z coordinate
-            omega = pressure_vertical_velocity(p, w, t)
-            # perform vertical interpolation to pressure levels
+            assert p.shape == u.shape, "Pressure must be a 3D field when using height coordinates"
         else:
-            raise ValueError(
-                "Invalid level type: {}. Options are ('pressure', 'height')".format(leveltype))
+            raise ValueError("Wrong level type specification")
 
         # making sure array splitting gives more chunks than jobs for parallel computations
         # if not given, the chunk size is set to the cpu count.
@@ -197,40 +192,18 @@ class EnergyBudget:
         # -----------------------------------------------------------------------------
         # Create SPHEREPACK object to perform the spectral computations.
         # -----------------------------------------------------------------------------
-
         # Inspect grid type and latitude sampling
-        if lats is None:
-            self.gridtype = gridtype.lower()
-
-            if self.gridtype not in ('regular', 'gaussian'):
-                raise ValueError("Invalid grid type: {0:s}. "
-                                 "Options are ('regular', 'gaussian')".format(repr(gridtype)))
-
-            self.lats, self.weights = latitudes_weights(self.nlat, self.gridtype)
-        else:
-            # Infers grid type from latitude points. This overrides the parameter 'gridtype'
-            # if given at initialization.
-            if len(lats) != self.nlat:
-                raise ValueError("Inconsistent size of array 'lats' and data along the y axis. "
-                                 'Expected size is {}, but got {}.'.format(self.nlat, len(lats)))
-
-            self.gridtype, self.lats, self.weights = infer_gridtype(lats)
+        self.gridtype, self.latitude, self.weights = infer_gridtype(self.latitude)
 
         # nodes used in the Gauss-Legendre quadrature
-        self.nodes = np.sin(np.deg2rad(self.lats))
+        self.nodes = np.sin(np.deg2rad(self.latitude))
 
         if rsphere is None:
             self.rsphere = cn.earth_radius
         elif type(rsphere) == int or type(rsphere) == float:
             self.rsphere = abs(rsphere)
         else:
-            raise ValueError(
-                "Incorrect value for 'rsphere'. If given, it must be a positive number.")
-
-        # changing legfunc behavior when using shtools (do no precompute legendre polynomials)
-        self.backend = backend.lower()
-        if self.backend == 'shtools':
-            legfunc = 'computed'
+            raise ValueError("Incorrect value for 'rsphere'.")
 
         # Create sphere object for common functions
         self.sphere = spharm.Spharmt(self.nlon, self.nlat, gridtype=self.gridtype,
@@ -246,12 +219,12 @@ class EnergyBudget:
                 raise ValueError('Truncation must be between 0 and {:d}'.format(self.nlat - 1, ))
 
         # reverse latitude array (weights are symmetric around the equator)
-        self.reverse_latitude = self.lats[0] < self.lats[-1]
+        self.reverse_latitude = self.latitude[0] < self.latitude[-1]
         if self.reverse_latitude:
-            self.lats = self.lats[::-1]
+            self.latitude = self.latitude[::-1]
 
         # Get spectral indexes of the zonal wavenumber and spherical harmonic degree
-        self.zonal_wavenumber, self.total_wavenumber = spharm.getspecindx(self.truncation)
+        self.zonal_wavenumber, self.total_wavenumber = getspecindx(self.truncation)
 
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
         self.ncoeffs = self.total_wavenumber.size
@@ -280,8 +253,6 @@ class EnergyBudget:
         # Reshape and reorder data dimensions for computations
         # self.data_info stores information to recover the original shape.
         self.w, self.data_info = self._transform_data(w)
-
-        self.coords = None
 
         # create wind array from unfiltered wind components
         self.wind = np.stack((self._transform_data(u, filtered=False)[0],
@@ -538,8 +509,8 @@ class EnergyBudget:
 
     def coriolis_linear_transfer(self):
         # relevance?
-        sin_lat = np.sin(np.deg2rad(self.lats))
-        cos_lat = np.cos(np.deg2rad(self.lats))
+        sin_lat = np.sin(np.deg2rad(self.latitude))
+        cos_lat = np.cos(np.deg2rad(self.latitude))
 
         sin_lat = np.expand_dims(sin_lat, (1, 2, 3))
         cos_lat = np.expand_dims(cos_lat, (1, 2, 3))
@@ -577,9 +548,12 @@ class EnergyBudget:
 
         if pi_k.ndim > 2:
             # compute mean over samples (time or any other dimension if needed)
-            return pi_k.mean(axis=1), pi_a.mean(axis=1)
-        else:
-            return pi_k, pi_a
+            pi_k = pi_k.mean(axis=1)
+            pi_a = pi_a.mean(axis=1)
+
+        # add metadata
+
+        return pi_k, pi_a
 
     def global_diagnostics(self):
 
@@ -700,9 +674,6 @@ class EnergyBudget:
 
         clm = np.empty((self.ncoeffs, samples))
 
-        for i in range(samples):
-            clm[..., i] = lmtosp(SHExpandGLQ(grid[..., i],
-                                             self.weights, self.nodes), self.truncation)
         return 2.0 * clm
 
     def _spectogrd(self, csp):
@@ -710,11 +681,6 @@ class EnergyBudget:
         samples = csp.shape[-1]
 
         grid = np.empty((self.nlat, self.nlon, samples))
-
-        clm = sptolm(csp, self.nlat)
-        for i in range(samples):
-
-            grid[..., i] = MakeGridGLQ(clm[..., i], self.nodes, extend=True)
 
         return grid / 2.0
 
@@ -1127,7 +1093,7 @@ class EnergyBudget:
 
         # Move dimensions (nlat, nlon) forward and vertical axis last
         # (Useful for cleaner vectorized operations)
-        data, data_info = prepare_data(scalar, self.axes)
+        data, data_info = prepare_data(scalar, self.info_coords)
 
         # Ensure the latitude dimension is ordered north-to-south
         if self.reverse_latitude:
