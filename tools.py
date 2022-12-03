@@ -212,6 +212,19 @@ def recover_data(data, info_dict):
     return np.moveaxis(data, [0, 1, -1], spatial_dims)
 
 
+def recover_spectra(data, info_dict):
+    """
+    Recover the shape and dimension order of an array output
+    after calling 'prepare_data'.
+    """
+    data = data.reshape(info_dict['interm_shape'][:1] + info_dict['interm_shape'][2:])
+
+    spectra_order = info_dict['origin_order'].replace('x', '')
+    spatial_dims = [spectra_order.find(dim) for dim in 'yz']
+
+    return np.moveaxis(data, [0, -1], spatial_dims)
+
+
 def get_chunk_size(n_workers, len_iterable, factor=4):
     """Calculate chunk size argument for Pool-methods.
 

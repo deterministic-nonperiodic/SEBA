@@ -6,7 +6,6 @@ import spharm
 import xarray as xr
 from cdo import *
 from numpy.core.numeric import normalize_axis_index
-
 from scipy.integrate import simpson
 
 import constants as cn
@@ -18,7 +17,7 @@ from thermodynamics import height_to_geopotential
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import _find_latitude, _find_longitude, _find_levels
-from tools import parse_dataset, prepare_data, recover_data, cumulative_flux
+from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
 from tools import terrain_mask, number_chunks, transform_io, infer_gridtype, getspecindx
 
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
@@ -84,8 +83,13 @@ class EnergyBudget:
                         requested [O(nlat**2) memory] but slower.
         """
 
-        if not isinstance(dataset, xr.Dataset):
-            raise TypeError("Input 'dataset' must be xarray.Dataset instance.")
+        if isinstance(dataset, str):
+            dataset = xr.open_mfdataset(dataset, combine='by_coords', parallel=True)
+        elif isinstance(dataset, xr.Dataset):
+            pass
+        else:
+            raise TypeError("Input 'dataset' must be xarray.Dataset instance or a string "
+                            "containing a path to data.")
 
         if variables is None:
             print("No variable names given: I am just guessing now ...")
@@ -233,6 +237,14 @@ class EnergyBudget:
         self.degrees = np.arange(self.truncation + 1, dtype=int)
         self.kappa_h = kappa_from_deg(self.degrees)
 
+        # create wavenumber coordinates for spectral quantities
+        self.sp_coords = [c for ic, c in zip(self.info_coords, self.coords) if ic not in 'xy']
+
+        self.sp_coords.append(xr.Coordinate('kappa', self.kappa_h,
+                                            attrs={'standard_name': 'wavenumber',
+                                                   'long_name': 'horizontal_wavenumber',
+                                                   'axis': 'X'}))
+
         # normalization factor for calculating vector cross-spectrum
         self.vector_norm = np.expand_dims(self.kappa_h ** 2, (-1, -2))
         self.vector_norm[0] = 1.0
@@ -323,15 +335,23 @@ class EnergyBudget:
     # -------------------------------------------------------------------------------
     # Methods for computing thermodynamic quantities
     # -------------------------------------------------------------------------------
-    def _add_metadata(self, data, name, **attributes):
+    def _add_metadata(self, data, name, datatype, **attributes):
         """
-        Add metadata and export variables as xr.DataArray
+            Add metadata and export variables as xr.DataArray
         """
-        data = recover_data(data, self.data_info)
-        data = xr.DataArray(data, coords=self.coords, name=name)
+        if datatype == 'spectral':
+            coords = self.sp_coords
+            data = recover_spectra(data, self.data_info)
+        else:
+            coords = self.coords
+            data = recover_data(data, self.data_info)
 
+        data = xr.DataArray(data=data, name=name, coords=coords)
+
+        # add attributes to variable
         for attr, value in attributes.items():
             data.attrs[attr] = value
+
         return data
 
     # -------------------------------------------------------------------------------
@@ -412,23 +432,41 @@ class EnergyBudget:
         vrt_sqd = self.cross_spectrum(self.vrt_spc)
         div_sqd = self.cross_spectrum(self.div_spc)
 
-        kinetic_energy = (vrt_sqd + div_sqd) / 2.0
+        kinetic_energy = (vrt_sqd + div_sqd) / (2.0 * self.vector_norm)
 
-        return kinetic_energy / self.vector_norm
+        kinetic_energy = self._add_metadata(kinetic_energy, 'hke', 'spectral',
+                                            units='m**2 s**-2',
+                                            standard_name='horizontal_kinetic_energy',
+                                            long_name='horizontal kinetic energy per unit mass')
+
+        return kinetic_energy
 
     def vertical_kinetic_energy(self):
         """
         Vertical kinetic energy calculated from pressure vertical velocity
         :return:
         """
-        return self._scalar_spectra(self.w) / 2.0
+        kinetic_energy = self._scalar_spectra(self.w) / 2.0
+
+        kinetic_energy = self._add_metadata(kinetic_energy, 'vke', 'spectral',
+                                            units='m**2 s**-2',
+                                            standard_name='vertical_kinetic_energy',
+                                            long_name='vertical kinetic energy per unit mass')
+
+        return kinetic_energy
 
     def available_potential_energy(self):
         """
         Total available potential energy after Augier and Lindborg (2013), Eq.10
         :return:
         """
-        return self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
+        potential_energy = self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
+
+        potential_energy = self._add_metadata(potential_energy, 'ape', 'spectral',
+                                              units='m**2 s**-2',
+                                              standard_name='available_potential_energy',
+                                              long_name='available potential energy per unit mass')
+        return potential_energy
 
     def vorticity_divergence(self):
         # computes the spectral coefficients of vertical
@@ -501,7 +539,13 @@ class EnergyBudget:
 
     def energy_conversion(self):
         # Conversion of APE to KE
-        return - self._scalar_spectra(self.omega, self.alpha)
+        cke_ape = - self._scalar_spectra(self.omega, self.alpha)
+
+        cke_ape = self._add_metadata(cke_ape, 'cka', 'spectral',
+                                     units='W m**-2', standard_name='energy_conversion',
+                                     long_name='conversion from kinetic to'
+                                               'available potential energy')
+        return cke_ape
 
     def diabatic_conversion(self):
         # need to estimate Latent heat release*
@@ -527,8 +571,13 @@ class EnergyBudget:
 
         linear_term = self._scalar_spectra(sf, sin_lat * self.div + vp_grad)
         linear_term += self._scalar_spectra(vp, sin_lat * self.vrt - sf_grad)
+        linear_term *= cn.Omega
 
-        return cn.Omega * linear_term
+        linear_term = self._add_metadata(linear_term, 'lc', 'spectral',
+                                         units='W m**-2', standard_name='linear_transfer',
+                                         long_name='coriolis linear transfer')
+
+        return linear_term
 
     def non_conservative_term(self):
         # non-conservative term J(p) in Eq. A11
@@ -546,24 +595,17 @@ class EnergyBudget:
         pi_k = cumulative_flux(tk_l)
         pi_a = cumulative_flux(ta_l)
 
-        if pi_k.ndim > 2:
-            # compute mean over samples (time or any other dimension if needed)
-            pi_k = pi_k.mean(axis=1)
-            pi_a = pi_a.mean(axis=1)
-
         # add metadata
+        pi_k = self._add_metadata(pi_k, 'pi_ke', 'spectral',
+                                  units='W m**-2', standard_name='nonlinear_tke_flux',
+                                  long_name='cumulative spectral flux of kinetic energy')
+
+        pi_a = self._add_metadata(pi_a, 'pi_ape', 'spectral',
+                                  units='W m**-2', standard_name='nonlinear_ape_flux',
+                                  long_name='cumulative spectral flux of'
+                                            'available potential energy')
 
         return pi_k, pi_a
-
-    def global_diagnostics(self):
-
-        wind_theta = 0.5 * self.wind * self.theta_pbn ** 2
-
-        _, div_spc = self._compute_rotdiv(wind_theta)
-
-        divh_theta = self.global_average(self._inverse_transform(div_spc), axis=0)
-
-        return - self.ganma * divh_theta
 
     def get_ke_tendency(self, tendency):
         r"""
@@ -1050,7 +1092,7 @@ class EnergyBudget:
         for ln, degree in enumerate(degrees):
             # Sum over all zonal wavenumbers <= total wavenumber
             degree_range = (ms <= degree) & (ls == degree)
-            spectrum[ln] = clm_sqd[degree_range].sum(axis=0)
+            spectrum[ln] = np.nansum(clm_sqd[degree_range], axis=0)
 
         # Using the normalization in equation (7) of Lambert [1984].
         spectrum /= 2.0
