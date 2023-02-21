@@ -18,7 +18,7 @@ plt.style.use('default')
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
-          'text.usetex': False, 'font.size': 12,
+          'text.usetex': True, 'font.size': 12,
           'legend.title_fontsize': 10,
           'font.family': 'serif', 'font.weight': 'normal'}
 plt.rcParams.update(params)
@@ -161,7 +161,7 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     if lambda_lines is None:
         lambda_lines = [36., ]
 
-    kappa_lines = kappa_from_lambda(lambda_lines)
+    kappa_lines = kappa_from_lambda(np.asarray(lambda_lines))
 
     if ax_titles is None:
         pass
@@ -184,8 +184,8 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     for m, ax in enumerate(axes.flatten()):
 
         # axes frame limits
-        ax.set_xscale('log', basex=base)
-        ax.set_yscale(y_scale, basey=base)
+        ax.set_xscale('log', base=base)
+        ax.set_yscale(y_scale, base=base)
 
         ax.set_xlim(*x_limits)
         ax.set_ylim(*y_limits)
@@ -203,7 +203,7 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
                        color='gray', linewidth=0.8,
                        alpha=0.6, linestyle='solid')
 
-            ax.annotate(scale_str.format(int(lambda_line)),
+            ax.annotate(scale_str.format(int(lambda_line/2)),
                         xy=(0.90, 0.98), xycoords='axes fraction',
                         color='black', fontsize=10, horizontalalignment='left',
                         verticalalignment='top')
@@ -234,7 +234,8 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
             ax.axes.get_xaxis().set_visible(False)
 
         if m < n_cols:  # upper boundary only
-            secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
+            tmp_transform = lambda x: kappa_from_lambda(x) / 2.0
+            secax = ax.secondary_xaxis('top', functions=(tmp_transform, tmp_transform))
 
             secax.set_xlabel('{} wavelength '.format(prefix) + r'$[km]$', fontsize=14, labelpad=5)
 
@@ -268,9 +269,9 @@ def reference_slopes(ax, k_scales, magnitude, slopes, name='horizontal'):
                     verticalalignment='top', fontsize=13)
 
 
-def spectra_levels_by_models(dataset, models=None, varname='Eh', compensate=False,
-                             leg_loc='best', leg_box=None, resolution='n1024',
-                             y_limits=None, fig_name='test.png'):
+def spectral_fluxes_by_models(dataset, models=None, varname='Eh', compensate=False,
+                              leg_loc='best', leg_box=None, resolution='n1024',
+                              y_limits=None, fig_name='test.png'):
     if models is None:
         models = dataset.keys()
 
@@ -336,229 +337,6 @@ def spectra_levels_by_models(dataset, models=None, varname='Eh', compensate=Fals
 
     axes[0].legend(title='Altitude [km]', loc=leg_loc, frameon=False,
                    bbox_to_anchor=leg_box, fontsize=14, ncol=2)
-
-    plt.show()
-
-    fig.savefig(os.path.join('figures', fig_name), dpi=300)
-    plt.close(fig)
-
-
-def vertical_spectra_models(dataset, models=None, varname='Eh', base=10,
-                            leg_loc='best', leg_box=None, resolution='n1024',
-                            y_limits=None, fig_name='test.png'):
-    if models is None:
-        models = dataset.keys()
-
-    ax_titles = ['{}'.format(model.upper()) for model in models]
-
-    colors = color_sequences['DarkMint'][7][1:]
-
-    if y_limits is None:
-        y_limits = [0., 1.0]
-
-    y_label = r'Kinetic energy $[m^2/s^2]$'
-
-    if varname == 'Ew':
-
-        x_scales = [2 * kappa_from_lambda(np.linspace(18, 8, 2)),
-                    2 * kappa_from_lambda(np.linspace(6, 3.0, 2))]
-        scale_st = ['-2', '-3']
-        scale_mg = [5.2e-3, 2.2e-3]
-
-    elif varname == 'Eh':
-
-        x_scales = [2 * kappa_from_lambda(np.linspace(6, 3.25, 2)),
-                    2 * kappa_from_lambda(np.linspace(20, 12., 2))]
-        scale_st = ['-5/3', '-3']
-        scale_mg = [6.25e2, 1.1e2]
-
-    else:
-        raise ValueError('Wrong variable name')
-
-    # get coordinates
-    kappa_z = 2 * dataset['m']
-    lambda_z = kappa_from_lambda(kappa_z)
-
-    scales = dataset['scales'] / 2.0
-
-    # -----------------------------------------------------------------------------------
-    # Visualization of Kinetic energy and Available potential energy
-    # -----------------------------------------------------------------------------------
-    n = len(models)
-    cols = 2 if not n % 2 else n
-    rows = max(1, n // cols)
-
-    x_limits = kappa_from_lambda(np.array([20, 8e-1]))
-
-    lz_lines = [1.25, ]
-
-    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits, y_limits=y_limits,
-                                    base=base,
-                                    lambda_lines=lz_lines, y_label=y_label, y_scale='log',
-                                    ax_titles=ax_titles, truncation=resolution, frame=False)
-
-    for m, (ax, model) in enumerate(zip(axes, models)):
-
-        lz_lines = []
-        priority = []
-        for i, scale in enumerate(scales):
-            spectra, e_sel, e_seu = transform_spectra(dataset[model][varname][:, i])
-
-            # Create plots:
-            label = "{:d}".format(int(scale))
-
-            ax.fill_between(kappa_z, e_seu, e_sel, color='gray', interpolate=False, alpha=0.1)
-
-            ax.plot(kappa_z, spectra, lw=1.5, color=colors[i],
-                    label=label, linestyle='solid', alpha=1.0)
-
-            # Find spectral peaks:
-            peaks, peak_properties = find_peaks(spectra, height=0, distance=50, width=(2, None))
-            lz_lines.append(lambda_z[peaks].astype(int))
-            priority.append(peak_properties['prominences'])
-
-        lz_lines = np.hstack(np.reshape(lz_lines, -1))
-        priority = np.hstack(np.reshape(priority, -1))
-
-        lz_lines, lines_id = np.unique(lz_lines, return_index=True)
-
-        keep = _select_by_distance(priority[lines_id], 4.0)
-
-        for l_line in lz_lines[keep]:
-            m_line = kappa_from_lambda(l_line)
-
-            ax.axvline(x=m_line, ymin=0, ymax=1,
-                       color='gray', linewidth=0.8,
-                       alpha=0.6, linestyle='solid')
-
-            ax.annotate('{:d}km'.format(l_line),
-                        xy=(1.1 * m_line, 2 * y_limits[0]), xycoords='data',
-                        color='black', fontsize=10, horizontalalignment='left',
-                        verticalalignment='top')
-
-        # plot reference slopes
-        reference_slopes(ax, x_scales, scale_mg, scale_st)
-
-    axes[0].legend(title='Horizontal scale (km)', loc=leg_loc, frameon=False,
-                   bbox_to_anchor=leg_box, fontsize=12, ncol=1)
-
-    plt.show()
-
-    fig.savefig(os.path.join('figures', fig_name), dpi=300)
-    plt.close(fig)
-
-
-def vertical_spectra_by_scale(dataset, models=None, mode=None, varname='Eh',
-                              leg_loc='best', leg_box=None, resolution='m128',
-                              y_limits=None, fig_name='test.png'):
-    if models is None:
-        models = dataset.keys()
-
-    if mode is None:
-        mode = 'IG'
-    elif mode not in ['IG', 'RO']:
-        raise ValueError('Wrong variable name')
-    else:
-        pass
-
-    colors = color_sequences['models'][4]
-
-    if y_limits is None:
-        y_limits = [1e-10, 1e2]
-
-    if varname == 'Ew':
-
-        x_scales = [2 * kappa_from_lambda(np.linspace(6, 3., 2))]
-        if mode == 'IG':
-            scale_st = ['-3', ]
-            scale_mg = [3.2e-2, ]
-        else:
-            scale_st = ['-3', ]
-            scale_mg = [5e-4, ]
-    elif varname == 'Eh':
-
-        x_scales = [2 * kappa_from_lambda(np.linspace(7, 3., 2)),
-                    2 * kappa_from_lambda(np.linspace(20, 12.5, 2))]
-        if mode == 'IG':
-            scale_st = ['-1', '-3']
-            scale_mg = [1.5e2, 1e2]
-        else:
-            scale_st = ['-5/3', ]
-            scale_mg = [6.5e2, ]
-
-    else:
-        raise ValueError('Wrong variable name')
-
-    # get coordinates
-    kappa_z = 2 * dataset['m']
-    lambda_z = kappa_from_lambda(kappa_z)
-
-    scales = dataset['scales'] / 2.0
-
-    y_label = r'Kinetic energy $[m^2/s^2]$'
-    if mode == 'IG':
-        ax_titles = r'$E_{IG_w}$' if varname == 'Ew' else r'$E_{IG_h}$'
-    else:
-        ax_titles = r'$E_{RO_w}$' if varname == 'Ew' else r'$E_{RO_h}$'
-    # -----------------------------------------------------------------------------------
-    # Visualization of Kinetic energy and Available potential energy
-    # -----------------------------------------------------------------------------------
-    cols = max(1, len(scales))
-
-    x_limits = kappa_from_lambda(np.array([24, 8e-1]))
-    lz_lines = [1.2, ]
-
-    fig, axes = spectra_base_figure(n_rows=1, n_cols=cols, x_limits=x_limits, y_limits=y_limits,
-                                    lambda_lines=lz_lines, y_label=y_label, y_scale='log',
-                                    ax_titles=ax_titles, frame=False,
-                                    truncation=resolution)
-
-    for i, (ax, level) in enumerate(zip(axes, scales)):
-
-        lz_lines = []
-        priority = []
-        for m, model in enumerate(models):
-            model_data = dataset[model][varname]
-            # compute mean and standard deviation
-            spectra, e_sel, e_seu = transform_spectra(model_data[:, i])
-
-            # Create plots:
-            label = model.upper()
-
-            ax.fill_between(kappa_z, e_seu, e_sel, color='gray', interpolate=False, alpha=0.1)
-
-            ax.plot(kappa_z, spectra, lw=1.5, color=colors[m],
-                    label=label, linestyle='solid', alpha=1.0)
-
-            # Find spectral peaks:
-            peaks, peak_properties = find_peaks(spectra, height=0, distance=50, width=(2, None))
-            lz_lines.append(lambda_z[peaks].astype(int))
-            priority.append(peak_properties['prominences'])
-
-        lz_lines = np.hstack(np.reshape(lz_lines, -1))
-        priority = np.hstack(np.reshape(priority, -1))
-
-        lz_lines, lines_id = np.unique(lz_lines, return_index=True)
-
-        keep = _select_by_distance(priority[lines_id - 1], 2.0)
-
-        for l_line in lz_lines[keep]:
-            m_line = kappa_from_lambda(l_line)
-
-            ax.axvline(x=m_line, ymin=0, ymax=1,
-                       color='gray', linewidth=0.8,
-                       alpha=0.6, linestyle='solid')
-
-            ax.annotate(r'$m$ ~ 2$\pi~/$' + ' ({:d} km)'.format(l_line),
-                        xy=(1.1 * m_line, 2 * y_limits[0]), xycoords='data',
-                        color='black', fontsize=10, horizontalalignment='left',
-                        verticalalignment='top')
-
-        reference_slopes(ax, x_scales, scale_mg, scale_st, name='vertical')
-
-    if leg_loc is not None:
-        axes[0].legend(loc=leg_loc, bbox_to_anchor=leg_box,
-                       frameon=False, fontsize=14, ncol=1)
 
     plt.show()
 
@@ -816,118 +594,117 @@ def kinetic_energy_components(dataset, dataset_igws=None, dataset_rows=None, mod
     plt.close(fig)
 
 
-def vertical_velocity_spectral_models(dataset, dataset_regmodels=None, models=None,
-                                      variable_names=None, leg_loc='best', leg_box=None,
-                                      resolution='n1024', y_limits=None, fig_name='test.png'):
+def vertical_spectra_by_scale(dataset, models=None, mode=None, varname='Eh',
+                              leg_loc='best', leg_box=None, resolution='m128',
+                              y_limits=None, fig_name='test.png'):
     if models is None:
         models = dataset.keys()
+
+    if mode is None:
+        mode = 'IG'
+    elif mode not in ['IG', 'RO']:
+        raise ValueError('Wrong variable name')
+    else:
+        pass
+
+    colors = color_sequences['models'][4]
 
     if y_limits is None:
         y_limits = [1e-10, 1e2]
 
-    x_scales = [kappa_from_lambda(np.linspace(2600, 550, 2)),
-                kappa_from_lambda(np.linspace(300, 60, 2))]
-    scale_st = [['-1', '1/3'], ['2/3', ]]
-    scale_mg = [[6.0e-7, 2.5e-4], [1.5e-3, ]]
+    if varname == 'Ew':
+
+        x_scales = [2 * kappa_from_lambda(np.linspace(6, 3., 2))]
+        if mode == 'IG':
+            scale_st = ['-3', ]
+            scale_mg = [3.2e-2, ]
+        else:
+            scale_st = ['-3', ]
+            scale_mg = [5e-4, ]
+    elif varname == 'Eh':
+
+        x_scales = [2 * kappa_from_lambda(np.linspace(7, 3., 2)),
+                    2 * kappa_from_lambda(np.linspace(20, 12.5, 2))]
+        if mode == 'IG':
+            scale_st = ['-1', '-3']
+            scale_mg = [1.5e2, 1e2]
+        else:
+            scale_st = ['-5/3', ]
+            scale_mg = [6.5e2, ]
+
+    else:
+        raise ValueError('Wrong variable name')
 
     # get coordinates
-    height = dataset['height']
-    kappa = dataset['kappa']
+    kappa_z = 2 * dataset['m']
+    lambda_z = kappa_from_lambda(kappa_z)
 
-    show_regmodels = dataset_regmodels is not None
-
-    if show_regmodels:
-        kappa_rg = dataset_regmodels['kappa']
-        if variable_names is None:
-            variable_names = dataset_regmodels[models[0]].keys()
-    else:
-        kappa_rg = kappa
-        variable_names = []
-
-    if 'r' in variable_names:
-        r = dataset_regmodels['r']
-    else:
-        r = np.zeros_like(kappa)
+    scales = dataset['scales'] / 2.0
 
     y_label = r'Kinetic energy $[m^2/s^2]$'
-
-    ax_titles = []
-
-    for level in height:
-        for model in models:
-            ax_title = '{} ~ {:>2d} km'.format(model.upper(), np.round(level).astype(int))
-            ax_titles.append(ax_title)
-
+    if mode == 'IG':
+        ax_titles = r'$E_{IG_w}$' if varname == 'Ew' else r'$E_{IG_h}$'
+    else:
+        ax_titles = r'$E_{RO_w}$' if varname == 'Ew' else r'$E_{RO_h}$'
     # -----------------------------------------------------------------------------------
-    # Visualization of Kinetic energy and Helmholtz decomposition
+    # Visualization of Kinetic energy and Available potential energy
     # -----------------------------------------------------------------------------------
-    rows = max(1, len(height))
-    cols = max(1, len(models))
+    cols = max(1, len(scales))
 
-    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, y_limits=y_limits,
-                                    y_label=y_label, y_scale='log', ax_titles=ax_titles,
+    x_limits = kappa_from_lambda(np.array([24, 8e-1]))
+    lz_lines = [1.2, ]
+
+    fig, axes = spectra_base_figure(n_rows=1, n_cols=cols, x_limits=x_limits, y_limits=y_limits,
+                                    lambda_lines=lz_lines, y_label=y_label, y_scale='log',
+                                    ax_titles=ax_titles, frame=False,
                                     truncation=resolution)
 
-    for i, level in enumerate(height):
-        for m, model in enumerate(models):
+    for i, (ax, level) in enumerate(zip(axes, scales)):
 
-            ax = axes[i, m]
+        lz_lines = []
+        priority = []
+        for m, model in enumerate(models):
+            model_data = dataset[model][varname]
             # compute mean and standard deviation
-            spectra, e_sel, e_seu = transform_spectra(dataset[model]['Ew'][:, i])
+            spectra, e_sel, e_seu = transform_spectra(model_data[:, i])
 
             # Create plots:
-            ax.plot(kappa, spectra, lw=1.4, color='k', label=r'$E_{LS_w}$',
-                    linestyle='solid', alpha=1.0)
+            label = model.upper()
 
-            ax.fill_between(kappa, e_seu, e_sel, color='gray',
-                            interpolate=False, alpha=0.1)
+            ax.fill_between(kappa_z, e_seu, e_sel, color='gray', interpolate=False, alpha=0.1)
 
-            # plot IGW components
-            for v, varname in enumerate(variable_names):
-                label = r'$E_{{IG_{0}}}$'.format(varname.split('E')[-1])
-                rg_spectra, rg_sel, rg_seu = transform_spectra(
-                    dataset_regmodels[model][varname][:, i])
+            ax.plot(kappa_z, spectra, lw=1.5, color=colors[m],
+                    label=label, linestyle='solid', alpha=1.0)
 
-                ax.fill_between(kappa_rg, rg_seu, rg_sel, color='gray',
-                                interpolate=False, alpha=0.1)
+            # Find spectral peaks:
+            peaks, peak_properties = find_peaks(spectra, height=0, distance=50, width=(2, None))
+            lz_lines.append(lambda_z[peaks].astype(int))
+            priority.append(peak_properties['prominences'])
 
-                ax.plot(kappa_rg, rg_spectra, lw=1.4, color='k',  # colors[v],
-                        label=label, linestyle='dashed', alpha=1.0)
+        lz_lines = np.hstack(np.reshape(lz_lines, -1))
+        priority = np.hstack(np.reshape(priority, -1))
 
-            # Intersections between rotational and divergent IGW kinetic energies:
-            # wavenumber for which the intrinsic frequencies > f
-            kappa_waves, spectra_waves = intersections(kappa, r, 1.0, direction='increasing',
-                                                       return_y=True)
+        lz_lines, lines_id = np.unique(lz_lines, return_index=True)
 
-            # take first of multiple crossings
-            if not np.isscalar(kappa_waves):
-                kappa_waves = kappa_waves[0]
-                spectra_waves = spectra_waves[0]
+        keep = _select_by_distance(priority[lines_id - 1], 2.0)
 
-            # ignore crossing scales below effective resolution
-            if kappa_waves > kappa_from_lambda(40.):
-                kappa_cross_pos = -60
-            else:
-                kappa_cross_pos = 4
+        for l_line in lz_lines[keep]:
+            m_line = kappa_from_lambda(l_line)
 
-            # vertical lines denoting crossing scales
-            if not np.isnan(kappa_waves):
-                ax.vlines(x=kappa_waves, ymin=0., ymax=spectra_waves,
-                          color='black', linewidth=0.8, linestyle='dashed', alpha=0.6)
+            ax.axvline(x=m_line, ymin=0, ymax=1,
+                       color='gray', linewidth=0.8,
+                       alpha=0.6, linestyle='solid')
 
-                ax.annotate(r'$L_{IG_c}$' + '~ {:d} km'.format(int(kappa_from_lambda(kappa_waves))),
-                            xy=(kappa_waves, y_limits[0]), xycoords='data',
-                            xytext=(kappa_cross_pos, 20.), textcoords='offset points',
-                            color='black', fontsize=9,
-                            horizontalalignment='left', verticalalignment='top')
+            ax.annotate(r'$m$ ~ 2$\pi~/$' + ' ({:d} km)'.format(l_line),
+                        xy=(1.1 * m_line, 2 * y_limits[0]), xycoords='data',
+                        color='black', fontsize=10, horizontalalignment='left',
+                        verticalalignment='top')
 
-            # plot reference slopes
-            level_id = level > 15.0
+        reference_slopes(ax, x_scales, scale_mg, scale_st, name='vertical')
 
-            reference_slopes(ax, x_scales, scale_mg[level_id], scale_st[level_id])
-
-        axes[i, 0].legend(loc=leg_loc, bbox_to_anchor=leg_box,
-                          ncol=1, frameon=False, fontsize=14)
+    if leg_loc is not None:
+        axes[0].legend(loc=leg_loc, bbox_to_anchor=leg_box,
+                       frameon=False, fontsize=14, ncol=1)
 
     plt.show()
 

@@ -1,5 +1,7 @@
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
+from scipy.integrate import odeint
+from scipy.interpolate import interp1d
 
 import constants as cn
 
@@ -80,6 +82,7 @@ def geopotential_height(temperature, sfc_p, sfc_h, pressure, axis=0):
     nlevels = pressure.size
 
     temp = np.moveaxis(temperature, axis, 1)
+    # temp = np.moveaxis(temperature, axis, 0)
 
     ashape = temperature.shape[:1]
 
@@ -106,6 +109,58 @@ def geopotential_height(temperature, sfc_p, sfc_h, pressure, axis=0):
 
     # return geopotential height (m)
     return np.moveaxis(height, 1, axis)
+
+
+def geopotential_from_rho(alpha, sfc_p, sfc_h, pressure, axis=0):
+    """
+    Computes geopotential height from pressure and temperature profiles
+
+    :param alpha: specific volume profile
+    :param pressure: pressure profile
+    :param sfc_p: surface pressure
+    :param sfc_h: surface height
+    :param axis: specifies axis of vertical dimension
+    :return: geopotential height
+    """
+
+    phi_sfc = height_to_geopotential(sfc_h)
+
+    nlevels = pressure.size
+
+    alpha = np.moveaxis(alpha, axis, 1)
+
+    ashape = alpha.shape[:1]
+
+    # Compute height via the hypsometric equation (hydrostatic layer thickness).
+    phi = np.zeros_like(alpha)
+
+    # Search last level pierced by terrain for each vertical column
+    # works for data ordered from the surface to the model top
+    level_m = nlevels - np.searchsorted(np.sort(pressure), sfc_p)
+
+    for ij in np.ndindex(ashape):
+        # mask data above the surface
+        ind_atm = level_m[ij]
+
+        # approximate surface temperature with first level above the ground
+        alpha_s = alpha[ij][ind_atm:ind_atm + 1]
+
+        pres_m = np.append(sfc_p[ij], pressure[ind_atm:])
+        alpha_m = np.append(alpha_s, alpha[ij][ind_atm:], axis=0)
+
+        intp_rhs = interp1d(pres_m, alpha_m, kind='cubic',
+                            bounds_error=False,
+                            fill_value='extrapolate', axis=0)
+
+        # Integrating the hypsometric equation
+        initial_value = np.repeat(phi_sfc[ij], alpha_m.shape[1])
+
+        result = odeint(lambda y, p: - intp_rhs(p), initial_value, pres_m)
+
+        phi[ij][ind_atm:] = np.array(result[1:]).squeeze()
+
+    # return geopotential height (m)
+    return np.moveaxis(phi, 1, axis)
 
 
 def height_to_geopotential(height):

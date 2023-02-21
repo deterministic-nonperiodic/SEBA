@@ -1,11 +1,11 @@
 import functools
-import multiprocessing as mp
 
 import _spherepack
 import numpy as np
 import scipy.signal as sig
 import scipy.special as spec
 import scipy.stats as stats
+from joblib import Parallel, delayed, cpu_count
 from scipy.spatial import cKDTree
 
 from spectral_analysis import lambda_from_deg
@@ -225,6 +225,11 @@ def recover_spectra(data, info_dict):
     return np.moveaxis(data, [0, -1], spatial_dims)
 
 
+def get_num_cores():
+    """Returns number of physical CPU cores"""
+    return np.ceil(0.5 * cpu_count()).astype(int)
+
+
 def get_chunk_size(n_workers, len_iterable, factor=4):
     """Calculate chunk size argument for Pool-methods.
 
@@ -236,13 +241,48 @@ def get_chunk_size(n_workers, len_iterable, factor=4):
     return chunk_size
 
 
+def get_number_chunks(sample_size, workers, factor=4):
+    """
+        Calculate number of chunks for Pool-methods.
+    """
+    n_chunks = sample_size / get_chunk_size(workers, sample_size, factor=factor)
+
+    return np.ceil(n_chunks).astype(int)
+
+
 def number_chunks(sample_size, workers):
     # finds the integer factor of 'sample_size' closest to 'workers'
     # for parallel computations: ensures maximum cpu usage for chunk_size = 1
+    if sample_size < 2:
+        return 1
+
     jobs = workers
     while sample_size % jobs:
         jobs -= 1
     return jobs if jobs != 1 else workers
+
+
+def broadcast_1dto(arr, shape):
+    """
+    Broadcast a 1-dimensional array to a given shape using numpy rules
+    by appending dummy dimensions. Raises error if the array cannot be
+    broadcast to target shape.
+    """
+    a_size = arr.size
+    if a_size in shape:
+        # finds corresponding dimension from left to right.
+        # if shape contains multiple dimensions with the same size
+        # the result is broadcast to the left-most dimension
+        index = shape.index(a_size)
+    else:
+        raise ValueError("Array of size {} cannot "
+                         "be broadcast to shape: {}".format(a_size, shape))
+
+    # create extra dimensions to be appended to the array
+    lag = index == 0
+    extra_dims = tuple(range(index + int(lag), len(shape) - int(not lag)))
+
+    return np.expand_dims(arr, extra_dims)
 
 
 def getspecindx(ntrunc):
@@ -356,7 +396,7 @@ def latitudes_weights(nlat, gridtype):
     return lats, weights
 
 
-def infer_gridtype(latitudes):
+def inspect_gridtype(latitudes):
     """
     Determine a grid type by examining the points of a latitude
     dimension.
@@ -401,18 +441,22 @@ def infer_gridtype(latitudes):
     return gridtype, reference, wts
 
 
-def cumulative_flux(spectra):
+def cumulative_flux(spectra, axis=0):
     """
     Computes cumulative spectral energy transfer. The spectra are added starting
     from the largest wave number N (triangular truncation) to a given degree l.
     """
-    spectral_flux = np.zeros_like(spectra)
+    spectra_flux = spectra.copy()
+    dim_axis = spectra_flux.shape[axis]
+
+    if axis != 0:
+        spectra_flux = np.moveaxis(spectra_flux, axis, 0)
 
     # Set fluxes to 0 at ls=0 to avoid small truncation errors.
-    for ln in range(2, spectra.shape[0]):
-        spectral_flux[ln] = spectra[ln:].sum(axis=0)
+    for ln in range(dim_axis):
+        spectra_flux[ln] = spectra_flux[ln:].sum(axis=0)
 
-    return spectral_flux
+    return np.moveaxis(spectra_flux, 0, axis)
 
 
 def kernel_2d(fc, n):
@@ -436,10 +480,6 @@ def kernel_2d(fc, n):
     return w / w.sum()
 
 
-def convolve_chunk(a, func):
-    return np.array([func(ai) for ai in a])
-
-
 def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     if axis is None:
         axis = -1
@@ -447,32 +487,35 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     arr = np.moveaxis(data, axis, 0)
 
     if jobs is None:
-        jobs = min(mp.cpu_count(), arr.shape[0])
+        jobs = min(cpu_count(), arr.shape[0])
 
     # compute lanczos 2D kernel for convolution
     kernel = kernel_2d(cutoff_freq, window_size)
     kernel = np.expand_dims(kernel, 0)
 
+    # padding array using circular boundary conditions along the longitudinal dimension
+    # and constant mirror reflection along latitudinal dimension with the kernel size.
+    arr = np.pad(arr, ((0,), (window_size,), (0,)), mode='reflect')
+    arr = np.pad(arr, ((0,), (0,), (window_size,)), mode='wrap')
+
     # wrapper of convolution function for parallel computations
-    # convolve_2d = functools.partial(sig.convolve2d, in2=kernel, boundary='symm', mode='same')
     convolve_2d = functools.partial(sig.fftconvolve, in2=kernel, mode='same', axes=(1, 2))
 
     # Chunks of arrays along axis=0 for the mp mapping ...
-    chunks = np.array_split(arr, jobs, axis=0)
+    n_chunks = get_number_chunks(arr.shape[0], jobs, factor=4)
 
     # Create pool of workers
-    pool = mp.Pool(processes=jobs)
+    pool = Parallel(n_jobs=jobs, backend="threading")
 
-    # Applying 2D lanczos filter to data chunks
-    # result = pool.map(functools.partial(convolve_chunk, func=convolve2d), chunks)
-    result = pool.map(convolve_2d, chunks)
-
-    # Freeing the workers:
-    pool.close()
-    pool.join()
+    # applying lanczos filter in parallel
+    result = np.array(pool(delayed(convolve_2d)(chunk) for chunk in np.array_split(arr, n_chunks)))
 
     result = np.concatenate(result, axis=0)
+
     result[np.isnan(result)] = 1.0
+
+    # remove added pad
+    result = result[:, window_size:-window_size, window_size:-window_size]
 
     return np.moveaxis(result, 0, axis)
 
@@ -509,10 +552,10 @@ def terrain_mask(p, ps, smooth=True, jobs=None):
     # level_m = search_closet(p, ps)
 
     # create mask
-    beta = np.zeros((nlat, nlon, nlevels))
+    beta = np.ones((nlat, nlon, nlevels))
 
     for ij in np.ndindex(*level_m.shape):
-        beta[ij][level_m[ij]:] = 1.0
+        beta[ij][:level_m[ij]] = 0.0
 
     if smooth:  # generate a smoothed heavy-side function
         # Calculate normalised cut-off frequencies for zonal and meridional directions:

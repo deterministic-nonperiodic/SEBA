@@ -7,64 +7,57 @@ from matplotlib.ticker import ScalarFormatter
 
 from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
+from visualization import AnchoredText
 
-# from AtmosphericEnergyBudget import EnergyBudget
+# , color_sequences
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
-          'text.usetex': False, 'font.size': 12,
+          'text.usetex': True, 'font.size': 14,
           'font.family': 'serif', 'font.weight': 'normal'}
 plt.rcParams.update(params)
-plt.rcParams['legend.title_fontsize'] = 10
+plt.rcParams['legend.title_fontsize'] = 12
 
 warnings.filterwarnings('ignore')
 
 
-def reduce_to_1d(func, data, **kwargs):
-    res = xr.apply_ufunc(func, data, input_core_dims=[["plev"]],
+def reduce_to_1d(func, data, dim="plev", **kwargs):
+    res = xr.apply_ufunc(func, data, input_core_dims=[[dim]],
                          kwargs=kwargs, dask='allowed', vectorize=True)
-
     return res.mean(dim='time')
 
 
 if __name__ == '__main__':
     # Load dyamond dataset
-    model = 'IFS'
+    model = 'ICON'
     resolution = 'n256'
     data_path = 'data/'  # '/mnt/levante/energy_budget/grid_data/'
-    date_time = '20200127'
-    # file_names = data_path + '{}_atm_3d_inst_{}_PL_{}_{}.nc'
-    file_names = data_path + '{}_atm_3d_inst_{}_000.nc'
 
-    # dset_dyn = xr.merge([
-    #     xr.open_mfdataset(file_names.format(model, idv, resolution, date_time))
-    #     for idv in ['uvt', 'pwe']])
-    #
+    date_time = '20?'
+    file_names = data_path + '{}_atm_3d_inst_{}_{}.nc'
+
     # # load earth topography and surface pressure
-    # dset_sfc = xr.merge([
-    #     xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
-    #     xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
-    #
-    # sfc_hgt = dset_sfc.topography_c.values
+    # dset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
     # sfc_pres = dset_sfc.pres_sfc.values
-    #
-    # # Create energy budget object
-    # AEB = EnergyBudget(dset_dyn, ps=sfc_pres, ghsl=sfc_hgt,
-    #                    leveltype='pressure', filter_terrain=False)
 
-    dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution))
+    dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
+    # dataset_tnd = xr.open_mfdataset('data/{}_atm_3d_tend_{}_{}.nc'.format(model, resolution,
+    #                                                                       date_time))
 
     # load earth topography and surface pressure
     dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
     sfc_hgt = dset_sfc.topography_c.values
+    sfc_pres = None
 
     # Create energy budget object
-    AEB = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, leveltype='pressure', filter_terrain=False)
+    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres,
+                          leveltype='pressure', filter_terrain=True,
+                          jobs=1)
 
     # Compute diagnostics
-    Ek = AEB.horizontal_kinetic_energy()
-    Ea = AEB.available_potential_energy()
-    Ew = AEB.vertical_kinetic_energy()
+    Ek = budget.horizontal_kinetic_energy()
+    Ea = budget.available_potential_energy()
+    Ew = budget.vertical_kinetic_energy()
 
     prange_trp = [500e2, 950e2]
     prange_stp = [50e2, 500e2]
@@ -72,23 +65,26 @@ if __name__ == '__main__':
     # Kinetic energy in vector form accumulate and integrate vertically
     # average over samples:
     # Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]
-    Ek_trp = reduce_to_1d(AEB.vertical_integration, Ek, pressure_range=prange_trp)[1:-1]
-    Ew_trp = reduce_to_1d(AEB.vertical_integration, Ew, pressure_range=prange_trp)[1:-1]
-    Ea_trp = reduce_to_1d(AEB.vertical_integration, Ea, pressure_range=prange_trp)[1:-1]
+    Ek_trp = reduce_to_1d(budget.vertical_integration, Ek, pressure_range=prange_trp)[1:-1]
+    Ew_trp = reduce_to_1d(budget.vertical_integration, Ew, pressure_range=prange_trp)[1:-1]
+    Ea_trp = reduce_to_1d(budget.vertical_integration, Ea, pressure_range=prange_trp)[1:-1]
 
-    Ek_stp = reduce_to_1d(AEB.vertical_integration, Ek, pressure_range=prange_stp)[1:-1]
-    Ew_stp = reduce_to_1d(AEB.vertical_integration, Ew, pressure_range=prange_stp)[1:-1]
-    Ea_stp = reduce_to_1d(AEB.vertical_integration, Ea, pressure_range=prange_stp)[1:-1]
+    Ek_stp = reduce_to_1d(budget.vertical_integration, Ek, pressure_range=prange_stp)[1:-1]
+    Ew_stp = reduce_to_1d(budget.vertical_integration, Ew, pressure_range=prange_stp)[1:-1]
+    Ea_stp = reduce_to_1d(budget.vertical_integration, Ea, pressure_range=prange_stp)[1:-1]
 
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
     kappa = 1e3 * Ek_trp.kappa.values  # km^-1
 
-    xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
+    x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
     xticks = np.array([1, 10, 100, 1000])
 
-    ylimits = [0.5e-3, 5e6]
+    # x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
+    # xticks = np.array([2, 20, 200, 2000])
+
+    y_limits = [0.5e-3, 5e6]
 
     x_lscale = kappa_from_lambda(np.linspace(3200, 650., 2))
     x_sscale = kappa_from_lambda(np.linspace(500, 100., 2))
@@ -143,8 +139,8 @@ if __name__ == '__main__':
     ax.set_xlabel(r'Spherical wavenumber', fontsize=14, labelpad=4)
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
-    ax.set_xlim(*xlimits)
-    ax.set_ylim(*ylimits)
+    ax.set_xlim(*x_limits)
+    ax.set_ylim(*y_limits)
     ax.legend(title=r"  $p \geq 500$    $p < 500$ hPa ", loc='upper right', fontsize=12, ncol=2)
 
     plt.show()
@@ -155,38 +151,63 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    kappa = 1e3 * AEB.kappa_h
+    kappa = 1e3 * budget.kappa_h
 
-    # Cumulative fluxes
-    pik, pia = AEB.cumulative_energy_fluxes()
-
-    # Energy conversion from APE to KE
-    cka = AEB.energy_conversion()
+    # Cumulative fluxes:
+    # - Nonlinear energy fluxes
+    # - Energy conversion from APE to KE
+    # - Vertical energy fluxes
+    pik, pia, cka, cdr, vfk, vfa = budget.cumulative_energy_fluxes()
 
     # linear spectral transfer due to coriolis
-    lct = AEB.coriolis_linear_transfer()
+    lct = budget.coriolis_linear_transfer()
 
     # Perform vertical integration along last axis
     prange = [50e2, 450e2]
 
-    pik_l = reduce_to_1d(AEB.vertical_integration, pik, pressure_range=prange)
-    pia_l = reduce_to_1d(AEB.vertical_integration, pia, pressure_range=prange)
-    cka_l = reduce_to_1d(AEB.vertical_integration, cka, pressure_range=prange)
-    lct_l = reduce_to_1d(AEB.vertical_integration, lct, pressure_range=prange)
+    pik_l = reduce_to_1d(budget.vertical_integration, pik, pressure_range=prange)
+    pia_l = reduce_to_1d(budget.vertical_integration, pia, pressure_range=prange)
+    cka_l = reduce_to_1d(budget.vertical_integration, cka, pressure_range=prange)
+    cdr_l = reduce_to_1d(budget.vertical_integration, cdr, pressure_range=prange)
+    lct_l = reduce_to_1d(budget.vertical_integration, lct, pressure_range=prange)
+
+    # Total vertical inflow from layer bottom to top
+    vfk_l = reduce_to_1d(budget.vertical_integration, vfk, pressure_range=prange)
+    vfa_l = reduce_to_1d(budget.vertical_integration, vfa, pressure_range=prange)
 
     # Create figure
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
+
+    pit_l = pik_l + pia_l
+    vft_l = vfk_l + vfa_l
+
+    y_min = 1.5 * np.nanmin([pik_l, cdr_l])
+    y_max = 1.5 * np.nanmax([pit_l, vft_l, cka_l])
+
     xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
+    ylimits = [y_min, y_max]
 
-    ax.semilogx(kappa, pik_l + pia_l, label=r'$\Pi = \Pi_K + \Pi_A$',
-                linewidth=1.2, linestyle='-', color='k')
-    ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=1., linestyle='-', color='red')
-    ax.semilogx(kappa, pia_l, label=r'$\Pi_A$', linewidth=1., linestyle='-', color='navy')
-    ax.semilogx(kappa, cka_l, label=r'$C_{AK}$', linewidth=1., linestyle='--', color='green')
-    ax.semilogx(kappa, lct_l, label=r'$L_{c}$', linewidth=1., linestyle='-.', color='magenta')
-    ax.set_ylabel(r'Cumulative energy flux ($W / m^2$)', fontsize=14)
+    at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
+    at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
+    ax.add_artist(at)
 
-    ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=0.8, linestyle='dashed', alpha=0.25)
+    ax.semilogx(kappa, pit_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=2.5, linestyle='-',
+                color='k')
+    ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=1.6, linestyle='-', color='red')
+    ax.semilogx(kappa, pia_l, label=r'$\Pi_A$', linewidth=1.6, linestyle='-', color='navy')
+
+    ax.semilogx(kappa, cka_l, label=r'$C_{A\rightarrow D}$',
+                linewidth=1.6, linestyle='--', color='green')
+    ax.semilogx(kappa, cdr_l, label=r'$C_{D\rightarrow R}$',
+                linewidth=1.6, linestyle='--', color='cyan')
+
+    # ax.semilogx(kappa, lct_l, label=r'$L_c$', linewidth=1.6, linestyle='--', color='orange')
+    ax.semilogx(kappa, vfk_l + vfa_l, label=r'$F_{\uparrow}(p_b) - F_{\uparrow}(p_t)$',
+                linewidth=1.6, linestyle='-.', color='magenta')
+
+    ax.set_ylabel(r'Cumulative energy flux ($W~m^{-2}$)', fontsize=15)
+
+    ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=1.2, linestyle='dashed', alpha=0.5)
 
     secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
     secax.xaxis.set_major_formatter(ScalarFormatter())
@@ -199,23 +220,70 @@ if __name__ == '__main__':
     secax.set_xlabel(r'wavelength $(km)$', fontsize=14, labelpad=5)
 
     ax.set_xlim(*xlimits)
-    ax.set_ylim(-1., 1.5)
+    ax.set_ylim(*ylimits)
 
     prange_str = [int(1e-2 * p) for p in sorted(prange)]
 
     ax.legend(title=r"{:4d} $\leq p \leq$ {:4d} hPa ".format(*prange_str), loc='upper right',
-              fontsize=12)
+              fontsize=14)
     plt.show()
 
-    fig.savefig('figures/icon_nonlinear_fluxes_{}_{}-{}.pdf'.format(resolution, *prange_str),
+    fig.savefig('figures/{}_nonlinear_fluxes_{}_{}-{}.pdf'.format(model, resolution, *prange_str),
                 dpi=300)
     plt.close(fig)
 
-    # -----------------------------------------------------------------------------------------------
-    # Combine results into a dataset and export to netcdf
-    # -----------------------------------------------------------------------------------------------
-    dataset = xr.merge([Ek, Ea, Ew, pik, pia, lct], compat="no_conflicts")
-    dataset.attrs.clear()  # clear global attributes
-    dataset.attrs.update(dataset_dyn.attrs)
-
-    dataset.to_netcdf("data/energy_budget/{}_energy_budget_{}.nc".format(model, resolution))
+    # ----------------------------------------------------------------------------------------------
+    # Compute APE tendency from parameterized processes
+    # ----------------------------------------------------------------------------------------------
+    # Perform vertical integration along last axis prange = [50e2, 950e2]
+    #
+    # ape_tendecies = {}
+    # for name in ['ddt_temp_dyn', 'ddt_temp_radlw', 'ddt_temp_radsw',
+    #              'ddt_temp_rad', 'ddt_temp_conv']:
+    #
+    #     pname = name.split('_')[-1].lower()
+    #
+    #     tend_grid = dataset_tnd.get(name)
+    #     if tend_grid is not None:
+    #         ape_tendecies[pname] = budget.get_ape_tendency(tend_grid, name="ddt_ape_" + pname,
+    #                                                        cumulative=True)
+    #
+    # # Create figure
+    # fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
+    # xlimits = 1e3 * kappa_from_deg(np.array([1, 1000]))
+    #
+    # at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
+    # at.patch.set_boxstyle("round,pad=-0.1,rounding_size=0.2")
+    # ax.add_artist(at)
+    #
+    # colors = color_sequences['models'][8]
+    # for i, (name, tend) in enumerate(ape_tendecies.items()):
+    #     ax.semilogx(kappa, 1e6 * kappa * tend, label=name, linewidth=1.6,
+    #                 linestyle='-', color=colors[i])
+    #
+    # ax.set_ylabel(r'APE tendency ($W / m^2$)', fontsize=14)
+    #
+    # ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=0.8, linestyle='dashed', alpha=0.25)
+    #
+    # secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
+    # secax.xaxis.set_major_formatter(ScalarFormatter())
+    #
+    # ax.xaxis.set_major_formatter(ScalarFormatter())
+    # ax.set_xticks(1e3 * kappa_from_deg(xticks))
+    # ax.set_xticklabels(xticks)
+    #
+    # ax.set_xlabel(r'wavenumber', fontsize=14, labelpad=4)
+    # secax.set_xlabel(r'wavelength $(km)$', fontsize=14, labelpad=5)
+    #
+    # ax.set_xlim(*xlimits)
+    # ax.set_ylim(-1, 2)
+    #
+    # prange_str = [int(1e-2 * p) for p in sorted(prange)]
+    #
+    # ax.legend(title=r"{:4d} $\leq p \leq$ {:4d} hPa ".format(*prange_str), loc='upper right',
+    #           fontsize=15)
+    # plt.show()
+    #
+    # fig.savefig('figures/{}_ape_tendencies_{}_{}-{}.pdf'.format(model, resolution, *prange_str),
+    #             dpi=300)
+    # plt.close(fig)

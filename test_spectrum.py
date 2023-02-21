@@ -6,7 +6,7 @@ import pyshtools as pysh
 import spharm
 import xarray as xr
 
-from AtmosphericEnergyBudget import EnergyBudget
+from seba import EnergyBudget
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -30,7 +30,7 @@ def sh_cross_spectrum(grid1, grid2):
         clm_1 = pysh.SHGrid.from_array(grid1[..., ix], grid='GLQ').expand()
         clm_2 = pysh.SHGrid.from_array(grid2[..., ix], grid='GLQ').expand()
 
-        clm_sqd[:, ix] = clm_1.cross_spectrum(clm_2, convention='power')
+        clm_sqd[:, ix] = clm_1.compute_spectra(clm_2, convention='power')
 
     return clm_sqd.reshape((nlat,) + tuple(extra_dims))
 
@@ -39,7 +39,7 @@ if __name__ == '__main__':
     # Load dyamond dataset
     resolution = 'n128'
     data_path = 'data/'
-    date_time = '20200127'
+    date_time = '20200128'
     file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 
     dset_dyn = xr.merge([
@@ -47,24 +47,19 @@ if __name__ == '__main__':
         for idv in ['uvt', 'pwe']])
 
     # load earth topography and surface pressure
-    dset_sfc = xr.merge([
-        xr.open_dataset(data_path + 'ICON_sfcp_{}_{}.nc'.format(date_time, resolution)),
-        xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))])
+    dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
 
     sfc_hgt = dset_sfc.topography_c.values
-    sfc_pres = dset_sfc.pres_sfc.values
+    sfc_pres = None  # dset_sfc.pres_sfc.values
 
     # Create energy budget object
-    AEB = EnergyBudget(
-        dset_dyn['u'].values, dset_dyn['v'].values, dset_dyn['omega'].values,
-        dset_dyn['temp'].values, dset_dyn['plev'].values, ps=sfc_pres, ghsl=sfc_hgt,
-        leveltype='pressure', gridtype='gaussian', truncation=None, legfunc='stored',
-        axes='tzyx', filter_terrain=False, jobs=None)
+    AEB = EnergyBudget(dset_dyn, ghsl=sfc_hgt, ps=sfc_pres,
+                       leveltype='pressure', filter_terrain=False, jobs=1)
 
     # visualize profiles
-    variables = ['w', 'omega', 'wind', 'theta_pbn']
+    variables = ['omega', 'wind', 'theta_pbn']
     vars_info = {
-        'w': ('scalar', r'Vertical kinetic energy $(m^{2}~s^{-2})$'),
+        # 'w': ('scalar', r'Vertical kinetic energy $(m^{2}~s^{-2})$'),
         'omega': ('scalar', r'Pressure velocity $(Pa^{2}~s^{-2})$'),
         'theta_pbn': ('scalar', r'${\theta^{\prime}}^{2}~(K^{2})$'),
         'wind': ('vector', r'Horizontal kinetic energy  $(m^{2}~s^{-2})$')
@@ -72,10 +67,11 @@ if __name__ == '__main__':
     pressure = 1e-2 * AEB.p
     lats, weights_gs = spharm.gaussian_lats_wts(AEB.nlat)
 
-    weights_ln = np.cos(np.deg2rad(lats))  # np.ones_like(lats) / lats.size
+    weights_ln = weights_gs  # np.ones_like(lats) / lats.size
 
     n_cols = len(variables)
-    fig, axes = plt.subplots(nrows=1, ncols=n_cols, figsize=(n_cols * 5, 10.0), constrained_layout=True)
+    fig, axes = plt.subplots(nrows=1, ncols=n_cols, figsize=(n_cols * 5, 10.0),
+                             constrained_layout=True)
 
     results = {}
     # Compute spectrum of scalar variables
@@ -96,7 +92,8 @@ if __name__ == '__main__':
             data_gs = AEB.global_average(data_sqd, weights=weights_gs).mean(0)
             data_sp = AEB._scalar_spectra(data).sum(0).mean(0)
 
-        lines = ax.plot(data_ln.T, pressure, '-r', data_gs.T, pressure, '-b', data_sp.T, pressure, '--k', lw=1.5)
+        lines = ax.plot(data_ln.T, pressure, '-r', data_gs.T, pressure, '-b',
+                        data_sp.T, pressure, '--k', lw=1.5)
 
         ax.legend(lines, ['global mean', 'global average', 'recovered'],
                   title=vars_info[variable][1], loc='best')
