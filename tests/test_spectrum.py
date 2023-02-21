@@ -38,7 +38,7 @@ def sh_cross_spectrum(grid1, grid2):
 if __name__ == '__main__':
     # Load dyamond dataset
     resolution = 'n128'
-    data_path = 'data/'
+    data_path = '../data/'
     date_time = '20200128'
     file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
 

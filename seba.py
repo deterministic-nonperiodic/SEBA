@@ -279,7 +279,7 @@ class EnergyBudget:
         self.wind_shear = self._vertical_gradient(self.wind)
 
         # Perform Helmholtz decomposition
-        self.wind_rot, self.wind_div = self.helmholtz()
+        self.wind_div, self.wind_rot = self.helmholtz()
 
         # filtering horizontal wind after computing divergence/vorticity
         self.wind = self.filter_topography(self.wind)
@@ -503,11 +503,11 @@ class EnergyBudget:
         cross_wind = np.stack((-self.wind[1], self.wind[0]))
 
         # Rotational effect due to the Coriolis force on the spectral
-        # fc = broadcast_1dto(self.fc, cross_wrot.shape)
+        fc = broadcast_1dto(self.fc, cross_wrot.shape)
 
-        # deformation = - self._vector_spectra(self.wind_rot, fc * cross_wind)
-        # deformation -= self._vector_spectra(self.wind, fc * cross_wrot)
-        deformation = -self._vector_spectra(self.wind_rot, self.vrt * cross_wind)
+        deformation = - self._vector_spectra(self.wind_rot, fc * cross_wind)
+        deformation -= self._vector_spectra(self.wind, fc * cross_wrot)
+        deformation -= self._vector_spectra(self.wind_rot, self.vrt * cross_wind)
         deformation -= self._vector_spectra(self.wind, self.vrt * cross_wrot)
 
         return (vertical_transport + deformation) / 2.0
@@ -539,11 +539,11 @@ class EnergyBudget:
         cross_wdiv = np.stack((-self.wind_div[1], self.wind_div[0]))
 
         # Rotational effect due to the Coriolis force on the spectral
-        # fc = broadcast_1dto(self.fc, cross_wdiv.shape)
+        fc = broadcast_1dto(self.fc, cross_wdiv.shape)
 
-        # deformation = - self._vector_spectra(self.wind_div, fc * cross_wind)
-        # deformation -= self._vector_spectra(self.wind, fc * cross_wdiv)
-        deformation = - self._vector_spectra(self.wind_div, self.vrt * cross_wind)
+        deformation = - self._vector_spectra(self.wind_div, fc * cross_wind)
+        deformation -= self._vector_spectra(self.wind, fc * cross_wdiv)
+        deformation -= self._vector_spectra(self.wind_div, self.vrt * cross_wind)
         deformation -= self._vector_spectra(self.wind, self.vrt * cross_wdiv)
 
         return (advective_flux + vertical_transport + deformation) / 2.0
@@ -632,9 +632,6 @@ class EnergyBudget:
 
         linear_term = - self._vector_spectra(self.wind, fc * cross_wind)
 
-        linear_term = self._add_metadata(linear_term, 'lc', 'spectral',
-                                         units='W m**-2', standard_name='linear_transfer',
-                                         long_name='coriolis linear transfer')
         return linear_term
 
     def non_conservative_term(self):
@@ -644,6 +641,9 @@ class EnergyBudget:
         return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
 
     def cumulative_energy_fluxes(self):
+
+        # Linear transfer due to Coriolis
+        lc_k = cumulative_flux(self.coriolis_linear_transfer())
 
         # Energy conversion between KE and APE (contains metadata)
         c_ka = cumulative_flux(self.conversion_ape_dke())
@@ -665,7 +665,7 @@ class EnergyBudget:
         pi_a = cumulative_flux(self.ape_nonlinear_transfer())
 
         # add metadata
-        pi_k = self._add_metadata(pi_k, 'pi_ke', 'spectral',
+        pi_k = self._add_metadata(pi_k + lc_k, 'pi_ke', 'spectral',
                                   units='W m**-2', standard_name='nonlinear_tke_flux',
                                   long_name='cumulative spectral flux of kinetic energy')
 
@@ -673,6 +673,10 @@ class EnergyBudget:
                                   units='W m**-2', standard_name='nonlinear_ape_flux',
                                   long_name='cumulative spectral flux of'
                                             'available potential energy')
+
+        lc_k = self._add_metadata(lc_k, 'lc', 'spectral',
+                                  units='W m**-2', standard_name='linear_transfer',
+                                  long_name='coriolis linear transfer')
 
         # Cumulative vertical energy fluxes
         vf_k = cumulative_flux(self._vertical_gradient(self.ke_vertical_flux()))
@@ -688,7 +692,7 @@ class EnergyBudget:
                                   long_name='cumulative vertical flux of'
                                             'available potential energy')
 
-        return pi_k, pi_a, c_ka, c_dr, vf_k, vf_a
+        return pi_k, lc_k, pi_a, c_ka, c_dr, vf_k, vf_a
 
     def get_ke_tendency(self, tendency, name=None, cumulative=False):
         r"""

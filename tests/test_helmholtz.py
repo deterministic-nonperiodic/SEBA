@@ -20,10 +20,10 @@ plt.rcParams['legend.title_fontsize'] = 12
 warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
-    # Load dyamond dataset
+
     model = 'ICON'
     resolution = 'n256'
-    data_path = 'data/'  # '/mnt/levante/energy_budget/grid_data/'
+    data_path = '../data/'  # '/mnt/levante/energy_budget/grid_data/'
 
     date_time = '20?'
     file_names = data_path + '{}_atm_3d_inst_{}_{}.nc'
@@ -48,10 +48,9 @@ if __name__ == '__main__':
     prange = [50e2, 450e2]
 
     # linear spectral transfer due to coriolis
-    lct = cumulative_flux(budget.coriolis_linear_transfer(), axis=-1)
-    lct_l = budget.vertical_integration(lct, pressure_range=prange, axis=1).mean(0)
+    lck = cumulative_flux(budget.coriolis_linear_transfer())
 
-    pik = cumulative_flux(budget.ke_nonlinear_transfer())
+    pik = cumulative_flux(budget.ke_nonlinear_transfer()) + lck
     pik_l = budget.vertical_integration(pik, pressure_range=prange, axis=-1).mean(-1)
 
     pid = cumulative_flux(budget.dke_nonlinear_transfer())
@@ -60,26 +59,25 @@ if __name__ == '__main__':
     pir = cumulative_flux(budget.rke_nonlinear_transfer())
     pir_l = budget.vertical_integration(pir, pressure_range=prange, axis=-1).mean(-1)
 
+    # Check consistency of the kinetic energy transfer of rotational and divergent components
+    assert np.allclose(pir_l + pid_l, pik_l, atol=1e-2), "Inconsistent kinetic energy transfers"
+
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy budget
     # ----------------------------------------------------------------------------------------------
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
 
-    y_min = 1.5 * np.nanmin(pik_l)
-    y_max = 1.5 * np.nanmax(pik_l)
-
     x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
     xticks = np.array([1, 10, 100, 1000])
 
     xlimits = 1e3 * kappa_from_deg(np.array([0, 1000]))
-    ylimits = [y_min, y_max]
+    ylimits = [-0.5, 0.5]
 
     at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
     at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
     ax.add_artist(at)
 
-    ax.semilogx(kappa, pik_l + lct_l, label=r'$\Pi_K$', linewidth=2., linestyle='-', color='k')
-    ax.semilogx(kappa, pir_l + pid_l, label=r'$\Pi_T$', linewidth=2., linestyle='--', color='k')
+    ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=2., linestyle='-', color='k')
     ax.semilogx(kappa, pir_l, label=r'$\Pi_R$', linewidth=1.6, linestyle='--', color='red')
     ax.semilogx(kappa, pid_l, label=r'$\Pi_D$', linewidth=1.6, linestyle='--', color='green')
 

@@ -31,7 +31,7 @@ if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
     resolution = 'n256'
-    data_path = 'data/'  # '/mnt/levante/energy_budget/grid_data/'
+    data_path = '../data/'  # '/mnt/levante/energy_budget/grid_data/'
 
     date_time = '20?'
     file_names = data_path + '{}_atm_3d_inst_{}_{}.nc'
@@ -155,12 +155,10 @@ if __name__ == '__main__':
 
     # Cumulative fluxes:
     # - Nonlinear energy fluxes
+    # - linear spectral transfer due to coriolis
     # - Energy conversion from APE to KE
     # - Vertical energy fluxes
-    pik, pia, cka, cdr, vfk, vfa = budget.cumulative_energy_fluxes()
-
-    # linear spectral transfer due to coriolis
-    lct = budget.coriolis_linear_transfer()
+    pik, lct, pia, cka, cdr, vfk, vfa = budget.cumulative_energy_fluxes()
 
     # Perform vertical integration along last axis
     prange = [50e2, 450e2]

@@ -100,7 +100,7 @@ if __name__ == '__main__':
     dset = generate_atmospheric_state(samples=nsample, levels=nlevels, spatial_dims=data_shape)
 
     # load earth topography and surface pressure
-    ghsl = xr.open_dataset('data/DYAMOND2_topography_n128.nc').topography_c.values
+    ghsl = xr.open_dataset('../data/DYAMOND2_topography_n128.nc').topography_c.values
     sfcp = xr.open_dataset('data/DYAMOND2_sfcp_n128.nc').pres_sfc.values.squeeze()
 
     # Create energy budget object
