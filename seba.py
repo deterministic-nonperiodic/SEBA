@@ -14,9 +14,10 @@ from thermodynamics import geopotential_height as _geopotential_height
 from thermodynamics import height_to_geopotential, coriolis_parameter
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores
+from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores, get_number_chunks
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
-from tools import terrain_mask, transform_io, inspect_gridtype, broadcast_1dto, get_number_chunks
+from tools import terrain_mask, transform_io, inspect_gridtype
+from tools import rotate_vector, broadcast_1dto
 
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
 
@@ -330,11 +331,11 @@ class EnergyBudget:
     # -------------------------------------------------------------------------------
     # Methods for computing thermodynamic quantities
     # -------------------------------------------------------------------------------
-    def _add_metadata(self, data, name, datatype, **attributes):
+    def _add_metadata(self, data, name, gridtype, **attributes):
         """
             Add metadata and export variables as xr.DataArray
         """
-        if datatype == 'spectral':
+        if gridtype == 'spectral':
             coords = self.sp_coords
             data = recover_spectra(data, self.data_info)
         else:
@@ -411,6 +412,22 @@ class EnergyBudget:
         # Convert geopotential height to geopotential
         return height_to_geopotential(height)
 
+    def geostrophic_wind(self):
+        """
+        Computes the geostrophically balanced wind
+        """
+        h_gradient = self.horizontal_gradient(self.height - self.ghsl)
+
+        fc = broadcast_1dto(self.fc, h_gradient.shape)
+
+        return (cn.g / fc) * rotate_vector(h_gradient)
+
+    def ageostrophic_wind(self):
+        """
+        Computes the ageostrophic wind
+        """
+        return self.wind - self.geostrophic_wind()
+
     # -------------------------------------------------------------------------------
     # Methods for computing diagnostics: kinetic and available potential energies
     # -------------------------------------------------------------------------------
@@ -424,7 +441,8 @@ class EnergyBudget:
 
         kinetic_energy = (vrt_sp + div_sp) / (2.0 * self.vector_norm)
 
-        kinetic_energy = self._add_metadata(kinetic_energy, 'hke', 'spectral',
+        kinetic_energy = self._add_metadata(kinetic_energy, 'hke',
+                                            gridtype='spectral',
                                             units='m**2 s**-2',
                                             standard_name='horizontal_kinetic_energy',
                                             long_name='horizontal kinetic energy per unit mass')
@@ -438,7 +456,8 @@ class EnergyBudget:
         """
         kinetic_energy = self._scalar_spectra(self.w) / 2.0
 
-        kinetic_energy = self._add_metadata(kinetic_energy, 'vke', 'spectral',
+        kinetic_energy = self._add_metadata(kinetic_energy, 'vke',
+                                            gridtype='spectral',
                                             units='m**2 s**-2',
                                             standard_name='vertical_kinetic_energy',
                                             long_name='vertical kinetic energy per unit mass')
@@ -452,7 +471,8 @@ class EnergyBudget:
         """
         potential_energy = self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
 
-        potential_energy = self._add_metadata(potential_energy, 'ape', 'spectral',
+        potential_energy = self._add_metadata(potential_energy, 'ape',
+                                              gridtype='spectral',
                                               units='m**2 s**-2',
                                               standard_name='available_potential_energy',
                                               long_name='available potential energy per unit mass')
@@ -498,9 +518,9 @@ class EnergyBudget:
         vertical_transport = self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
         vertical_transport -= self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
 
-        # cross product of vertical unit vector and horizontal winds
-        cross_wrot = np.stack((-self.wind_rot[1], self.wind_rot[0]))
-        cross_wind = np.stack((-self.wind[1], self.wind[0]))
+        # cross product of vertical unit vector and horizontal winds (counterclockwise rotation)
+        cross_wind = rotate_vector(self.wind)
+        cross_wrot = rotate_vector(self.wind_rot)
 
         # Rotational effect due to the Coriolis force on the spectral
         fc = broadcast_1dto(self.fc, cross_wrot.shape)
@@ -535,8 +555,8 @@ class EnergyBudget:
         vertical_transport -= self._vector_spectra(self.wind_div, self.omega * self.wind_shear)
 
         # cross product of vertical unit vector and horizontal winds
-        cross_wind = np.stack((-self.wind[1], self.wind[0]))
-        cross_wdiv = np.stack((-self.wind_div[1], self.wind_div[0]))
+        cross_wind = rotate_vector(self.wind)
+        cross_wdiv = rotate_vector(self.wind_div)
 
         # Rotational effect due to the Coriolis force on the spectral
         fc = broadcast_1dto(self.fc, cross_wdiv.shape)
@@ -590,26 +610,41 @@ class EnergyBudget:
         return
 
     def conversion_ape_dke(self):
-        # Conversion of APE to KE
-        cke_ape = - self._scalar_spectra(self.omega, self.alpha)
-
-        return cke_ape
+        # Conversion of Available Potential energy into kinetic energy (Eq. 19)
+        return - self._scalar_spectra(self.omega, self.alpha)
 
     def conversion_dke_rke(self):
-        """Conversion from divergent to rotational energy
+        """Conversion from divergent to rotational kinetic energy
+        """
+
+        # Nonlinear interaction term due to relative vorticity
+        nlt_interaction = self.conversion_dke_rke_vorticity()
+
+        # Rotational effect due to the Coriolis force on the spectral
+        lct_interaction = self.conversion_dke_rke_coriolis()
+
+        # Vertical transfer
+        vertical_transfer = self.conversion_dke_rke_vertical()
+
+        return nlt_interaction + lct_interaction + vertical_transfer
+
+    def conversion_dke_rke_vertical(self):
+        """Conversion from divergent to rotational energy due to vertical transfer
         """
 
         # vertical transfer
         vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
         vertical_transfer += self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
 
-        # cross product of vertical unit vector and horizontal winds
-        cw_rot = np.stack((-self.wind_rot[1], self.wind_rot[0]))
-        cw_div = np.stack((-self.wind_div[1], self.wind_div[0]))
+        return - vertical_transfer / 2.0
 
-        # nonlinear interaction term
-        nlt_interaction = self._vector_spectra(self.wind_div, self.vrt * cw_rot)
-        nlt_interaction -= self._vector_spectra(self.wind_rot, self.vrt * cw_div)
+    def conversion_dke_rke_coriolis(self):
+        """Conversion from divergent to rotational energy
+        """
+
+        # cross product of vertical unit vector and horizontal winds
+        cw_rot = rotate_vector(self.wind_rot)
+        cw_div = rotate_vector(self.wind_div)
 
         # Rotational effect due to the Coriolis force on the spectral
         # transfer of divergent kinetic energy
@@ -618,7 +653,21 @@ class EnergyBudget:
         ct_interaction = self._vector_spectra(self.wind_div, fc * cw_rot)
         ct_interaction -= self._vector_spectra(self.wind_rot, fc * cw_div)
 
-        return (nlt_interaction + ct_interaction - vertical_transfer) / 2.0
+        return ct_interaction / 2.0
+
+    def conversion_dke_rke_vorticity(self):
+        """Conversion from divergent to rotational energy
+        """
+
+        # cross product of vertical unit vector and horizontal winds
+        cw_rot = rotate_vector(self.wind_rot)
+        cw_div = rotate_vector(self.wind_div)
+
+        # nonlinear interaction term
+        nlt_interaction = self._vector_spectra(self.wind_div, self.vrt * cw_rot)
+        nlt_interaction -= self._vector_spectra(self.wind_rot, self.vrt * cw_div)
+
+        return nlt_interaction / 2.0
 
     def diabatic_conversion(self):
         # need to estimate Latent heat release*
@@ -626,7 +675,7 @@ class EnergyBudget:
 
     def coriolis_linear_transfer(self):
         # Linear Coriolis transfer
-        cross_wind = np.stack((-self.wind[1], self.wind[0]))
+        cross_wind = rotate_vector(self.wind)
 
         fc = broadcast_1dto(self.fc, cross_wind.shape)
 
@@ -641,6 +690,9 @@ class EnergyBudget:
         return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
 
     def cumulative_energy_fluxes(self):
+        """
+        Computes each term in spectral energy budget and return as xr.DataArray objects.
+        """
 
         # Linear transfer due to Coriolis
         lc_k = cumulative_flux(self.coriolis_linear_transfer())
@@ -648,14 +700,14 @@ class EnergyBudget:
         # Energy conversion between KE and APE (contains metadata)
         c_ka = cumulative_flux(self.conversion_ape_dke())
 
-        c_ka = self._add_metadata(c_ka, 'cka', 'spectral',
+        c_ka = self._add_metadata(c_ka, 'cka', gridtype='spectral',
                                   units='W m**-2', standard_name='energy_conversion',
                                   long_name='conversion from kinetic to'
                                             'available potential energy')
 
         c_dr = cumulative_flux(self.conversion_dke_rke())
 
-        c_dr = self._add_metadata(c_dr, 'cdr', 'spectral',
+        c_dr = self._add_metadata(c_dr, 'cdr', gridtype='spectral',
                                   units='W m**-2', standard_name='energy_conversion',
                                   long_name='conversion from divergent to'
                                             'rotational kinetic energy')
@@ -665,16 +717,16 @@ class EnergyBudget:
         pi_a = cumulative_flux(self.ape_nonlinear_transfer())
 
         # add metadata
-        pi_k = self._add_metadata(pi_k + lc_k, 'pi_ke', 'spectral',
+        pi_k = self._add_metadata(pi_k + lc_k, 'pi_ke', gridtype='spectral',
                                   units='W m**-2', standard_name='nonlinear_tke_flux',
                                   long_name='cumulative spectral flux of kinetic energy')
 
-        pi_a = self._add_metadata(pi_a, 'pi_ape', 'spectral',
+        pi_a = self._add_metadata(pi_a, 'pi_ape', gridtype='spectral',
                                   units='W m**-2', standard_name='nonlinear_ape_flux',
                                   long_name='cumulative spectral flux of'
                                             'available potential energy')
 
-        lc_k = self._add_metadata(lc_k, 'lc', 'spectral',
+        lc_k = self._add_metadata(lc_k, 'lc', gridtype='spectral',
                                   units='W m**-2', standard_name='linear_transfer',
                                   long_name='coriolis linear transfer')
 
@@ -683,11 +735,11 @@ class EnergyBudget:
         vf_a = cumulative_flux(self._vertical_gradient(self.ape_vertical_flux()))
 
         # add metadata
-        vf_k = self._add_metadata(vf_k, 'ke_vf', 'spectral',
+        vf_k = self._add_metadata(vf_k, 'ke_vf', gridtype='spectral',
                                   units='W m**-2', standard_name='vertical_tke_flux',
                                   long_name='cumulative vertical flux of kinetic energy')
 
-        vf_a = self._add_metadata(vf_a, 'ape_vf', 'spectral',
+        vf_a = self._add_metadata(vf_a, 'ape_vf', gridtype='spectral',
                                   units='W m**-2', standard_name='vertical_ape_flux',
                                   long_name='cumulative vertical flux of'
                                             'available potential energy')
@@ -740,8 +792,9 @@ class EnergyBudget:
             ke_tendency = cumulative_flux(ke_tendency)
 
         if da_flag:
-            ke_tendency = self._add_metadata(ke_tendency, tendency_name, 'spectral',
-                                             units='W m**-2', standard_name=tendency_name)
+            ke_tendency = self._add_metadata(ke_tendency, tendency_name,
+                                             gridtype='spectral', units='W m**-2',
+                                             standard_name=tendency_name)
         return ke_tendency
 
     def get_ape_tendency(self, tendency, name=None, cumulative=True):
@@ -797,8 +850,9 @@ class EnergyBudget:
             ape_tendency = cumulative_flux(ape_tendency)
 
         if da_flag:
-            ape_tendency = self._add_metadata(ape_tendency, tendency_name, 'spectral',
-                                              units='W m**-2', standard_name=tendency_name)
+            ape_tendency = self._add_metadata(ape_tendency, tendency_name,
+                                              gridtype='spectral', units='W m**-2',
+                                              standard_name=tendency_name)
 
         return ape_tendency
 
@@ -825,14 +879,12 @@ class EnergyBudget:
         psi_grid, chi_grid = self.sfvp(self.wind)
 
         # Compute non-rotational components from streamfunction
-        uchi, vchi = self.horizontal_gradient(chi_grid)
-        chi_vector = np.stack([uchi, vchi])
+        chi_grad = self.horizontal_gradient(chi_grid)
 
         # Compute non-divergent components from velocity potential
-        vpsi, upsi = self.horizontal_gradient(psi_grid)
-        psi_vector = np.stack([-upsi, vpsi])
+        psi_grad = self.horizontal_gradient(psi_grid)
 
-        return chi_vector, psi_vector
+        return chi_grad, rotate_vector(psi_grad)
 
     # --------------------------------------------------------------------
     # Helper methods
@@ -872,11 +924,8 @@ class EnergyBudget:
 
         scalar: scalar field to be advected
         """
-        # computes the two components of the horizontal gradient: (2, nlat, nlon, ...)
-        scalar_gradient = self.horizontal_gradient(scalar)
-
-        # components of the scalar advection
-        scalar_advection = self.wind * np.stack(scalar_gradient)
+        # computes the components of the scalar advection: (2, nlat, nlon, ...)
+        scalar_advection = self.wind * self.horizontal_gradient(scalar)
 
         return np.sum(scalar_advection, axis=0)
 
@@ -920,7 +969,7 @@ class EnergyBudget:
 
         # Horizontal advection of zonal and meridional wind components
         # (components stored along the first dimension)
-        return kinetic_energy_gradient + self.vrt * np.stack((-wind[1], wind[0]))
+        return kinetic_energy_gradient + self.vrt * rotate_vector(wind)
 
     @transform_io
     def _compute_rotdiv(self, vector):

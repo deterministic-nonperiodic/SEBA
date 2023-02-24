@@ -285,6 +285,17 @@ def broadcast_1dto(arr, shape):
     return np.expand_dims(arr, extra_dims)
 
 
+def rotate_vector(vector, axis=0):
+    if axis != 0:
+        vector = np.moveaxis(vector, axis, 0)
+
+    rotated = np.stack([-vector[1], vector[0]])
+
+    if axis != 0:
+        rotated = np.moveaxis(rotated, 0, axis)
+    return rotated
+
+
 def getspecindx(ntrunc):
     """
      compute indices of zonal wavenumber (index_m) and degree (index_n)
