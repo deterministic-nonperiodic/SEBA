@@ -16,8 +16,8 @@ from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores, get_number_chunks
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
-from tools import terrain_mask, transform_io, inspect_gridtype
 from tools import rotate_vector, broadcast_1dto
+from tools import terrain_mask, transform_io, inspect_gridtype
 
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
 
@@ -84,9 +84,6 @@ class EnergyBudget:
             raise TypeError("Input 'dataset' must be xarray.Dataset instance or a string "
                             "containing a path to data.")
 
-        if variables is None:
-            print("No variable names given: I am just guessing now ...")
-
         # Initialize variables
         data, self.coords = parse_dataset(dataset, variables=variables)
 
@@ -106,10 +103,12 @@ class EnergyBudget:
             raise ValueError("Vertical velocity not found!")
         elif (omega is not None) and (w is None):
             # compute vertical velocity in height coordinates
-            w = vertical_velocity(p, omega.values, t, axis=1)
+            omega = omega.values
+            w = vertical_velocity(p, omega, t, axis=1)
         elif (w is not None) and (omega is None):
             # compute or load z coordinate
-            omega = pressure_vertical_velocity(p, w.values, t)
+            w = w.values
+            omega = pressure_vertical_velocity(p, w, t)
         else:
             w = w.values
             omega = omega.values
@@ -162,10 +161,13 @@ class EnergyBudget:
         elif np.isscalar(ps):
             self.ps = np.broadcast_to(ps, (self.nlat, self.nlon))
         else:
-            if np.ndim(ps) > 2:
-                self.ps = np.nanmean(ps, axis=0)
+            if isinstance(ps, xr.DataArray):
+                self.ps = ps.values.squeeze()
             else:
-                self.ps = ps
+                self.ps = ps.squeeze()
+
+            if np.ndim(self.ps) > 2:
+                self.ps = np.nanmean(self.ps, axis=0)
 
             if np.shape(self.ps) != self.grid_shape:
                 raise ValueError('If given, the surface pressure must be a scalar or a '
@@ -175,11 +177,15 @@ class EnergyBudget:
         if ghsl is None:
             self.ghsl = np.zeros((self.nlat, self.nlon))
         else:
-            if np.shape(ghsl) != self.grid_shape:
+            if isinstance(ghsl, xr.DataArray):
+                self.ghsl = ghsl.values.squeeze()
+            else:
+                self.ghsl = ghsl.squeeze()
+
+            if np.shape(self.ghsl) != self.grid_shape:
                 raise ValueError(
                     'If given, the surface height must be a 2D array with shape (nlat, nlon)'
                     'Expected shape {}, but got {}!'.format(self.grid_shape, np.shape(ghsl)))
-            self.ghsl = ghsl
 
         # -----------------------------------------------------------------------------
         # Create SPHEREPACK object to perform the spectral computations.
@@ -535,7 +541,11 @@ class EnergyBudget:
     def dke_nonlinear_transfer(self):
         """
         Spectral transfer of divergent kinetic energy due to nonlinear interactions
-        after Li et. al. (2023), Eq. 27
+        after Li et. al. (2023), Eq. 27. The linear Coriolis effect is included in the
+        formulations so that:
+
+        .. math:: T_{D}(l,m) + T_{R}(l,m) = T_{K}(l,m) + L(l,m)
+
         :return:
             Spectrum of DKE transfer across scales
         """
@@ -723,7 +733,7 @@ class EnergyBudget:
 
         pi_a = self._add_metadata(pi_a, 'pi_ape', gridtype='spectral',
                                   units='W m**-2', standard_name='nonlinear_ape_flux',
-                                  long_name='cumulative spectral flux of'
+                                  long_name='cumulative spectral flux of '
                                             'available potential energy')
 
         lc_k = self._add_metadata(lc_k, 'lc', gridtype='spectral',
@@ -741,7 +751,7 @@ class EnergyBudget:
 
         vf_a = self._add_metadata(vf_a, 'ape_vf', gridtype='spectral',
                                   units='W m**-2', standard_name='vertical_ape_flux',
-                                  long_name='cumulative vertical flux of'
+                                  long_name='cumulative vertical flux of '
                                             'available potential energy')
 
         return pi_k, lc_k, pi_a, c_ka, c_dr, vf_k, vf_a
@@ -839,7 +849,7 @@ class EnergyBudget:
         # tendency -= self._representative_mean(tendency)
 
         # convert temperature tendency to potential temperature tendency
-        theta_tendency = tendency / self.exner  # rate of production of internal energy by cn.cp
+        theta_tendency = tendency / self.exner / cn.cp  # rate of production of internal energy
 
         # filtering terrain
         theta_tendency = self.filter_topography(theta_tendency)
@@ -1020,6 +1030,13 @@ class EnergyBudget:
             else:
                 raise ValueError('Height based vertical coordinate not implemented')
 
+        # scalar_shape = scalar.shape
+        # scalar = np.moveaxis(scalar, axis, -1).reshape((-1, scalar_shape[axis]))
+        #
+        # dz = np.diff(z)[0]
+        #
+        # grad = fortran_libs.numeric_tools.gradient(scalar, dz, order=5)
+        # return np.moveaxis(grad.reshape(scalar_shape), -1, axis)
         return np.gradient(scalar, z, axis=axis, edge_order=1)
 
     def vertical_integration(self, scalar, pressure_range=None, axis=-1):

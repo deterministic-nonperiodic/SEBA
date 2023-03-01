@@ -29,10 +29,10 @@ def reduce_to_1d(func, data, dim="plev", **kwargs):
 
 if __name__ == '__main__':
     # Load dyamond dataset
-    model = 'ICON'
+    model = 'IFS'
     resolution = 'n512'
-    # data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
-    data_path = '/mnt/levante/energy_budget/test_data/'
+    data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
+    # data_path = '/mnt/levante/energy_budget/test_data/'
 
     date_time = '200'
     file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
@@ -52,8 +52,7 @@ if __name__ == '__main__':
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres,
-                          leveltype='pressure', filter_terrain=True,
-                          jobs=1)
+                          leveltype='pressure', filter_terrain=True, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()
@@ -86,7 +85,7 @@ if __name__ == '__main__':
         x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
         xticks = np.array([2, 20, 200, 2000])
 
-    y_limits = [0.5e-3, 1e7]
+    y_limits = [0.5e-3, 5e7]
 
     x_lscale = kappa_from_lambda(np.linspace(3200, 650., 2))
     x_sscale = kappa_from_lambda(np.linspace(450, 60., 2))
@@ -167,8 +166,8 @@ if __name__ == '__main__':
     pik, lct, pia, cka, cdr, vfk, vfa = budget.cumulative_energy_fluxes()
 
     # Perform vertical integration along last axis
-    layers = {'Stratosphere': [50e2, 250e2], 'Troposphere': [250e2, 500e2]}
-    limits = [[-0.4, 0.4], [-0.5, 1.2]]
+    layers = {'Stratosphere': [50e2, 250e2], 'Free troposphere': [250e2, 500e2]}
+    limits = [[-0.4, 0.4], [-0.5, 1.0]]
 
     for i, (level, prange) in enumerate(layers.items()):
 
@@ -205,7 +204,7 @@ if __name__ == '__main__':
         ax.semilogx(kappa, cka_l, label=r'$C_{A\rightarrow D}$',
                     linewidth=1.6, linestyle='--', color='green')
         ax.semilogx(kappa, cdr_l, label=r'$C_{D\rightarrow R}$',
-                    linewidth=1.6, linestyle='--', color='cyan')
+                    linewidth=1.6, linestyle='-.', color='cyan')
 
         # ax.semilogx(kappa, lct_l, label=r'$L_c$', linewidth=1.6, linestyle='--', color='orange')
         ax.semilogx(kappa, vfk_l + vfa_l, label=r'$F_{\uparrow}(p_b) - F_{\uparrow}(p_t)$',
@@ -231,66 +230,10 @@ if __name__ == '__main__':
 
         prange_str = [int(1e-2 * p) for p in sorted(prange)]
 
-        ax.legend(title=r"{} ({:4d} $\leq p \leq$ {:4d} hPa)".format(level, *prange_str),
+        ax.legend(title=r"{} ({:4d} - {:4d} hPa)".format(level, *prange_str),
                   loc='upper right', fontsize=14)
         plt.show()
 
         fig.savefig('figures/{}_nonlinear_fluxes_{}_{}-{}.pdf'.format(
             model, resolution, *prange_str), dpi=300)
         plt.close(fig)
-
-    # ----------------------------------------------------------------------------------------------
-    # Compute APE tendency from parameterized processes
-    # ----------------------------------------------------------------------------------------------
-    # Perform vertical integration along last axis prange = [50e2, 950e2]
-    #
-    # ape_tendecies = {}
-    # for name in ['ddt_temp_dyn', 'ddt_temp_radlw', 'ddt_temp_radsw',
-    #              'ddt_temp_rad', 'ddt_temp_conv']:
-    #
-    #     pname = name.split('_')[-1].lower()
-    #
-    #     tend_grid = dataset_tnd.get(name)
-    #     if tend_grid is not None:
-    #         ape_tendecies[pname] = budget.get_ape_tendency(tend_grid, name="ddt_ape_" + pname,
-    #                                                        cumulative=True)
-    #
-    # # Create figure
-    # fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
-    # xlimits = 1e3 * kappa_from_deg(np.array([1, 1000]))
-    #
-    # at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
-    # at.patch.set_boxstyle("round,pad=-0.1,rounding_size=0.2")
-    # ax.add_artist(at)
-    #
-    # colors = color_sequences['models'][8]
-    # for i, (name, tend) in enumerate(ape_tendecies.items()):
-    #     ax.semilogx(kappa, 1e6 * kappa * tend, label=name, linewidth=1.6,
-    #                 linestyle='-', color=colors[i])
-    #
-    # ax.set_ylabel(r'APE tendency ($W / m^2$)', fontsize=14)
-    #
-    # ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=0.8, linestyle='dashed', alpha=0.25)
-    #
-    # secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
-    # secax.xaxis.set_major_formatter(ScalarFormatter())
-    #
-    # ax.xaxis.set_major_formatter(ScalarFormatter())
-    # ax.set_xticks(1e3 * kappa_from_deg(xticks))
-    # ax.set_xticklabels(xticks)
-    #
-    # ax.set_xlabel(r'wavenumber', fontsize=14, labelpad=4)
-    # secax.set_xlabel(r'wavelength $(km)$', fontsize=14, labelpad=5)
-    #
-    # ax.set_xlim(*xlimits)
-    # ax.set_ylim(-1, 2)
-    #
-    # prange_str = [int(1e-2 * p) for p in sorted(prange)]
-    #
-    # ax.legend(title=r"{:4d} $\leq p \leq$ {:4d} hPa ".format(*prange_str), loc='upper right',
-    #           fontsize=15)
-    # plt.show()
-    #
-    # fig.savefig('figures/{}_ape_tendencies_{}_{}-{}.pdf'.format(model, resolution, *prange_str),
-    #             dpi=300)
-    # plt.close(fig)

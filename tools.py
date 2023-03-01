@@ -98,8 +98,8 @@ def parse_dataset(dataset, variables=None):
               'units': ['m s**-1', 'm/s'], 'code': [131]},
         'v': {'long_name': ['meridional_wind', 'meridional wind'],
               'units': ['m s**-1', 'm/s'], 'code': [132]},
-        'w': {'long_name': ['vertical_velocity', 'vertical velocity'],
-              'units': ['m s**-1', 'm/s'], 'code': [120]},
+        # 'w': {'long_name': ['vertical_velocity', 'vertical velocity'],
+        #       'units': ['m s**-1', 'm/s'], 'code': [120]},
         'omega': {'long_name': ['pressure_velocity', 'pressure velocity'],
                   'units': ['Pa s**-1', 'Pa/s'], 'code': [135]},
         't': {'long_name': ['temperature', 'air_temperature'],
@@ -108,9 +108,10 @@ def parse_dataset(dataset, variables=None):
     }
 
     if variables is None:
-        variables = var_map.keys()
+        variables = list(var_map.keys())
 
-    arrays = {var_key: _find_variable(dataset, name, attrs)
+    # find variables by name or candidates from attrs
+    arrays = {name: _find_variable(dataset, name, attrs)
               for (var_key, attrs), name in zip(var_map.items(), variables)}
 
     if len(arrays) != len(variables):
@@ -128,7 +129,7 @@ def parse_dataset(dataset, variables=None):
                              'Variable {} has {} dimensions'.format(name, values.ndim))
 
     # Get coordinates and dimensions
-    coords = [dataset.coords[name] for name in arrays['u'].dims]
+    coords = [dataset.coords[name] for name in arrays[variables[0]].dims]
 
     # get coordinates
     return arrays, coords
