@@ -2,27 +2,33 @@ import os
 import warnings
 from functools import reduce
 
+import colorcet
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import SymLogNorm
 from matplotlib.offsetbox import AnchoredText
 from matplotlib.ticker import ScalarFormatter
-# from scipy.signal import find_peaks
+from scipy.ndimage.filters import gaussian_filter
 
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
 # from tools import _select_by_distance
 from tools import transform_spectra, intersections
+
+# from scipy.signal import find_peaks
 
 warnings.filterwarnings('ignore')
 plt.style.use('default')
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
-          'text.usetex': True, 'font.size': 12,
-          'legend.title_fontsize': 10,
+          'text.usetex': True, 'font.size': 14,
+          'legend.title_fontsize': 12,
           'font.family': 'serif', 'font.weight': 'normal'}
+
 plt.rcParams.update(params)
 plt.rcParams["axes.prop_cycle"] = plt.cycler("color", plt.cm.tab10.colors)
+plt.rcParams['text.latex.preamble'] = [r"\usepackage{amsmath}"]
 
 # global variables
 color_sequences = {
@@ -107,6 +113,24 @@ cm_data = [[0.2081, 0.1663, 0.5292], [0.2116238095, 0.1897809524, 0.5776761905],
 
 parula = LinearSegmentedColormap.from_list('parula', cm_data)
 
+BWG = LinearSegmentedColormap.from_list('BWG', colorcet.CET_D13)
+
+DATA_KEYMAP = {
+    'pi_ke': r'$\Pi_K$',
+    'pi_dke': r'$\Pi_D$',
+    'pi_rke': r'$\Pi_R$',
+    'pi_ape': r'$\Pi_A$',
+    'cdr': r'$C_{D \rightarrow R}$',
+    'cka': r'$C_{A \rightarrow D}$',
+    'ke_vf': r'$\partial_{p}F_{D\uparrow}$',
+    'ape_vf': r'$\partial_{p}F_{A\uparrow}$',
+    'uw_vf': r'$\rho\overline{u^{\prime}w^{\prime}}$',
+    'vw_vf': r'$\rho\overline{v^{\prime}w^{\prime}}$',
+    'gw_vf': r'$\overline{u^{\prime}w^{\prime}}$ + $\overline{v^{\prime}w^{\prime}}$',
+    'dke_dl_vf': r'$\partial_{\kappa}(\partial_{p}F_{D\uparrow})$',
+    'dcdr_dl': r'$\partial_{\kappa} C_{D \rightarrow R}$',
+}
+
 
 def string_fmt(x):
     # $\lambda_z\sim$
@@ -118,7 +142,7 @@ def string_fmt(x):
 
 def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_label=None,
                         lambda_lines=None, y_scale='log', base=10, ax_titles=None,
-                        frame=True, truncation='n1024', **figure_kwargs):
+                        frame=True, truncation='n1024', figure_size=5.5, **figure_kwargs):
     """Creates a figure template for spectral line plots
 
     :param n_rows: number of rows in figure
@@ -132,6 +156,7 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     :param lambda_lines: positions to draw vertical lines
     :param ax_titles: title to display on the left corner of each axis
     :param truncation: spectral truncation
+    :param figure_size:
     :param figure_kwargs: additional keyword arguments to pass to plt.figure()
     :return: fig, axes
     """
@@ -148,18 +173,20 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     else:
         scale_str = '{:d}km'
         if truncation == 'n1024':
-            prefix = 'Spherical'
+            prefix = ''
             if x_limits is None:
-                x_limits = kappa_from_lambda(np.array([40e3, 20]))
+                x_limits = kappa_from_lambda(np.array([40e3, 40]))
             xticks = np.array([1, 10, 100, 1000])
         else:
-            prefix = 'Spherical'
+            prefix = ''
             if x_limits is None:
-                x_limits = kappa_from_lambda(np.array([40e3, 15]))
+                x_limits = kappa_from_lambda(np.array([40e3, 20]))
             xticks = np.array([2, 20, 200, 2000])
 
+    show_limit = True
     if lambda_lines is None:
-        lambda_lines = [36., ]
+        lambda_lines = [18., ]
+        show_limit = False
 
     kappa_lines = kappa_from_lambda(np.asarray(lambda_lines))
 
@@ -170,12 +197,11 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     else:
         ax_titles = list(ax_titles)
 
-    figures_size = 5.5
-    reduced_size = 0.92 * figures_size
-    aspect = reduced_size if n_cols > 2 else figures_size
+    reduced_size = 0.92 * figure_size
+    aspect = reduced_size if n_cols > 2 else figure_size
 
     fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols,
-                             figsize=(aspect * n_cols, figures_size * n_rows),
+                             figsize=(aspect * n_cols, figure_size * n_rows),
                              constrained_layout=True, **figure_kwargs)
 
     if n_rows * n_cols == 1:
@@ -185,30 +211,32 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
 
         # axes frame limits
         ax.set_xscale('log', base=base)
-        ax.set_yscale(y_scale, base=base)
+        ax.set_yscale(y_scale)
 
         ax.set_xlim(*x_limits)
         ax.set_ylim(*y_limits)
 
         # axes title as annotation
         if ax_titles is not None:
-            at = AnchoredText(ax_titles[m], prop=dict(size=15), frameon=frame, loc='upper left', )
+            at = AnchoredText(ax_titles[m], prop=dict(size=15), frameon=frame, loc='upper right', )
             at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
             ax.add_artist(at)
 
         # draw vertical reference lines
-        for lambda_line in lambda_lines:
-            kappa_line = kappa_from_lambda(lambda_line)
-            ax.axvline(x=kappa_line, ymin=0, ymax=1,
-                       color='gray', linewidth=0.8,
-                       alpha=0.6, linestyle='solid')
+        if show_limit:
 
-            ax.annotate(scale_str.format(int(lambda_line / 2)),
-                        xy=(0.90, 0.98), xycoords='axes fraction',
-                        color='black', fontsize=10, horizontalalignment='left',
-                        verticalalignment='top')
+            for lambda_line in lambda_lines:
+                kappa_line = kappa_from_lambda(lambda_line)
+                ax.axvline(x=kappa_line, ymin=0, ymax=1,
+                           color='gray', linewidth=0.8,
+                           alpha=0.6, linestyle='solid')
 
-        ax.axvspan(np.max(kappa_lines), x_limits[1], alpha=0.15, color='gray')
+                ax.annotate(scale_str.format(int(lambda_line)),
+                            xy=(0.90, 0.98), xycoords='axes fraction',
+                            color='black', fontsize=10, horizontalalignment='left',
+                            verticalalignment='top')
+
+            ax.axvspan(np.max(kappa_lines), x_limits[1], alpha=0.15, color='gray')
 
         # Align left ytick labels:
         for label in ax.yaxis.get_ticklabels():
@@ -589,5 +617,75 @@ def kinetic_energy_components(dataset, dataset_igws=None, dataset_rows=None, mod
 
     plt.show()
 
+    fig.savefig(os.path.join('figures', fig_name), dpi=300)
+    plt.close(fig)
+
+
+def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=False,
+                            resolution='n1024', x_limits=None, y_limits=None,
+                            cmap=None, fig_name='test.png'):
+    if variables is None:
+        variables = list(dataset.data_vars)
+
+    ax_titles = [DATA_KEYMAP[name] for name in variables]
+
+    if y_limits is None:
+        y_limits = [1e-10, 1e2]
+
+    if cmap is None:
+        cmap = BWG
+
+    if compensate:
+        y_label = r'Compensated energy ($\times\kappa^{5/3}$)'
+    else:
+        y_label = r'Kinetic energy $[m^2/s^2]$'
+
+    # get coordinates
+    level = 1e-2 * dataset['plev']
+    kappa = 1e3 * dataset['kappa']
+
+    # -----------------------------------------------------------------------------------
+    # Visualization of Kinetic energy and Available potential energy
+    # -----------------------------------------------------------------------------------
+    n = len(variables)
+    cols = 2 if not n % 2 else n
+    rows = max(1, n // cols)
+
+    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits,
+                                    y_limits=y_limits, figure_size=4.5,
+                                    y_label=y_label, y_scale='linear', ax_titles=ax_titles,
+                                    frame=True, truncation=resolution)
+    axes = axes.ravel()
+
+    # cs_limit = 0.65 * abs(dataset[variables].to_array().values).max()
+    cs_levels = 50
+
+    for m, (ax, varname) in enumerate(zip(axes, variables)):
+
+        spectra = 1e3 * dataset[varname].mean(dim='time').values
+        cs_limit = 0.65 * abs(spectra).max()
+
+        # Create plots:
+        cs = ax.contourf(kappa, level, spectra,
+                         cmap=cmap, levels=cs_levels,
+                         norm=SymLogNorm(linthresh=0.15, linscale=0.65,
+                                         vmin=-cs_limit, vmax=cs_limit))
+
+        ax.contour(kappa, level, gaussian_filter(spectra, 1.2),
+                   color='black', linewidths=0.8, levels=[0, ])
+
+        ax.set_ylim(1000., 100.)
+        ax.set_ylabel(r'Pressure (hPa)')
+
+        if m == cols - 1:
+            cb = plt.colorbar(cs, ax=ax, orientation='vertical', pad=0.001, format="%.2f")
+            cb.ax.set_title(r"[$W / m^{2}$]", fontsize=14, loc='left', pad=15)
+
+    if model is not None:
+        at = AnchoredText(model.upper(), prop=dict(size=15), frameon=True, loc='upper left')
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        axes[0].add_artist(at)
+
+    plt.show()
     fig.savefig(os.path.join('figures', fig_name), dpi=300)
     plt.close(fig)

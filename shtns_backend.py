@@ -207,7 +207,7 @@ class Spharmt(object):
         return self._map(self._shtns.synth, psi_spec, chi_spec)
 
     def getgrad(self, scalar):
-        """compute gradient vector of scalar function on the sphere"""
+        """Compute gradient vector of scalar function on the sphere"""
 
         # compute spectral coefficients
         scalar_spec = self.grdtospec(scalar)
@@ -216,3 +216,16 @@ class Spharmt(object):
         v, u = self._map(self._shtns.synth_grad, scalar_spec)
 
         return u / self.rsphere, - v / self.rsphere
+
+    def getgrad_2(self, scalar):
+        """Compute gradient vector of scalar function on the sphere.
+           slightly slower than 'getgrad' probably due to the initialization with 'np.zeros_like'
+        """
+
+        # compute spectral coefficients
+        scalar_spec = self.grdtospec(scalar)
+
+        # compute horizontal gradient of a scalar from spectral coefficients
+        u, v = self._map(self._shtns.synth, np.zeros_like(scalar_spec), scalar_spec)
+
+        return u / self.rsphere, v / self.rsphere

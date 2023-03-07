@@ -10,13 +10,14 @@ from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
 from tools import cumulative_flux
 from visualization import AnchoredText
+from visualization import fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
-          'text.usetex': True, 'font.size': 15,
+          'text.usetex': True, 'font.size': 14,
           'font.family': 'serif', 'font.weight': 'normal'}
 plt.rcParams.update(params)
-plt.rcParams['legend.title_fontsize'] = 14
+plt.rcParams['legend.title_fontsize'] = 15
 
 warnings.filterwarnings('ignore')
 
@@ -61,17 +62,17 @@ if __name__ == '__main__':
     file_names = 'energy_budget/combined_physics_tendencies_{}_{}.nc'.format(resolution, date_time)
     dataset_physic = xr.open_mfdataset(data_path + file_names)
 
-    param_data = {'ddt_ke_conv': 250, 'ddt_ke_turb': 1/3600.}
+    param_data = {'ddt_ke_conv': 260, 'ddt_ke_turb': 2 / 3600.}
     param_name = {'ddt_ke_conv': "Convection", 'ddt_ke_turb': "Turbulent dissipation"}
     param_fluxes = {}
 
-    if model == 'IFS':
-        for name, factor in param_data.items():
-            flux = dataset_physic.get(name)
-            if isinstance(flux, xr.DataArray):
-                param_fluxes[name] = flux.values.clip(None, 0.0) / factor
-            else:
-                param_fluxes[name] = None
+    # if model == 'IFS':
+    #     for name, factor in param_data.items():
+    #         flux = dataset_physic.get(name)
+    #         if isinstance(flux, xr.DataArray):
+    #             param_fluxes[name] = flux.values.clip(None, 0.0) / factor
+    #         else:
+    #             param_fluxes[name] = None
 
     lck = dataset_fluxes.lc.values
 
@@ -103,7 +104,7 @@ if __name__ == '__main__':
         x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
         xticks = np.array([2, 20, 200, 2000])
 
-    colors = ['magenta', 'cyan']
+    colors = ['green', 'magenta']
 
     for i, (level, prange) in enumerate(layers.items()):
 
@@ -150,14 +151,14 @@ if __name__ == '__main__':
         ax.semilogx(kappa, cdr_vl, label=r'Relative vorticity', linewidth=1.6,
                     linestyle='-.', color='red')
 
-        ax.semilogx(kappa, cdr_cl, label=r'Coriolis effect', linewidth=1.6,
-                    linestyle='-.', color='green')
+        # ax.semilogx(kappa, cdr_cl, label=r'Coriolis effect', linewidth=1.6,
+        #             linestyle='-.', color='green')
 
         param_lines = []
         for p, (flux, value) in enumerate(flux_dict.items()):
 
             if value is not None:
-                pline, = ax.semilogx(kappa, kappa * value, linewidth=1.6,
+                pline, = ax.semilogx(kappa, kappa * value, linewidth=2.,
                                      linestyle='-', color=colors[p])
                 param_lines.append(pline)
 
@@ -185,12 +186,21 @@ if __name__ == '__main__':
                            loc='upper right', fontsize=14, ncol=2)
 
         ax.legend(param_lines, flux_dict.keys(), title='Parametrized fluxes',
-                  loc='lower right', fontsize=14, ncol=1)
+                  loc='lower right', fontsize=15, ncol=1)
 
         ax.add_artist(legend)
 
-        fig.savefig('figures/{}_helmholtz_fluxes_{}_{}-{}.pdf'.format(
+        fig.savefig('figures/{}_helmholtz_fluxes_{}_{}-{}_np.pdf'.format(
             model, resolution, *prange_str), dpi=300)
 
         plt.show()
         plt.close(fig)
+
+    # ---------------------------------------------------------------------------------------
+    # Visualize fluxes cross section
+    # ---------------------------------------------------------------------------------------
+    figure_name = '{}_wave_fluxes_section_{}.pdf'.format(model, resolution)
+
+    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'ke_vf'],
+                            resolution='n1024', y_limits=[1000., 100.],
+                            fig_name=figure_name)
