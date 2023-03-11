@@ -7,9 +7,8 @@ from matplotlib.ticker import ScalarFormatter
 
 from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
+from tools import map_func
 from visualization import AnchoredText
-
-# , color_sequences
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -20,13 +19,6 @@ plt.rcParams['legend.title_fontsize'] = 12
 
 warnings.filterwarnings('ignore')
 
-
-def reduce_to_1d(func, data, dim="plev", **kwargs):
-    res = xr.apply_ufunc(func, data, input_core_dims=[[dim]],
-                         kwargs=kwargs, dask='allowed', vectorize=True)
-    return res.mean(dim='time')
-
-
 if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
@@ -34,7 +26,7 @@ if __name__ == '__main__':
     data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[012]'
+    date_time = '20[12]'
     file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
 
     # # load earth topography and surface pressure
@@ -52,7 +44,7 @@ if __name__ == '__main__':
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres,
-                          leveltype='pressure', filter_terrain=True, jobs=1)
+                          filter_terrain=True, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()
@@ -65,13 +57,13 @@ if __name__ == '__main__':
     # Kinetic energy in vector form accumulate and integrate vertically
     # average over samples:
     # Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]
-    Ek_trp = reduce_to_1d(budget.vertical_integration, Ek, pressure_range=prange_trp)[1:-1]
-    Ew_trp = reduce_to_1d(budget.vertical_integration, Ew, pressure_range=prange_trp)[1:-1]
-    Ea_trp = reduce_to_1d(budget.vertical_integration, Ea, pressure_range=prange_trp)[1:-1]
+    Ek_trp = map_func(budget.vertical_integration, Ek, pressure_range=prange_trp)[1:-1]
+    Ew_trp = map_func(budget.vertical_integration, Ew, pressure_range=prange_trp)[1:-1]
+    Ea_trp = map_func(budget.vertical_integration, Ea, pressure_range=prange_trp)[1:-1]
 
-    Ek_stp = reduce_to_1d(budget.vertical_integration, Ek, pressure_range=prange_stp)[1:-1]
-    Ew_stp = reduce_to_1d(budget.vertical_integration, Ew, pressure_range=prange_stp)[1:-1]
-    Ea_stp = reduce_to_1d(budget.vertical_integration, Ea, pressure_range=prange_stp)[1:-1]
+    Ek_stp = map_func(budget.vertical_integration, Ek, pressure_range=prange_stp)[1:-1]
+    Ew_stp = map_func(budget.vertical_integration, Ew, pressure_range=prange_stp)[1:-1]
+    Ea_stp = map_func(budget.vertical_integration, Ea, pressure_range=prange_stp)[1:-1]
 
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
@@ -163,23 +155,24 @@ if __name__ == '__main__':
     # - linear spectral transfer due to coriolis
     # - Energy conversion from APE to KE
     # - Vertical energy fluxes
-    pik, lct, pia, cka, cdr, vfk, vfa = budget.cumulative_energy_fluxes()
+    pid, pir, lct, pia, cka, cdr, vfk, vfa = budget.cumulative_energy_fluxes()
+
+    pik = pid + pir
 
     # Perform vertical integration along last axis
     layers = {'Stratosphere': [50e2, 250e2], 'Free troposphere': [250e2, 500e2]}
     limits = [[-0.4, 0.4], [-0.5, 1.0]]
 
     for i, (level, prange) in enumerate(layers.items()):
-
-        pik_l = reduce_to_1d(budget.vertical_integration, pik, pressure_range=prange)
-        pia_l = reduce_to_1d(budget.vertical_integration, pia, pressure_range=prange)
-        cka_l = reduce_to_1d(budget.vertical_integration, cka, pressure_range=prange)
-        cdr_l = reduce_to_1d(budget.vertical_integration, cdr, pressure_range=prange)
-        lct_l = reduce_to_1d(budget.vertical_integration, lct, pressure_range=prange)
+        pik_l = map_func(budget.vertical_integration, pik, pressure_range=prange)
+        pia_l = map_func(budget.vertical_integration, pia, pressure_range=prange)
+        cka_l = map_func(budget.vertical_integration, cka, pressure_range=prange)
+        cdr_l = map_func(budget.vertical_integration, cdr, pressure_range=prange)
+        lct_l = map_func(budget.vertical_integration, lct, pressure_range=prange)
 
         # Total vertical inflow from layer bottom to top
-        vfk_l = reduce_to_1d(budget.vertical_integration, vfk, pressure_range=prange)
-        vfa_l = reduce_to_1d(budget.vertical_integration, vfa, pressure_range=prange)
+        vfk_l = map_func(budget.vertical_integration, vfk, pressure_range=prange)
+        vfa_l = map_func(budget.vertical_integration, vfa, pressure_range=prange)
 
         # Create figure
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)

@@ -5,10 +5,9 @@ import numpy as np
 import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
-# from constants import cp
 from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
-from tools import cumulative_flux
+from tools import cumulative_flux, map_func
 from visualization import AnchoredText
 from visualization import fluxes_slices_by_models
 
@@ -23,23 +22,27 @@ warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
 
-    model = 'IFS'
-    resolution = 'n512'
-    data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
-    # data_path = '/mnt/levante/energy_budget/test_data/'
+    model = 'ICON'
+    resolution = 'n256'
+    data_path = '/media/yanm/Data/DYAMOND/data/'
 
-    date_time = '20[12]'
-    file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
+    date_time = '20200202'
+    file_names = data_path + '{}_IG_inst_{}_{}.nc'
 
-    dataset_files = file_names.format(model, resolution, date_time)
+    dataset_dyn = xr.open_mfdataset(file_names.format(model, date_time, resolution))
 
     # load earth topography and surface pressure
-    dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
+    dset_sfc = xr.open_dataset(
+        '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/DYAMOND2_topography_{}.nc'.format(resolution))
+
     sfc_hgt = dset_sfc.topography_c.values
-    sfc_pres = None
+    sfc_pres = dataset_dyn.ps.values
+
+    p_levels = np.linspace(1000e2, 50e2, 26)
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_files, ghsl=sfc_hgt, ps=sfc_pres, filter_terrain=True, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, p_levels=p_levels,
+                          filter_terrain=True, jobs=1)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
@@ -55,47 +58,29 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Load computed fluxes
     # ----------------------------------------------------------------------------------------------
-    file_names = 'energy_budget/{}_energy_fluxes_{}_{}.nc'.format(model, resolution, date_time)
-    dataset_fluxes = xr.open_mfdataset(data_path + file_names)
+    dataset_fluxes = budget.cumulative_energy_fluxes()
 
-    file_names = 'energy_budget/combined_physics_tendencies_{}_{}.nc'.format(resolution, date_time)
-    dataset_physic = xr.open_mfdataset(data_path + file_names)
-
-    param_data = {'ddt_ke_conv': 260, 'ddt_ke_turb': 2 / 3600.}
-    param_name = {'ddt_ke_conv': "Convection", 'ddt_ke_turb': "Turbulent dissipation"}
-    param_fluxes = {}
-
-    # if model == 'IFS':
-    #     for name, factor in param_data.items():
-    #         flux = dataset_physic.get(name)
-    #         if isinstance(flux, xr.DataArray):
-    #             param_fluxes[name] = flux.values.clip(None, 0.0) / factor
-    #         else:
-    #             param_fluxes[name] = None
-
-    lck = dataset_fluxes.lc.values
-
-    pik = dataset_fluxes.pi_ke.values + lck
-    pid = dataset_fluxes.pi_dke.values
-    pir = dataset_fluxes.pi_rke.values
-
-    cak = dataset_fluxes.pi_ape.values
+    dataset_fluxes = xr.merge(dataset_fluxes, compat="no_conflicts")
 
     # Perform vertical integration along last axis
     layers = {
-        # 'Stratosphere': [50e2, 250e2],
+        'Stratosphere': [50e2, 250e2],
         'Free troposphere': [250e2, 850e2],
         # 'Lower troposphere': [500e2, 850e2]
     }
 
-    ke_limits = {'Stratosphere': [-0.4, 0.4],
-                 'Free troposphere': [-0.4, 0.4],
-                 'Lower troposphere': [-0.4, 0.4]}
+    ke_limits = {'Stratosphere': [-0.1, 0.1],
+                 'Free troposphere': [-0.08, 0.08],
+                 'Lower troposphere': [-0.1, 0.1]}
 
-    cd_limits = {'Stratosphere': [-0.4, 0.4],
-                 'Free troposphere': [-0.4, 0.4],
-                 'Lower troposphere': [-0.4, 0.4]}
+    # perform vertical integration
+    fluxes_layers = {}
+    for i, (level, prange) in enumerate(layers.items()):
 
+        fluxes_layers[level] = map_func(budget.vertical_integration, dataset_fluxes,
+                                        pressure_range=prange).mean(dim='time')
+
+    colors = ['green', 'magenta']
     if kappa.size < 1000:
         x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
         xticks = np.array([1, 10, 100, 1000])
@@ -103,20 +88,13 @@ if __name__ == '__main__':
         x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
         xticks = np.array([2, 20, 200, 2000])
 
-    colors = ['green', 'magenta']
-
     for i, (level, prange) in enumerate(layers.items()):
+        # Integrate fluxes in layers
+        pid_l = fluxes_layers[level].pi_dke.values
+        pir_l = fluxes_layers[level].pi_rke.values
+        pik_l = pid_l + pir_l
 
-        pik_l = budget.vertical_integration(pik, pressure_range=prange, axis=1).mean(0)
-        pid_l = budget.vertical_integration(pid, pressure_range=prange, axis=1).mean(0)
-        pir_l = budget.vertical_integration(pir, pressure_range=prange, axis=1).mean(0)
-        cak_l = budget.vertical_integration(cak, pressure_range=prange, axis=1).mean(0)
-
-        flux_dict = {}
-        for flux, value in param_fluxes.items():
-            flux_dict[param_name[flux]] = budget.vertical_integration(value,
-                                                                      pressure_range=prange,
-                                                                      axis=1).mean(0)
+        cak_l = fluxes_layers[level].cka.values
 
         cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange, axis=-1).mean(-1)
         cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange, axis=-1).mean(-1)
@@ -153,14 +131,6 @@ if __name__ == '__main__':
         # ax.semilogx(kappa, cdr_cl, label=r'Coriolis effect', linewidth=1.6,
         #             linestyle='-.', color='green')
 
-        param_lines = []
-        for p, (flux, value) in enumerate(flux_dict.items()):
-
-            if value is not None:
-                pline, = ax.semilogx(kappa, kappa * value, linewidth=2.,
-                                     linestyle='-', color=colors[p])
-                param_lines.append(pline)
-
         ax.set_ylabel(r'Cumulative energy flux ($W~m^{-2}$)', fontsize=16)
 
         ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=1., linestyle='dashed', alpha=0.5)
@@ -183,14 +153,10 @@ if __name__ == '__main__':
 
         legend = ax.legend(title=r"{} ({:4d} - {:4d} hPa)".format(level, *prange_str),
                            loc='upper right', fontsize=14, ncol=2)
-
-        ax.legend(param_lines, flux_dict.keys(), title='Parametrized fluxes',
-                  loc='lower right', fontsize=15, ncol=1)
-
         ax.add_artist(legend)
 
-        fig.savefig('figures/{}_helmholtz_fluxes_{}_{}-{}_np.pdf'.format(
-            model, resolution, *prange_str), dpi=300)
+        # fig.savefig('figures/{}_helmholtz_fluxes_{}_{}-{}_np.pdf'.format(
+        #     model, resolution, *prange_str), dpi=300)
 
         plt.show()
         plt.close(fig)

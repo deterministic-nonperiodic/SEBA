@@ -689,3 +689,73 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
     plt.show()
     fig.savefig(os.path.join('figures', fig_name), dpi=300)
     plt.close(fig)
+
+
+def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=False,
+                             resolution='n1024', x_limits=None, y_limits=None,
+                             cmap=None, fig_name='test.png'):
+    if variables is None:
+        variables = list(dataset.data_vars)
+
+    ax_titles = [DATA_KEYMAP[name] for name in variables]
+
+    if y_limits is None:
+        y_limits = [1e-10, 1e2]
+
+    if cmap is None:
+        cmap = BWG
+
+    if compensate:
+        y_label = r'Compensated energy ($\times\kappa^{5/3}$)'
+    else:
+        y_label = r'Kinetic energy $[m^2/s^2]$'
+
+    # get coordinates
+    level = 1e-2 * dataset['plev']
+    kappa = 1e3 * dataset['kappa']
+
+    # -----------------------------------------------------------------------------------
+    # Visualization of Kinetic energy and Available potential energy
+    # -----------------------------------------------------------------------------------
+    n = len(variables)
+    cols = 2 if not n % 2 else n
+    rows = max(1, n // cols)
+
+    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits,
+                                    y_limits=y_limits, figure_size=4.5,
+                                    y_label=y_label, y_scale='linear', ax_titles=ax_titles,
+                                    frame=True, truncation=resolution)
+    axes = axes.ravel()
+
+    # cs_limit = 0.65 * abs(dataset[variables].to_array().values).max()
+    cs_levels = 50
+
+    for m, (ax, varname) in enumerate(zip(axes, variables)):
+
+        spectra = 1e3 * dataset[varname].mean(dim='time').values
+        cs_limit = 0.65 * abs(spectra).max()
+
+        # Create plots:
+        cs = ax.contourf(kappa, level, spectra,
+                         cmap=cmap, levels=cs_levels,
+                         norm=SymLogNorm(linthresh=0.15, linscale=0.65,
+                                         vmin=-cs_limit, vmax=cs_limit))
+
+        ax.contour(kappa, level, gaussian_filter(spectra, 1.2),
+                   color='black', linewidths=0.8, levels=[0, ])
+
+        ax.set_ylim(1000., 100.)
+        ax.set_ylabel(r'Pressure (hPa)')
+
+        if m == cols - 1:
+            cb = plt.colorbar(cs, ax=ax, orientation='vertical', pad=0.001, format="%.2f")
+            cb.ax.set_title(r"[$W / m^{2}$]", fontsize=14, loc='left', pad=15)
+
+    if model is not None:
+        at = AnchoredText(model.upper(), prop=dict(size=15), frameon=True, loc='upper left')
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        axes[0].add_artist(at)
+
+    plt.show()
+    fig.savefig(os.path.join('figures', fig_name), dpi=300)
+    plt.close(fig)

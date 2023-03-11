@@ -6,19 +6,6 @@ from scipy.interpolate import interp1d
 import constants as cn
 
 
-def coriolis_parameter(latitude):
-    r"""Calculate the coriolis parameter at each point.
-    The implementation uses the formula outlined in [Hobbs1977]_ pg.370-371.
-    Parameters
-    ----------
-    :param latitude: array
-        Latitude at each point
-
-    returns coriolis parameter
-    """
-    return cn.Omega * np.sin(np.deg2rad(latitude))
-
-
 def height_to_pressure_std(height):
     r"""Convert height data to pressures using the U.S. standard atmosphere.
 
@@ -371,23 +358,28 @@ def vertical_velocity(pressure, omega, temperature, axis=None):
     `np.ndarray`
         Vertical velocity in terms of height (in meters / second)
     """
-    if axis is not None:
-        assert pressure.size == omega.shape[axis], "Variable 'omega' should have " \
-                                                   "the same shape as 'pressure' along axis"
-        assert pressure.size == temperature.shape[axis], "Variable 'temperature' should have " \
-                                                         "the same shape as 'pressure' along axis"
-    else:
-        axis = -1
+    if pressure.ndim == 1:
+        if axis is not None:
+            msg = "All variables should have the same size as 'pressure' along 'axis'"
+            assert pressure.size == omega.shape[axis] == temperature.shape[axis], msg
+        else:
+            axis = -1
 
-    omega = np.moveaxis(omega, axis, -1)
-    temperature = np.moveaxis(temperature, axis, -1)
+        omega = np.moveaxis(omega, axis, -1)
+        temperature = np.moveaxis(temperature, axis, -1)
+    else:
+        msg = "All variables should have the same shape as 'pressure'"
+        assert pressure.shape == omega.shape == temperature.shape, msg
 
     w = - omega / (cn.g * density(pressure, temperature))  # (m/s)
 
-    return np.moveaxis(w, -1, axis)
+    if axis is not None:
+        np.moveaxis(w, -1, axis)
+
+    return w
 
 
-def pressure_vertical_velocity(pressure, w, temperature):
+def pressure_vertical_velocity(pressure, w, temperature, axis=None):
     r"""Calculate omega from w assuming hydrostatic conditions.
 
     This function converts vertical velocity with respect to height
@@ -409,10 +401,43 @@ def pressure_vertical_velocity(pressure, w, temperature):
         Total atmospheric pressure
     temperature: `np.array`
         Air temperature
-
+    axis:
+        axis corresponding to the vertical dimension
     Returns
     -------
     `np.ndarray`
         Vertical velocity in terms of pressure (in Pascals / second)
     """
+    if pressure.ndim == 1:
+        if axis is not None:
+            msg = "All variables should have the same size as 'pressure' along 'axis'"
+            assert pressure.size == w.shape[axis] == temperature.shape[axis], msg
+        else:
+            axis = -1
+
+        w = np.moveaxis(w, axis, -1)
+        temperature = np.moveaxis(temperature, axis, -1)
+    else:
+        msg = "All variables should have the same shape as 'pressure'"
+        assert pressure.shape == w.shape == temperature.shape, msg
+
     return - cn.g * density(pressure, temperature) * w  # (Pa/s)
+
+
+def stability_parameter(pressure, theta, vertical_axis=0):
+    # Static stability parameter ganma to convert from temperature variance to APE
+    # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
+    ddlp_theta_avg = np.gradient(theta, np.log(pressure), axis=vertical_axis)
+
+    return - cn.Rd * exner_function(pressure) / ddlp_theta_avg
+
+
+def brunt_vaisala_squared(pressure, temperature, vertical_axis=0):
+
+    # compute potential temperature
+    theta = potential_temperature(pressure, temperature)
+
+    # compute the stability parameter
+    gamma = stability_parameter(pressure, theta, vertical_axis=vertical_axis)
+
+    return (cn.g / theta) ** 2 / gamma

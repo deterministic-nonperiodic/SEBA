@@ -7,6 +7,7 @@ import scipy.special as spec
 import scipy.stats as stats
 from joblib import Parallel, delayed, cpu_count
 from scipy.spatial import cKDTree
+from xarray import apply_ufunc
 
 from spectral_analysis import lambda_from_deg
 
@@ -79,6 +80,14 @@ def _find_variable(dataset, name, var_attrs):
         array = candidates[0]
 
     return array
+
+
+def inspect_leveltype(dataset):
+    levels, nlevels = _find_coordinates(dataset, lambda c: (c.name in ('p', 'plev', 'pressure') or
+                                                            c.attrs.get('units') in (
+                                                                'Pa', 'hPa', 'millibar') or
+                                                            c.attrs.get('axis') == 'Z'), 'pressure')
+    return levels, nlevels
 
 
 def parse_dataset(dataset, variables=None):
@@ -224,6 +233,13 @@ def recover_spectra(data, info_dict):
     spatial_dims = [spectra_order.find(dim) for dim in 'yz']
 
     return np.moveaxis(data, [0, -1], spatial_dims)
+
+
+def map_func(func, data, dim="plev", **kwargs):
+    res = apply_ufunc(func, data, input_core_dims=[[dim]],
+                      kwargs=kwargs, dask='allowed',
+                      vectorize=True)
+    return res
 
 
 def get_num_cores():
@@ -793,3 +809,61 @@ def transform_spectra(s):
     st = np.reshape(s, (-1, s.shape[-1]))
 
     return mean_confidence_interval(st, confidence=0.95, axis=0)
+
+
+def linear_interp1d(x, xp, *args, scale='log', fill_value=np.nan, axis=None, jobs=None):
+    """
+    Perform parallel 1D interpolation in logarithmic space of multiple arrays in args
+    """
+    if axis is None:
+        axis = -1
+
+    # convert nodes to logarithmic space
+    if scale == 'log':
+        x = np.log(x)
+        xp = np.log(xp)
+
+    # infer array shapes
+    data_shape = xp.shape
+
+    # flatten array for parallel iteration
+    xp = np.moveaxis(xp, axis, -1)
+
+    arg_sorter = np.argsort(xp, axis=-1)
+
+    xp = np.take_along_axis(xp, arg_sorter, axis=-1)
+
+    result_shape = list(xp.shape)
+    result_shape[-1] = x.size
+
+    xp = xp.reshape((-1, data_shape[axis]))
+
+    iter_size = xp.shape[0]
+
+    if jobs is None:
+        jobs = min(cpu_count(), iter_size)
+
+    # Create pool of workers
+    pool = Parallel(n_jobs=jobs, backend="threading")
+
+    # wrapper of convolution function for parallel computations
+    interp_1d = functools.partial(np.interp, left=fill_value, right=fill_value)
+
+    results = []
+    for arr in args:
+        assert arr.shape == data_shape, "Inconsistent shapes between data array and coordinate."
+
+        # sort array according to xp in increasing order
+        arr = np.take_along_axis(np.moveaxis(arr, axis, -1), arg_sorter, axis=-1)
+
+        # flatten array for parallel iteration
+        arr = arr.reshape((-1, data_shape[axis]))
+
+        # applying lanczos filter in parallel
+        result = np.array(pool(delayed(interp_1d)(x, xp[i], arr[i]) for i in range(iter_size)))
+
+        result = np.moveaxis(result.reshape(result_shape), -1, axis)
+
+        results.append(result)
+
+    return results

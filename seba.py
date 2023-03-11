@@ -11,13 +11,15 @@ from spectral_analysis import triangular_truncation, kappa_from_deg
 from thermodynamics import density as _density
 from thermodynamics import exner_function as _exner_function
 from thermodynamics import geopotential_height as _geopotential_height
-from thermodynamics import height_to_geopotential, coriolis_parameter
+from thermodynamics import height_to_geopotential, stability_parameter
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores, get_number_chunks
+from tools import linear_interp1d
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
 from tools import rotate_vector, broadcast_1dto
 from tools import terrain_mask, transform_io, inspect_gridtype
+from wave_diagnostics import coriolis_parameter
 
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
 
@@ -50,9 +52,8 @@ class EnergyBudget:
         else:
             del self.__dict__[key]
 
-    def __init__(self, dataset, variables=None, ps=None, ghsl=None, leveltype='pressure',
+    def __init__(self, dataset, variables=None, ps=None, ghsl=None, p_levels=None,
                  truncation=None, rsphere=None, filter_terrain=False, jobs=None):
-
         """
         Initializing EnergyBudget instance.
 
@@ -70,11 +71,17 @@ class EnergyBudget:
             t: air temperature
             p: atmospheric pressure
 
-        # :param gridtype: type of horizontal grid ('regular', 'gaussian', 'spectral')
         :param truncation:
             Truncation limit (triangular truncation) for the spherical harmonic computation.
         :param rsphere: averaged earth radius (meters)
         """
+        # making sure array splitting gives more chunks than jobs for parallel computations
+        # if not given, the chunk size is set to the cpu count.
+        if jobs is None:
+            self.jobs = get_num_cores()
+        else:
+            self.jobs = int(jobs)
+        # print("Running with {} worker(s) ...".format(self.jobs))
 
         if isinstance(dataset, str):
             dataset = xr.open_mfdataset(dataset, combine='by_coords', parallel=True)
@@ -99,6 +106,8 @@ class EnergyBudget:
         w = data.get('w')
         omega = data.get('omega')
 
+        del data
+
         if w is None and omega is None:
             raise ValueError("Vertical velocity not found!")
         elif (omega is not None) and (w is None):
@@ -116,33 +125,46 @@ class EnergyBudget:
         # find coordinates
         self.latitude, self.nlat = _find_latitude(dataset)
         self.longitude, self.nlon = _find_longitude(dataset)
-        self.levels, self.nlevels = _find_levels(dataset)
+        self.levels, nlevels = _find_levels(dataset)
+
+        # Get spatial dimensions
+        if p.size == nlevels:
+            print("Using pressure coordinates")
+        else:
+            assert p.shape == u.shape, "Pressure must be a 3D field when using height coordinates"
+
+            # Perform interpolation to constant pressure levels (set bottom level to 1000 hPa)
+            if p_levels is None:
+                p_levels = np.linspace(1000e2, p.min(), nlevels)
+            else:
+                p_levels = np.array(p_levels)
+
+            nlevels = p_levels.size
+
+            print("Interpolating data to {} isobaric levels ...".format(p_levels.size))
+
+            z_axis = self.info_coords.find('z')
+
+            u, v, w, omega, t = linear_interp1d(p_levels, p, u, v, w, omega, t,
+                                                scale='log', fill_value=0.0,
+                                                axis=z_axis)
+            # replace pressure 3D array with isobaric levels
+            p = p_levels
+
+            # create new pressure coordinate
+            self.coords[z_axis] = xr.DataArray(data=p, dims=["plev"],
+                                               coords=dict(plev=("plev", p)),
+                                               attrs=dict(standard_name="pressure",
+                                                          long_name="pressure",
+                                                          positive="up", units="Pa",
+                                                          axis="Z"))
 
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.grid_shape = (self.nlat, self.nlon)
 
         # size of the non-spatial dimensions
+        self.nlevels = nlevels
         self.samples = np.prod(u.shape) // (np.prod(self.grid_shape) * self.nlevels)
-
-        # Get spatial dimensions
-        self.leveltype = leveltype.lower()
-
-        if self.leveltype == 'pressure':
-            assert p.size == self.nlevels, "Pressure must be a 1D field with" \
-                                           "size nlevels when using pressure coordinates"
-        elif self.leveltype == 'height':
-            assert p.shape == u.shape, "Pressure must be a 3D field when using height coordinates"
-        else:
-            raise ValueError("Wrong level type specification")
-
-        # making sure array splitting gives more chunks than jobs for parallel computations
-        # if not given, the chunk size is set to the cpu count.
-        if jobs is None:
-            self.jobs = get_num_cores()
-        else:
-            self.jobs = int(jobs)
-
-        print("Running with {} worker(s) ...".format(self.jobs))
 
         # Infer direction of the vertical axis and flip accordingly
         self.direction = np.sign(p[0] - p[-1])
@@ -157,9 +179,9 @@ class EnergyBudget:
         if ps is None:
             # Set first pressure level as surface pressure
             dp = np.mean(abs(np.diff(self.p)))  # extrapolate linearly from first level
-            self.ps = np.broadcast_to(p.max() + dp, (self.nlat, self.nlon))
+            self.ps = np.broadcast_to(np.max(self.p) + dp, self.grid_shape)
         elif np.isscalar(ps):
-            self.ps = np.broadcast_to(ps, (self.nlat, self.nlon))
+            self.ps = np.broadcast_to(ps, self.grid_shape)
         else:
             if isinstance(ps, xr.DataArray):
                 self.ps = ps.values.squeeze()
@@ -175,7 +197,7 @@ class EnergyBudget:
                                  'but got {}!'.format(self.grid_shape, np.shape(self.ps)))
 
         if ghsl is None:
-            self.ghsl = np.zeros((self.nlat, self.nlon))
+            self.ghsl = np.zeros(self.grid_shape)
         else:
             if isinstance(ghsl, xr.DataArray):
                 self.ghsl = ghsl.values.squeeze()
@@ -188,14 +210,12 @@ class EnergyBudget:
                     'Expected shape {}, but got {}!'.format(self.grid_shape, np.shape(ghsl)))
 
         # -----------------------------------------------------------------------------
-        # Create SPHEREPACK object to perform the spectral computations.
+        # Create sphere object to perform the spectral computations.
         # -----------------------------------------------------------------------------
-
         # Inspect grid type and latitude sampling
         self.gridtype, self.latitude, self.weights = inspect_gridtype(self.latitude)
 
         # nodes used in the Gauss-Legendre quadrature
-        self.nodes = np.sin(np.deg2rad(self.latitude))
         self.fc = coriolis_parameter(self.latitude)
 
         if rsphere is None:
@@ -241,10 +261,13 @@ class EnergyBudget:
         self.sp_coords.append(xr.Coordinate('kappa', self.kappa_h,
                                             attrs={'standard_name': 'wavenumber',
                                                    'long_name': 'horizontal wavenumber',
-                                                   'axis': 'X'}))
+                                                   'axis': 'X', 'units': 'm**-1'}))
 
-        # normalization factor for calculating vector cross-spectrum
-        self.vector_norm = np.expand_dims(self.kappa_h ** 2, (-1, -2))
+        # normalization factor for calculating vector cross-spectrum:
+        # vector_norm = n * (n + 1) / re ** 2
+        spectrum_shape = (self.truncation + 1, self.samples, self.nlevels)
+
+        self.vector_norm = broadcast_1dto(self.kappa_h ** 2, spectrum_shape)
         self.vector_norm[0] = 1.0
 
         # -----------------------------------------------------------------------------
@@ -313,7 +336,6 @@ class EnergyBudget:
         # above the ground (representative mean) and the perturbations.
         # Using A&L13 formula for the representative mean results in unstable
         # profiles in most cases! We use global average instead.
-
         self.theta_avg = self._representative_mean(self.theta)
         self.theta_pbn = self.theta - self.theta_avg
 
@@ -329,15 +351,12 @@ class EnergyBudget:
         self.ddp_theta_pbn = self.filter_topography(self.ddp_theta_pbn)
 
         # Static stability parameter ganma to convert from temperature variance to APE
-        # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
-        # ddlp_theta_avg = self._vertical_gradient(self.theta_avg, z=np.log(self.p))
-        ddlp_theta_avg = self._vertical_gradient(self.theta_avg) * self.p
-        self.ganma = - cn.Rd * self.exner / ddlp_theta_avg
+        self.ganma = stability_parameter(self.p, self.theta_avg, vertical_axis=-1)
 
     # -------------------------------------------------------------------------------
     # Methods for computing thermodynamic quantities
     # -------------------------------------------------------------------------------
-    def _add_metadata(self, data, name, gridtype, **attributes):
+    def add_metadata(self, data, name, gridtype, **attributes):
         """
             Add metadata and export variables as xr.DataArray
         """
@@ -447,11 +466,11 @@ class EnergyBudget:
 
         kinetic_energy = (vrt_sp + div_sp) / (2.0 * self.vector_norm)
 
-        kinetic_energy = self._add_metadata(kinetic_energy, 'hke',
-                                            gridtype='spectral',
-                                            units='m**2 s**-2',
-                                            standard_name='horizontal_kinetic_energy',
-                                            long_name='horizontal kinetic energy per unit mass')
+        kinetic_energy = self.add_metadata(kinetic_energy, 'hke',
+                                           gridtype='spectral',
+                                           units='m**2 s**-2',
+                                           standard_name='horizontal_kinetic_energy',
+                                           long_name='horizontal kinetic energy per unit mass')
 
         return kinetic_energy
 
@@ -462,11 +481,11 @@ class EnergyBudget:
         """
         kinetic_energy = self._scalar_spectra(self.w) / 2.0
 
-        kinetic_energy = self._add_metadata(kinetic_energy, 'vke',
-                                            gridtype='spectral',
-                                            units='m**2 s**-2',
-                                            standard_name='vertical_kinetic_energy',
-                                            long_name='vertical kinetic energy per unit mass')
+        kinetic_energy = self.add_metadata(kinetic_energy, 'vke',
+                                           gridtype='spectral',
+                                           units='m**2 s**-2',
+                                           standard_name='vertical_kinetic_energy',
+                                           long_name='vertical kinetic energy per unit mass')
 
         return kinetic_energy
 
@@ -477,11 +496,11 @@ class EnergyBudget:
         """
         potential_energy = self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
 
-        potential_energy = self._add_metadata(potential_energy, 'ape',
-                                              gridtype='spectral',
-                                              units='m**2 s**-2',
-                                              standard_name='available_potential_energy',
-                                              long_name='available potential energy per unit mass')
+        potential_energy = self.add_metadata(potential_energy, 'ape',
+                                             gridtype='spectral',
+                                             units='m**2 s**-2',
+                                             standard_name='available_potential_energy',
+                                             long_name='available potential energy per unit mass')
         return potential_energy
 
     def vorticity_divergence(self):
@@ -551,7 +570,7 @@ class EnergyBudget:
         """
 
         # Horizontal kinetic energy per unit mass in grid-point space
-        kinetic_energy = np.sum(self.wind ** 2, axis=0)
+        kinetic_energy = np.sum(self.wind * self.wind, axis=0)
 
         # Horizontal gradient of horizontal kinetic energy
         kinetic_energy_gradient = self.horizontal_gradient(kinetic_energy)
@@ -628,20 +647,19 @@ class EnergyBudget:
         """
 
         # Nonlinear interaction term due to relative vorticity
-        nlt_interaction = self.conversion_dke_rke_vorticity()
+        vorticity_advection = self.conversion_dke_rke_vorticity()
 
         # Rotational effect due to the Coriolis force on the spectral
-        lct_interaction = self.conversion_dke_rke_coriolis()
+        linear_conversion = self.conversion_dke_rke_coriolis()
 
         # Vertical transfer
         vertical_transfer = self.conversion_dke_rke_vertical()
 
-        return nlt_interaction + lct_interaction + vertical_transfer
+        return vorticity_advection + linear_conversion + vertical_transfer
 
     def conversion_dke_rke_vertical(self):
         """Conversion from divergent to rotational energy due to vertical transfer
         """
-
         # vertical transfer
         vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
         vertical_transfer += self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
@@ -710,51 +728,58 @@ class EnergyBudget:
         # Energy conversion between KE and APE (contains metadata)
         c_ka = cumulative_flux(self.conversion_ape_dke())
 
-        c_ka = self._add_metadata(c_ka, 'cka', gridtype='spectral',
-                                  units='W m**-2', standard_name='energy_conversion',
-                                  long_name='conversion from kinetic to'
-                                            'available potential energy')
+        c_ka = self.add_metadata(c_ka, 'cka', gridtype='spectral',
+                                 units='W m**-2', standard_name='energy_conversion',
+                                 long_name='conversion from kinetic to'
+                                           'available potential energy')
 
         c_dr = cumulative_flux(self.conversion_dke_rke())
 
-        c_dr = self._add_metadata(c_dr, 'cdr', gridtype='spectral',
-                                  units='W m**-2', standard_name='energy_conversion',
-                                  long_name='conversion from divergent to'
-                                            'rotational kinetic energy')
+        c_dr = self.add_metadata(c_dr, 'cdr', gridtype='spectral',
+                                 units='W m**-2', standard_name='energy_conversion',
+                                 long_name='conversion from divergent to'
+                                           'rotational kinetic energy')
 
         # Compute cumulative nonlinear spectral energy fluxes
-        pi_k = cumulative_flux(self.ke_nonlinear_transfer())
+        pi_r = cumulative_flux(self.rke_nonlinear_transfer())
+        pi_d = cumulative_flux(self.dke_nonlinear_transfer())
         pi_a = cumulative_flux(self.ape_nonlinear_transfer())
 
         # add metadata
-        pi_k = self._add_metadata(pi_k + lc_k, 'pi_ke', gridtype='spectral',
-                                  units='W m**-2', standard_name='nonlinear_tke_flux',
-                                  long_name='cumulative spectral flux of kinetic energy')
+        pi_r = self.add_metadata(pi_r,
+                                 'pi_rke', gridtype='spectral',
+                                 units='W m**-2', standard_name='nonlinear_rke_flux',
+                                 long_name='cumulative spectral flux of rotational kinetic energy')
 
-        pi_a = self._add_metadata(pi_a, 'pi_ape', gridtype='spectral',
-                                  units='W m**-2', standard_name='nonlinear_ape_flux',
-                                  long_name='cumulative spectral flux of '
-                                            'available potential energy')
+        pi_d = self.add_metadata(pi_d,
+                                 'pi_dke', gridtype='spectral',
+                                 units='W m**-2', standard_name='nonlinear_dke_flux',
+                                 long_name='cumulative spectral flux of divergent kinetic energy')
 
-        lc_k = self._add_metadata(lc_k, 'lc', gridtype='spectral',
-                                  units='W m**-2', standard_name='linear_transfer',
-                                  long_name='coriolis linear transfer')
+        pi_a = self.add_metadata(pi_a, 'pi_ape', gridtype='spectral',
+                                 units='W m**-2', standard_name='nonlinear_ape_flux',
+                                 long_name='cumulative spectral flux of '
+                                           'available potential energy')
+
+        lc_k = self.add_metadata(lc_k, 'lc', gridtype='spectral',
+                                 units='W m**-2', standard_name='linear_transfer',
+                                 long_name='coriolis linear transfer')
 
         # Cumulative vertical energy fluxes
         vf_k = cumulative_flux(self._vertical_gradient(self.ke_vertical_flux()))
         vf_a = cumulative_flux(self._vertical_gradient(self.ape_vertical_flux()))
 
         # add metadata
-        vf_k = self._add_metadata(vf_k, 'ke_vf', gridtype='spectral',
-                                  units='W m**-2', standard_name='vertical_tke_flux',
-                                  long_name='cumulative vertical flux of kinetic energy')
+        vf_k = self.add_metadata(vf_k, 'ke_vf', gridtype='spectral',
+                                 units='W m**-2', standard_name='vertical_tke_flux',
+                                 long_name='cumulative vertical flux of kinetic energy')
 
-        vf_a = self._add_metadata(vf_a, 'ape_vf', gridtype='spectral',
-                                  units='W m**-2', standard_name='vertical_ape_flux',
-                                  long_name='cumulative vertical flux of '
-                                            'available potential energy')
+        vf_a = self.add_metadata(vf_a, 'ape_vf', gridtype='spectral',
+                                 units='W m**-2', standard_name='vertical_ape_flux',
+                                 long_name='cumulative vertical flux of '
+                                           'available potential energy')
 
-        return pi_k, lc_k, pi_a, c_ka, c_dr, vf_k, vf_a
+        return pi_d, pi_r, lc_k, pi_a, c_ka, c_dr, vf_k, vf_a
 
     def get_ke_tendency(self, tendency, name=None, cumulative=False):
         r"""
@@ -802,9 +827,9 @@ class EnergyBudget:
             ke_tendency = cumulative_flux(ke_tendency)
 
         if da_flag:
-            ke_tendency = self._add_metadata(ke_tendency, tendency_name,
-                                             gridtype='spectral', units='W m**-2',
-                                             standard_name=tendency_name)
+            ke_tendency = self.add_metadata(ke_tendency, tendency_name,
+                                            gridtype='spectral', units='W m**-2',
+                                            standard_name=tendency_name)
         return ke_tendency
 
     def get_ape_tendency(self, tendency, name=None, cumulative=True):
@@ -860,9 +885,9 @@ class EnergyBudget:
             ape_tendency = cumulative_flux(ape_tendency)
 
         if da_flag:
-            ape_tendency = self._add_metadata(ape_tendency, tendency_name,
-                                              gridtype='spectral', units='W m**-2',
-                                              standard_name=tendency_name)
+            ape_tendency = self.add_metadata(ape_tendency, tendency_name,
+                                             gridtype='spectral', units='W m**-2',
+                                             standard_name=tendency_name)
 
         return ape_tendency
 
@@ -1023,18 +1048,14 @@ class EnergyBudget:
         """
             Computes vertical gradient of a scalar function d(scalar)/dz
         """
-
         if z is None:
-            if self.leveltype == 'pressure':
-                z = self.p
-            else:
-                raise ValueError('Height based vertical coordinate not implemented')
-
+            z = self.p
+        else:
+            assert z.size == scalar.shape[axis], "If given, 'z' must be the same size as 'scalar'" \
+                                                 " along the specified axis."
         # scalar_shape = scalar.shape
         # scalar = np.moveaxis(scalar, axis, -1).reshape((-1, scalar_shape[axis]))
-        #
         # dz = np.diff(z)[0]
-        #
         # grad = fortran_libs.numeric_tools.gradient(scalar, dz, order=5)
         # return np.moveaxis(grad.reshape(scalar_shape), -1, axis)
         return np.gradient(scalar, z, axis=axis, edge_order=1)

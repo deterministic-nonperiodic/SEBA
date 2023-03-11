@@ -6,7 +6,6 @@ import xarray as xr
 from tqdm import tqdm
 
 from seba import EnergyBudget
-from tools import cumulative_flux
 
 warnings.filterwarnings('ignore')
 
@@ -60,20 +59,10 @@ def _process_model(model, resolution, date_time):
     # - Vertical energy fluxes
     fluxes = budget.cumulative_energy_fluxes()
 
-    pi_r = budget._add_metadata(cumulative_flux(budget.rke_nonlinear_transfer()),
-                                'pi_rke', gridtype='spectral',
-                                units='W m**-2', standard_name='nonlinear_rke_flux',
-                                long_name='cumulative spectral flux of rotational kinetic energy')
-
-    pi_d = budget._add_metadata(cumulative_flux(budget.dke_nonlinear_transfer()),
-                                'pi_dke', gridtype='spectral',
-                                units='W m**-2', standard_name='nonlinear_dke_flux',
-                                long_name='cumulative spectral flux of divergent kinetic energy')
-
     # ----------------------------------------------------------------------------------------------
     # Combine results into a dataset and export to netcdf
     # ----------------------------------------------------------------------------------------------
-    dataset = xr.merge([ek, ea, ew, pi_r, pi_d] + list(fluxes), compat="no_conflicts")
+    dataset = xr.merge([ek, ea, ew] + list(fluxes), compat="no_conflicts")
     dataset.attrs.clear()  # clear global attributes
     dataset.attrs.update(dataset_dyn.attrs)
     dataset_dyn.close()
@@ -111,14 +100,13 @@ def _process_model(model, resolution, date_time):
         tend_v_grid = dataset_tnd.get(name.replace("*", "v"))
 
         if tend_u_grid is not None:
-
             tend_grid = np.moveaxis(np.array([tend_u_grid.values,
                                               tend_v_grid.values]), (1, 2), (-2, -1))
 
             ke_tendency = budget.get_ke_tendency(tend_grid, cumulative=True)
 
-            ke_tendency = budget._add_metadata(ke_tendency, "ddt_ke_" + pname,
-                                               gridtype='spectral', units='W m**-2')
+            ke_tendency = budget.add_metadata(ke_tendency, "ddt_ke_" + pname,
+                                              gridtype='spectral', units='W m**-2')
 
             ke_tendencies.append(ke_tendency)
 
