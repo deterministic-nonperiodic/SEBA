@@ -2,6 +2,7 @@ import numpy as np
 from scipy.integrate import cumulative_trapezoid
 from scipy.integrate import odeint
 from scipy.interpolate import interp1d
+from tools import broadcast_1dto
 
 import constants as cn
 
@@ -331,7 +332,7 @@ def specific_volume(pressure, temperature):
     return 1.0 / density(pressure, temperature)
 
 
-def vertical_velocity(pressure, omega, temperature, axis=None):
+def vertical_velocity(pressure, omega, temperature):
     r"""Calculate omega from w assuming hydrostatic conditions.
 
     This function converts from vertical velocity in pressure coordinates
@@ -359,24 +360,15 @@ def vertical_velocity(pressure, omega, temperature, axis=None):
         Vertical velocity in terms of height (in meters / second)
     """
     if pressure.ndim == 1:
-        if axis is not None:
-            msg = "All variables should have the same size as 'pressure' along 'axis'"
-            assert pressure.size == omega.shape[axis] == temperature.shape[axis], msg
-        else:
-            axis = -1
+        msg = "All variables should have the same shape"
+        assert omega.shape == temperature.shape, msg
 
-        omega = np.moveaxis(omega, axis, -1)
-        temperature = np.moveaxis(temperature, axis, -1)
+        pressure = broadcast_1dto(pressure, omega.shape)
     else:
         msg = "All variables should have the same shape as 'pressure'"
         assert pressure.shape == omega.shape == temperature.shape, msg
 
-    w = - omega / (cn.g * density(pressure, temperature))  # (m/s)
-
-    if axis is not None:
-        np.moveaxis(w, -1, axis)
-
-    return w
+    return - omega / (cn.g * density(pressure, temperature))  # (m/s)
 
 
 def pressure_vertical_velocity(pressure, w, temperature, axis=None):
@@ -409,17 +401,14 @@ def pressure_vertical_velocity(pressure, w, temperature, axis=None):
         Vertical velocity in terms of pressure (in Pascals / second)
     """
     if pressure.ndim == 1:
-        if axis is not None:
-            msg = "All variables should have the same size as 'pressure' along 'axis'"
-            assert pressure.size == w.shape[axis] == temperature.shape[axis], msg
-        else:
-            axis = -1
+        msg = "All variables should have the same shape"
+        assert w.shape == temperature.shape, msg
 
-        w = np.moveaxis(w, axis, -1)
-        temperature = np.moveaxis(temperature, axis, -1)
+        pressure = broadcast_1dto(pressure, w.shape)
     else:
         msg = "All variables should have the same shape as 'pressure'"
         assert pressure.shape == w.shape == temperature.shape, msg
+
 
     return - cn.g * density(pressure, temperature) * w  # (Pa/s)
 

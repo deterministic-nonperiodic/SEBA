@@ -7,7 +7,7 @@ import scipy.special as spec
 import scipy.stats as stats
 from joblib import Parallel, delayed, cpu_count
 from scipy.spatial import cKDTree
-from xarray import apply_ufunc
+from xarray import apply_ufunc, Dataset
 
 from spectral_analysis import lambda_from_deg
 
@@ -239,6 +239,10 @@ def map_func(func, data, dim="plev", **kwargs):
     res = apply_ufunc(func, data, input_core_dims=[[dim]],
                       kwargs=kwargs, dask='allowed',
                       vectorize=True)
+
+    if 'pressure_range' in kwargs.keys() and isinstance(data, Dataset):
+        res = res.assign_coords({'layer': kwargs['pressure_range']})
+
     return res
 
 

@@ -122,8 +122,8 @@ DATA_KEYMAP = {
     'pi_ape': r'$\Pi_A$',
     'cdr': r'$C_{D \rightarrow R}$',
     'cka': r'$C_{A \rightarrow D}$',
-    'ke_vf': r'$\partial_{p}F_{D\uparrow}$',
-    'ape_vf': r'$\partial_{p}F_{A\uparrow}$',
+    'vf_dke': r'$\partial_{p}F_{D\uparrow}$',
+    'vf_ape': r'$\partial_{p}F_{A\uparrow}$',
     'uw_vf': r'$\rho\overline{u^{\prime}w^{\prime}}$',
     'vw_vf': r'$\rho\overline{v^{\prime}w^{\prime}}$',
     'gw_vf': r'$\overline{u^{\prime}w^{\prime}}$ + $\overline{v^{\prime}w^{\prime}}$',
@@ -693,7 +693,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
 
 def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=False,
                              resolution='n1024', x_limits=None, y_limits=None,
-                             cmap=None, fig_name='test.png'):
+                             fig_name='test.png'):
     if variables is None:
         variables = list(dataset.data_vars)
 
@@ -701,9 +701,6 @@ def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=Fal
 
     if y_limits is None:
         y_limits = [1e-10, 1e2]
-
-    if cmap is None:
-        cmap = BWG
 
     if compensate:
         y_label = r'Compensated energy ($\times\kappa^{5/3}$)'
@@ -727,29 +724,17 @@ def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=Fal
                                     frame=True, truncation=resolution)
     axes = axes.ravel()
 
-    # cs_limit = 0.65 * abs(dataset[variables].to_array().values).max()
-    cs_levels = 50
-
     for m, (ax, varname) in enumerate(zip(axes, variables)):
 
-        spectra = 1e3 * dataset[varname].mean(dim='time').values
-        cs_limit = 0.65 * abs(spectra).max()
+        spectra = 1e3 * dataset[varname].values
+        label = DATA_KEYMAP[varname]
 
         # Create plots:
-        cs = ax.contourf(kappa, level, spectra,
-                         cmap=cmap, levels=cs_levels,
-                         norm=SymLogNorm(linthresh=0.15, linscale=0.65,
-                                         vmin=-cs_limit, vmax=cs_limit))
+        ew_spectra, ew_sel, ew_seu = transform_spectra(spectra)
 
-        ax.contour(kappa, level, gaussian_filter(spectra, 1.2),
-                   color='black', linewidths=0.8, levels=[0, ])
+        ax.fill_between(kappa, ew_seu, ew_sel, color='gray', interpolate=False, alpha=0.1)
 
-        ax.set_ylim(1000., 100.)
-        ax.set_ylabel(r'Pressure (hPa)')
-
-        if m == cols - 1:
-            cb = plt.colorbar(cs, ax=ax, orientation='vertical', pad=0.001, format="%.2f")
-            cb.ax.set_title(r"[$W / m^{2}$]", fontsize=14, loc='left', pad=15)
+        ax.plot(kappa, ew_spectra, lw=1.4, color='k', label=label, linestyle='dashed', alpha=1.0)
 
     if model is not None:
         at = AnchoredText(model.upper(), prop=dict(size=15), frameon=True, loc='upper left')

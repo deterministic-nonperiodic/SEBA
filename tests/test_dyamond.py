@@ -57,13 +57,13 @@ if __name__ == '__main__':
     # Kinetic energy in vector form accumulate and integrate vertically
     # average over samples:
     # Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]
-    Ek_trp = map_func(budget.vertical_integration, Ek, pressure_range=prange_trp)[1:-1]
-    Ew_trp = map_func(budget.vertical_integration, Ew, pressure_range=prange_trp)[1:-1]
-    Ea_trp = map_func(budget.vertical_integration, Ea, pressure_range=prange_trp)[1:-1]
+    Ek_trp = map_func(budget.vertical_integration, Ek, pressure_range=prange_trp).mean(dim='time')
+    Ew_trp = map_func(budget.vertical_integration, Ew, pressure_range=prange_trp).mean(dim='time')
+    Ea_trp = map_func(budget.vertical_integration, Ea, pressure_range=prange_trp).mean(dim='time')
 
-    Ek_stp = map_func(budget.vertical_integration, Ek, pressure_range=prange_stp)[1:-1]
-    Ew_stp = map_func(budget.vertical_integration, Ew, pressure_range=prange_stp)[1:-1]
-    Ea_stp = map_func(budget.vertical_integration, Ea, pressure_range=prange_stp)[1:-1]
+    Ek_stp = map_func(budget.vertical_integration, Ek, pressure_range=prange_stp).mean(dim='time')
+    Ew_stp = map_func(budget.vertical_integration, Ew, pressure_range=prange_stp).mean(dim='time')
+    Ea_stp = map_func(budget.vertical_integration, Ea, pressure_range=prange_stp).mean(dim='time')
 
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
@@ -155,33 +155,33 @@ if __name__ == '__main__':
     # - linear spectral transfer due to coriolis
     # - Energy conversion from APE to KE
     # - Vertical energy fluxes
-    pid, pir, lct, pia, cka, cdr, vfk, vfa = budget.cumulative_energy_fluxes()
+    dataset_fluxes = budget.cumulative_energy_fluxes()
 
-    pik = pid + pir
+    dataset_fluxes = xr.merge(dataset_fluxes, compat="no_conflicts").mean(dim='time')
 
     # Perform vertical integration along last axis
     layers = {'Stratosphere': [50e2, 250e2], 'Free troposphere': [250e2, 500e2]}
     limits = [[-0.4, 0.4], [-0.5, 1.0]]
 
     for i, (level, prange) in enumerate(layers.items()):
-        pik_l = map_func(budget.vertical_integration, pik, pressure_range=prange)
-        pia_l = map_func(budget.vertical_integration, pia, pressure_range=prange)
-        cka_l = map_func(budget.vertical_integration, cka, pressure_range=prange)
-        cdr_l = map_func(budget.vertical_integration, cdr, pressure_range=prange)
-        lct_l = map_func(budget.vertical_integration, lct, pressure_range=prange)
 
-        # Total vertical inflow from layer bottom to top
-        vfk_l = map_func(budget.vertical_integration, vfk, pressure_range=prange)
-        vfa_l = map_func(budget.vertical_integration, vfa, pressure_range=prange)
+        fluxes_level = map_func(budget.vertical_integration, dataset_fluxes, pressure_range=prange)
+
+        pik_l = fluxes_level.pi_dke.values + fluxes_level.pi_rke.values
+        pia_l = fluxes_level.pi_ape.values
+        cka_l = fluxes_level.cka.values
+        lct_l = fluxes_level.lc.values
+        vfk_l = fluxes_level.vf_dke.values
+        vfa_l = fluxes_level.vf_ape.values
+        cdr_l = fluxes_level.cdr.values
 
         # Create figure
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
 
         pit_l = pik_l + pia_l
-        vft_l = vfk_l + vfa_l
 
         y_min = 1.5 * np.nanmin([pik_l, cdr_l])
-        y_max = 1.5 * np.nanmax([pit_l, vft_l, cka_l])
+        y_max = 1.5 * np.nanmax([pit_l, vfk_l + vfa_l, cka_l])
 
         y_limits = limits[i]
 
@@ -189,8 +189,8 @@ if __name__ == '__main__':
         at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
         ax.add_artist(at)
 
-        ax.semilogx(kappa, pit_l, label=r'$\Pi = \Pi_K + \Pi_A$', linewidth=2.5, linestyle='-',
-                    color='k')
+        ax.semilogx(kappa, pit_l, label=r'$\Pi = \Pi_K + \Pi_A$',
+                    linewidth=2.5, linestyle='-', color='k')
         ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=1.6, linestyle='-', color='red')
         ax.semilogx(kappa, pia_l, label=r'$\Pi_A$', linewidth=1.6, linestyle='-', color='navy')
 

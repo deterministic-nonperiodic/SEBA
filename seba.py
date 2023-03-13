@@ -113,7 +113,7 @@ class EnergyBudget:
         elif (omega is not None) and (w is None):
             # compute vertical velocity in height coordinates
             omega = omega.values
-            w = vertical_velocity(p, omega, t, axis=1)
+            w = vertical_velocity(p, omega, t)
         elif (w is not None) and (omega is None):
             # compute or load z coordinate
             w = w.values
@@ -129,7 +129,7 @@ class EnergyBudget:
 
         # Get spatial dimensions
         if p.size == nlevels:
-            print("Using pressure coordinates")
+            print("Running with pressure coordinates")
         else:
             assert p.shape == u.shape, "Pressure must be a 3D field when using height coordinates"
 
@@ -746,13 +746,11 @@ class EnergyBudget:
         pi_a = cumulative_flux(self.ape_nonlinear_transfer())
 
         # add metadata
-        pi_r = self.add_metadata(pi_r,
-                                 'pi_rke', gridtype='spectral',
+        pi_r = self.add_metadata(pi_r, 'pi_rke', gridtype='spectral',
                                  units='W m**-2', standard_name='nonlinear_rke_flux',
                                  long_name='cumulative spectral flux of rotational kinetic energy')
 
-        pi_d = self.add_metadata(pi_d,
-                                 'pi_dke', gridtype='spectral',
+        pi_d = self.add_metadata(pi_d, 'pi_dke', gridtype='spectral',
                                  units='W m**-2', standard_name='nonlinear_dke_flux',
                                  long_name='cumulative spectral flux of divergent kinetic energy')
 
@@ -770,11 +768,11 @@ class EnergyBudget:
         vf_a = cumulative_flux(self._vertical_gradient(self.ape_vertical_flux()))
 
         # add metadata
-        vf_k = self.add_metadata(vf_k, 'ke_vf', gridtype='spectral',
-                                 units='W m**-2', standard_name='vertical_tke_flux',
+        vf_k = self.add_metadata(vf_k, 'vf_dke', gridtype='spectral',
+                                 units='W m**-2', standard_name='vertical_dke_flux',
                                  long_name='cumulative vertical flux of kinetic energy')
 
-        vf_a = self.add_metadata(vf_a, 'ape_vf', gridtype='spectral',
+        vf_a = self.add_metadata(vf_a, 'vf_ape', gridtype='spectral',
                                  units='W m**-2', standard_name='vertical_ape_flux',
                                  long_name='cumulative vertical flux of '
                                            'available potential energy')
