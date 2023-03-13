@@ -75,13 +75,13 @@ class EnergyBudget:
             Truncation limit (triangular truncation) for the spherical harmonic computation.
         :param rsphere: averaged earth radius (meters)
         """
+
         # making sure array splitting gives more chunks than jobs for parallel computations
         # if not given, the chunk size is set to the cpu count.
         if jobs is None:
             self.jobs = get_num_cores()
         else:
             self.jobs = int(jobs)
-        # print("Running with {} worker(s) ...".format(self.jobs))
 
         if isinstance(dataset, str):
             dataset = xr.open_mfdataset(dataset, combine='by_coords', parallel=True)
@@ -89,7 +89,7 @@ class EnergyBudget:
             pass
         else:
             raise TypeError("Input 'dataset' must be xarray.Dataset instance or a string "
-                            "containing a path to data.")
+                            "containing the path to a netcdf dataset.")
 
         # Initialize variables
         data, self.coords = parse_dataset(dataset, variables=variables)
