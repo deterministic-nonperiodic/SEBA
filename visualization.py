@@ -687,7 +687,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
         axes[0].add_artist(at)
 
     plt.show()
-    fig.savefig(os.path.join('figures', fig_name), dpi=300)
+    fig.savefig(fig_name, dpi=300)
     plt.close(fig)
 
 
@@ -725,7 +725,6 @@ def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=Fal
     axes = axes.ravel()
 
     for m, (ax, varname) in enumerate(zip(axes, variables)):
-
         spectra = 1e3 * dataset[varname].values
         label = DATA_KEYMAP[varname]
 
@@ -742,5 +741,5 @@ def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=Fal
         axes[0].add_artist(at)
 
     plt.show()
-    fig.savefig(os.path.join('figures', fig_name), dpi=300)
+    fig.savefig(fig_name, dpi=300)
     plt.close(fig)

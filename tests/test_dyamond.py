@@ -22,12 +22,13 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n512'
+    resolution = 'n256'
     data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[12]'
-    file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
+    date_time = '20[0]'
+    file_names = data_path + '{}_atm_3d_inst_{}_{}.nc'
+    # file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
 
     # # load earth topography and surface pressure
     # dset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
@@ -77,7 +78,7 @@ if __name__ == '__main__':
         x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
         xticks = np.array([2, 20, 200, 2000])
 
-    y_limits = [0.5e-3, 5e7]
+    y_limits = [1e-4, 5e7]
 
     x_lscale = kappa_from_lambda(np.linspace(3200, 650., 2))
     x_sscale = kappa_from_lambda(np.linspace(450, 60., 2))
@@ -160,8 +161,14 @@ if __name__ == '__main__':
     dataset_fluxes = xr.merge(dataset_fluxes, compat="no_conflicts").mean(dim='time')
 
     # Perform vertical integration along last axis
-    layers = {'Stratosphere': [50e2, 250e2], 'Free troposphere': [250e2, 500e2]}
-    limits = [[-0.4, 0.4], [-0.5, 1.0]]
+    layers = {
+        # 'Stratosphere': [50e2, 250e2],
+        'Free troposphere': [250e2, 500e2]
+    }
+    limits = {
+        'Stratosphere': [-0.4, 0.4],
+        'Free troposphere': [-0.5, 1.0],
+    }
 
     for i, (level, prange) in enumerate(layers.items()):
 
@@ -183,7 +190,7 @@ if __name__ == '__main__':
         y_min = 1.5 * np.nanmin([pik_l, cdr_l])
         y_max = 1.5 * np.nanmax([pit_l, vfk_l + vfa_l, cka_l])
 
-        y_limits = limits[i]
+        y_limits = limits[level]
 
         at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
         at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")

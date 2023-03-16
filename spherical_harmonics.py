@@ -117,22 +117,21 @@ class Spharmt(object):
         else:
             self.gridtype = gridtype
 
-        # Initialize 4pi-normalized harmonics with no CS phase shift (consistent with CDO).
-        # Alternatives are: sht_orthonormal or sht_schmidt
+        # Initialize 4pi-normalized harmonics with no CS phase shift (consistent with SPHEREPACK)
+        # Alternatives are: sht_orthonormal or sht_schmidt.
         self._shtns = shtns.sht(ntrunc, ntrunc, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
 
         if self.gridtype == 'gaussian':
-            self._shtns.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-10)
+            self._shtns.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
         else:
-            self._shtns.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-10)
+            self._shtns.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
 
         self.ntrunc = ntrunc
         self.nlm = self._shtns.nlm
         self.degree = self._shtns.l
         self.order = self._shtns.m
 
-        self.kappa_sq = -self.degree * (self.degree + 1.0).astype(complex) / self.rsphere
-        # self.kappa_sq *= np.sqrt(2.0)  # added for consistency with spharm vorticity coefficients
+        self.kappa_sq = - self.degree * (self.degree + 1.0).astype(complex) / self.rsphere
 
     def _map(self, func, *args):
         """Wrapper function for running _shtns functions in parallel"""

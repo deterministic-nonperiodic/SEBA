@@ -1,7 +1,7 @@
 ! manipulacion de errores ...
-!==========================================================================
+!===================================================================================================
   subroutine model_error( message )
-!==========================================================================
+!===================================================================================================
 
  implicit none
 
@@ -13,11 +13,11 @@
 
   return
  end subroutine model_error
-!==========================================================================
+!===================================================================================================
 
-!==========================================================================
+!===================================================================================================
   subroutine model_message( main_message, optn_message, values, vfmt)
-!==========================================================================
+!===================================================================================================
 
  implicit none
 
@@ -42,43 +42,43 @@
 
 return
 end subroutine model_message
-!==========================================================================
+!===================================================================================================
 
-!==========================================================================
-  subroutine gradient(dpdx, var, dx, nx, nt, order)
-!==========================================================================
+!===================================================================================================
+  subroutine gradient(dpds, var, ds, ns, nt, order)
+!===================================================================================================
 
  implicit none
 
  ! input vars ...
  integer,          intent(in)  :: order
- integer,          intent(in)  :: nx, nt
- double precision, intent(in)  :: dx
- double precision, intent(in)  :: var (nx, nt)
+ integer,          intent(in)  :: ns, nt
+ double precision, intent(in)  :: ds
+ double precision, intent(in)  :: var (nt, ns)
 
  ! local
- integer                       :: k, i, nxo, nxf
+ integer                       :: k, nso, nsf
 
  ! output vars ...
- double precision, intent(out) :: dpdx (nx, nt)
+ double precision, intent(out) :: dpds (nt, ns)
 
-  dpdx = 0.0
+  dpds = 0.0
 
-  nxo = 2
-  nxf = nx - (nxo - 1)
+  nso = 2
+  nsf = ns - (nso - 1)
 
   ! loop over samples
   do k = 1, nt
-    call compactderv(dpdx(:, k), var(:, k), dx, nx, nxo, nxf, order)
+    call compactderv(dpds(k, :), var(k, :), ds, ns, nso, nsf, order)
   enddo
 
  return
  end subroutine gradient
-!==========================================================================
+!===================================================================================================
 
-!==========================================================================
+!===================================================================================================
   subroutine linederv(ads, var, ds, ns, nso, nsf, order)
-!==========================================================================
+!===================================================================================================
 !
 ! module for computing high order centered finite differences formulas for
 ! aproximating first derivatives amoung a line.
@@ -149,11 +149,11 @@ end subroutine model_message
 
  return
  end subroutine linederv
-!==========================================================================
+!===================================================================================================
 
-!==========================================================================
+!===================================================================================================
   subroutine compactderv(ads, var, ds, ns, is, ie, order)
-!==========================================================================
+!===================================================================================================
 !
 ! module for computing high order centered compact finite differences
 ! formulas for aproximating first derivatives amoung a line.
@@ -179,9 +179,9 @@ end subroutine model_message
 
 ! local :
  double precision              :: rhs (ns  )
- double precision              :: a, b, c, d, ds4
+ double precision              :: a, b, c, d, ds4, ds6
  logical                       :: flag
- integer                       :: i
+ integer                       :: i, ib
 
 ! output :
  double precision, intent(out) :: ads (ns)
@@ -191,6 +191,7 @@ end subroutine model_message
   flag = .true.
 
   ds4 = 4.0 * ds
+  ds6 = 6.0 * ds
 
   ! selecting coefficients for compact scheme depending on order
   scheme_order: select case (order)
@@ -220,6 +221,23 @@ end subroutine model_message
       do i = is+1, ie-1
           rhs(i) = d * rhs(i) + ( var(i+2) - var(i-2) ) / ds4
       enddo
+      rhs(is) = (d + 1.0) * rhs(is)
+      rhs(ie) = (d + 1.0) * rhs(ie)
+
+    case(8)
+      ! 5- modified sixth order compact scheme o(dx^6). lele, (1992).
+
+      ! define coefficients
+      a = 3.0; b = 8.0; c = 3.0; d = 12.5
+
+      ! compute a( u(i+1) - u(i-1) ) / 2 ds
+      call linederv(rhs, var, ds, ns, is, ie, 2)
+
+      ! compute b( u(i+2) - u(i-2) ) / 4 ds + c( u(i+3) - u(i-3) ) / 4 ds
+      do i = is+2, ie-2
+          rhs(i) = d * rhs(i) + 1.6 * (var(i+2) - var(i-2))/ds4 - 0.1 * (var(i+3) - var(i-3))/ds6
+      enddo
+
       rhs(is) = (d + 1.0) * rhs(is)
       rhs(ie) = (d + 1.0) * rhs(ie)
 
@@ -255,11 +273,130 @@ end subroutine model_message
 
   return
  end subroutine compactderv
-!==========================================================================
+!===================================================================================================
 
-!==========================================================================
+!===================================================================================================
+  subroutine compact_derivative(ads, var, ds, ns, order)
+!===================================================================================================
+!
+! module for computing high order centered compact finite differences
+! formulas for aproximating first derivatives amoung a line.
+! the system of equations is solved by thomas reduction algorithm.
+!
+!                       !  ds  !
+!
+! *------*------ ... ---*------*------*------*------*--- ... -----*------*
+! 1     is             i-2    i-1     i     i+1    i+2           ie     ns
+!
+! options: ord = 1-2, 3-4, 5-6
+!
+! uses:
+!
+! du/dx = compactderv( u(x), dx, nx, nxo, nxf, order )
+!
+ implicit none
+! inputs :
+ integer         , intent(in ) :: order
+ integer         , intent(in ) :: ns
+ double precision, intent(in ) :: ds
+ double precision, intent(in ) :: var (ns  )
+
+! local :
+ double precision              :: rhs (ns  )
+ double precision              :: a, b, c, d, ds4, ds6
+ logical                       :: flag
+ integer                       :: i, is, ie, ne
+
+! output :
+ double precision, intent(out) :: ads (ns)
+
+  rhs = 0.0
+  ads = 0.0
+  flag = .true.
+
+  ds4 = 4.0 * ds
+  ds6 = 6.0 * ds
+
+  is = int(order / 2) + 1
+  ie = ns + 1 - is
+  ne = ie - is + 1
+
+  ! compute ( u(i+1) - u(i-1) ) / 2 ds for all schemes
+  call linederv(rhs, var, ds, ns, 2, ns-1, 2)
+
+  ! selecting coefficients for compact scheme depending on order
+  scheme_order: select case (order)
+
+    case(4) ! fourth order compact scheme o(dx^4)
+
+      a = 1.0; b = 4.0; c = 1.0; d = 6.0
+
+      ! store rhs of the system:
+      rhs(is:ie) = d * rhs(is:ie)
+
+    case(5, 6)
+      ! 5- modified sixth order compact scheme o(dx^6). lele, (1992).
+
+      ! define coefficients
+      if (order == 5) then
+        a = 2.5; b = 7.0; c = 2.5; d = 11.0
+      else
+        a = 3.0; b = 9.0; c = 3.0; d = 14.0
+      endif
+
+      ! compute ( u(i+2) - u(i-2) ) / 4 ds
+      do i = is, ie
+          rhs(i) = d * rhs(i) + ( var(i+2) - var(i-2) ) / ds4
+      enddo
+
+    case(8)
+      ! 5- modified sixth order compact scheme o(dx^6). lele, (1992).
+
+      ! define coefficients
+      a = 3.0; b = 8.0; c = 3.0; d = 12.5
+
+      ! compute b( u(i+2) - u(i-2) ) / 4 ds + c( u(i+3) - u(i-3) ) / 4 ds
+      do i = is, ie
+          rhs(i) = d * rhs(i) + 1.6 * (var(i+2) - var(i-2))/ds4 - 0.1 * (var(i+3) - var(i-3))/ds6
+      enddo
+
+    case default
+
+      ! no need to solve the system,
+      ! the algorithm is consistent with a=0, b=1, c=0 anyway
+      ! (single diagonal matrix can be explicitly solved)
+      flag = .false.
+
+      ads = rhs
+
+  end select scheme_order
+
+  ! Solve system and compute derivatives at the boundaries
+  if (flag) then ! (only for order /= 2)
+
+    ! Second order boundaries conditions (test 4th)
+    ads(1:is-1) = rhs(1:is-1)
+    ads(ie+1:ns) = rhs(ie+1:ns)
+
+    ! first and last rows of the system:
+    rhs(is) = rhs(is) - a * ads(is-1)
+    rhs(ie) = rhs(ie) - c * ads(ie+1)
+
+    ! solving the tridiagonal system with constant coefficients
+    ! using thomas algorithm O(n):
+    call cons_thomas(rhs(is:ie), a, b, c, ne)
+
+    ads(is:ie) = rhs(is:ie)
+
+  endif
+
+  return
+ end subroutine compact_derivative
+!===================================================================================================
+
+!===================================================================================================
   subroutine cons_thomas(v, a, b, c, ns)
-!==========================================================================
+!===================================================================================================
 !         Thomas tridiagonal solver with constant coefficients
 !--------------------------------------------------------------------------
    implicit none
@@ -292,12 +429,12 @@ end subroutine model_message
 
   return
  end subroutine cons_thomas
-!==========================================================================
+!===================================================================================================
 
 
-!==========================================================================
+!===================================================================================================
   subroutine gen_thomas(v, a, b, c, nn)
-!==========================================================================
+!===================================================================================================
 !          Thomas tridiagonal solver with generic coefficients
 !--------------------------------------------------------------------------
 
@@ -340,12 +477,12 @@ end subroutine model_message
 
  return
 end subroutine gen_thomas
-!==========================================================================
+!===================================================================================================
 
 
-!==========================================================================
+!===================================================================================================
 ! define central differences operators for dq/dx (avoid repeating code) :
-!==========================================================================
+!===================================================================================================
 
  double precision function cflux2(q_im1, q_ip1)
   double precision, intent(in) :: q_im1, q_ip1
@@ -363,9 +500,9 @@ end subroutine gen_thomas
   return
  end function cflux4
 
-!==========================================================================
+!===================================================================================================
 ! define foward-backward differences operators for dq/dx (at boundaries):
-!==========================================================================
+!===================================================================================================
  ! points [ i, i+-1, i+-2 ]
  double precision function bflux2(q_icen, q_ipm1, q_ipm2)
   double precision, intent(in) :: q_icen, q_ipm1, q_ipm2
@@ -405,16 +542,15 @@ end subroutine gen_thomas
 
   return
  end function iflux4
+!===================================================================================================
 
-!==========================================================================
-
-!==========================================================================
-  subroutine adams_moulton(var, var0, func, ds, ns, nso, nsf)
-!==========================================================================
+!===================================================================================================
+  subroutine adams_moulton(var, var0, func, ds, ns)
+!===================================================================================================
 
  implicit none
 
- integer         , intent(in ) :: ns, nso, nsf
+ integer         , intent(in ) :: ns
  double precision, intent(in ) :: ds
 
  double precision, intent(in ) :: var0
@@ -427,14 +563,14 @@ end subroutine gen_thomas
 
  ! adams moulton-2 ...
  var(1) = var0
- var(nso) = var(nso-1) + ds * ( func(nso-1) + func(nso) ) / 2.0
+ var(2) = var(1) + ds * ( func(1) + func(2) ) / 2.0
 
  ! adams moulton-3 ...
- intvar = 5.0 * func(nso+1) + 8.0 * func(nso) - func(nso-1)
- var(nso+1) = var(nso) + ds * intvar / 12.0
+ intvar = 5.0 * func(3) + 8.0 * func(2) - func(1)
+ var(3) = var(2) + ds * intvar / 12.0
 
 ! adams moulton-4 ... ( foward )
- do k = nso+1, nsf
+ do k = 3, ns - 1
 
    intvar = 9.0 * func(k+1) + 19.0 * func(k) - 5.0 * func(k-1) + func(k-2)
    var(k+1) = var(k) + ds * intvar / 24.0
@@ -443,12 +579,53 @@ end subroutine gen_thomas
 
  return
 end subroutine adams_moulton
-!==========================================================================
+!===================================================================================================
+
+
+!===================================================================================================
+  subroutine adaptative_adams_moulton(var, var0, func, s, ns)
+!===================================================================================================
+
+ implicit none
+
+ integer         , intent(in ) :: ns
+ double precision, intent(in ) :: var0
+ double precision, intent(in ) :: s    (ns)
+ double precision, intent(in ) :: func (ns)
+
+ double precision              :: ds   (ns-1)
+ double precision              :: c1, c2, c3
+ integer                       :: k
+
+ double precision, intent(out) :: var (ns)
+
+ var = 0.0
+ ! calculate grid step
+ ds = s(2:ns) - s(1:ns-1)
+
+ ! adams moulton-2 ...
+ var(1) = var0
+ var(2) = var(1) + 0.5 * ds(1) * (func(1) + func(2))
+
+! adams moulton-4 ... ( foward )
+ do k = 2, ns - 1
+
+     c1 =  (ds(k) / (6.0 * (ds(k) + ds(k-1)))) * (2.0 * ds(k) + 3.0 * ds(k-1))
+     c2 =  (ds(k) / (6.0 * ds(k-1))) * (ds(k) + 3.0 * ds(k-1))
+     c3 = -(ds(k) ** 3) / (6.0 * ds(k-1) * (ds(k) + ds(k-1)))
+
+     var(k+1) = var(k) + c1 * func(k+1) + c2 * func(k) + c3 * func(k-1)
+ end do
+
+ return
+end subroutine adaptative_adams_moulton
+!===================================================================================================
+
 
 ! vertical integration for any f(z) ( Simpson rule is used ) ...
-!==========================================================================
+!===================================================================================================
   subroutine intdomvar(intvar, var, zc, nz, n)
-!==========================================================================
+!===================================================================================================
 
  implicit none
 
@@ -463,7 +640,7 @@ end subroutine adams_moulton
  integer                       :: nnstp, kstr, kend
 
  double precision, intent(out) :: intvar
-!***********************************************************************
+!===================================================================================================
 !
 !interpolacion polinomica(posible modificar la cantidad de nodos: nnods
 !                         entre 3-7 recomendado, para valores menores se
@@ -474,7 +651,7 @@ end subroutine adams_moulton
  nnstp = nnods - 1
  kend  = 1
 
- dzi = ( zc(nz)-zc(1 ) ) / ( n - 1)
+ dzi = (zc(nz) - zc(1)) / (n - 1)
  z   = dzi
  kn  = 2
 
@@ -508,13 +685,13 @@ end subroutine adams_moulton
 
  return
  end subroutine intdomvar
-!==========================================================================
+!===================================================================================================
 
-!==========================================================================
+!===================================================================================================
   subroutine lagrange_intp(datao, datai, posio, posii, nnods)
-!==========================================================================
+!===================================================================================================
 !
-! interpolacion polinomica por el metodo de lagrange...
+! Lagrange interpolation
 !
 integer,          intent(in ) :: nnods
 double precision, intent(in ) :: posio
@@ -546,4 +723,81 @@ enddo
 
 return
 end subroutine lagrange_intp
-!==========================================================================
+!===================================================================================================
+
+!===================================================================================================
+  subroutine geopotential(phi, phi_bc, temperature, pressure, sp, ns, np)
+!===================================================================================================
+
+ implicit none
+
+ integer         , intent(in ) :: sp, ns, np
+
+ double precision, intent(in ) :: pressure    (np)
+ double precision, intent(in ) :: phi_bc      (sp, ns)
+ double precision, intent(in ) :: temperature (sp, ns, np)
+ double precision              :: rhs         (np)
+
+ double precision              :: Rd
+ integer                       :: i, j
+
+ double precision, intent(out) :: phi (sp, ns, np)
+
+ Rd = 287.058 ! gas constant for dry air (J / kg / K)
+
+ do i = 1, sp
+   do j = 1, ns
+     ! solving d(phi)/d(log p) = - Rd * T
+     rhs = - Rd * temperature(i, j, :) / pressure
+
+     call adaptative_adams_moulton(phi(i, j, :), phi_bc(i, j), rhs, pressure, np)
+
+   end do
+ end do
+
+ return
+end subroutine geopotential
+!===================================================================================================
+
+!===================================================================================================
+  subroutine hydrostatic_depth(depth, sfcp, temperature, pressure, sp, ns, np)
+!===================================================================================================
+
+ implicit none
+
+ integer         , intent(in ) :: sp, ns, np
+
+ double precision, intent(in ) :: pressure    (np)
+ double precision, intent(in ) :: sfcp        (ns)
+ double precision, intent(in ) :: temperature (sp, ns, np)
+
+ double precision              :: Rd, g
+ integer                       :: i, j, kn
+
+ double precision, intent(out) :: depth (sp, ns)
+
+ depth = 0.0
+
+ Rd = 287.058 ! gas constant for dry air (J / kg K)
+ g = 9.80665  ! acceleration of gravity  (m / s**2)
+
+ do i = 1, sp
+   do j = 1, ns
+
+     ! find the first level above the surface according to surface pressure (p < sfcp)
+     kn = 1
+     do while (pressure(kn) < sfcp(j) .and. kn < np)
+         kn = kn + 1
+     end do
+
+     ! Integrate the hypsometric equation from the surface to the top
+     call intdomvar(depth(i, j), temperature(i, j, kn:np), log(pressure(kn:np)), np - kn, np)
+
+   end do
+ end do
+
+ depth = - Rd * depth / g
+
+ return
+end subroutine hydrostatic_depth
+!===================================================================================================

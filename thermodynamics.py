@@ -1,10 +1,8 @@
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
-from scipy.integrate import odeint
-from scipy.interpolate import interp1d
-from tools import broadcast_1dto
 
 import constants as cn
+from tools import broadcast_1dto
 
 
 def height_to_pressure_std(height):
@@ -97,58 +95,6 @@ def geopotential_height(temperature, sfc_p, sfc_h, pressure, axis=0):
 
     # return geopotential height (m)
     return np.moveaxis(height, 1, axis)
-
-
-def geopotential_from_rho(alpha, sfc_p, sfc_h, pressure, axis=0):
-    """
-    Computes geopotential height from pressure and temperature profiles
-
-    :param alpha: specific volume profile
-    :param pressure: pressure profile
-    :param sfc_p: surface pressure
-    :param sfc_h: surface height
-    :param axis: specifies axis of vertical dimension
-    :return: geopotential height
-    """
-
-    phi_sfc = height_to_geopotential(sfc_h)
-
-    nlevels = pressure.size
-
-    alpha = np.moveaxis(alpha, axis, 1)
-
-    ashape = alpha.shape[:1]
-
-    # Compute height via the hypsometric equation (hydrostatic layer thickness).
-    phi = np.zeros_like(alpha)
-
-    # Search last level pierced by terrain for each vertical column
-    # works for data ordered from the surface to the model top
-    level_m = nlevels - np.searchsorted(np.sort(pressure), sfc_p)
-
-    for ij in np.ndindex(ashape):
-        # mask data above the surface
-        ind_atm = level_m[ij]
-
-        # approximate surface temperature with first level above the ground
-        alpha_s = alpha[ij][ind_atm:ind_atm + 1]
-
-        pres_m = np.append(sfc_p[ij], pressure[ind_atm:])
-        alpha_m = np.append(alpha_s, alpha[ij][ind_atm:], axis=0)
-
-        intp_rhs = interp1d(pres_m, alpha_m, kind='cubic',
-                            bounds_error=False,
-                            fill_value='extrapolate', axis=0)
-
-        # Integrating the hypsometric equation
-        initial_value = np.repeat(phi_sfc[ij], alpha_m.shape[1])
-
-        result = odeint(lambda y, p: - intp_rhs(p), initial_value, pres_m)
-
-        phi[ij][ind_atm:] = np.array(result[1:]).squeeze()
-
-    # return geopotential height (m)
-    return np.moveaxis(phi, 1, axis)
 
 
 def height_to_geopotential(height):
@@ -267,10 +213,10 @@ def potential_temperature(pressure, temperature):
     return temperature / exner_function(pressure)
 
 
-def static_stability(pressure, temperature, axis=0):
+def static_stability(pressure, temperature, vertical_axis=0):
     r"""Calculate the static stability within a vertical profile.
 
-    .. math:: \sigma = -\frac{RT}{p} \frac{\partial \ln \theta}{\partial p}
+    .. math:: \sigma = -\frac{R_d T}{p} \frac{\partial \ln \theta}{\partial p}
 
     This formula is based on equation 4.3.6 in [Bluestein1992]_.
 
@@ -280,15 +226,24 @@ def static_stability(pressure, temperature, axis=0):
         Profile of atmospheric pressure
     temperature : `np.ndarray`
         Profile of temperature
-    axis : int, optional, defaults to 0.
+    vertical_axis : int, optional, defaults to 0.
         The axis corresponding to vertical in the pressure and temperature arrays.
     Returns
     -------
         The profile of static stability.
     """
     theta = potential_temperature(pressure, temperature)
+    dp_theta = np.gradient(np.log(theta), pressure, axis=vertical_axis)
 
-    return - cn.Rd * temperature / pressure * np.gradient(np.log(theta), pressure, axis=axis)
+    return - cn.Rd * (temperature / pressure) * dp_theta
+
+
+def stability_parameter(pressure, theta, vertical_axis=0):
+    # Static stability parameter ganma to convert from temperature variance to APE
+    # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
+    ddlp_theta = np.gradient(theta, np.log(pressure), axis=vertical_axis)
+
+    return - cn.Rd * exner_function(pressure) / ddlp_theta
 
 
 def density(pressure, temperature):
@@ -352,8 +307,6 @@ def vertical_velocity(pressure, omega, temperature):
         Vertical velocity in pressure coordinates
     temperature: `np.array`
         Air temperature
-    axis:
-        axis corresponding to the vertical dimension
     Returns
     -------
     `np.ndarray`
@@ -371,7 +324,7 @@ def vertical_velocity(pressure, omega, temperature):
     return - omega / (cn.g * density(pressure, temperature))  # (m/s)
 
 
-def pressure_vertical_velocity(pressure, w, temperature, axis=None):
+def pressure_vertical_velocity(pressure, w, temperature):
     r"""Calculate omega from w assuming hydrostatic conditions.
 
     This function converts vertical velocity with respect to height
@@ -393,8 +346,6 @@ def pressure_vertical_velocity(pressure, w, temperature, axis=None):
         Total atmospheric pressure
     temperature: `np.array`
         Air temperature
-    axis:
-        axis corresponding to the vertical dimension
     Returns
     -------
     `np.ndarray`
@@ -409,20 +360,10 @@ def pressure_vertical_velocity(pressure, w, temperature, axis=None):
         msg = "All variables should have the same shape as 'pressure'"
         assert pressure.shape == w.shape == temperature.shape, msg
 
-
     return - cn.g * density(pressure, temperature) * w  # (Pa/s)
 
 
-def stability_parameter(pressure, theta, vertical_axis=0):
-    # Static stability parameter ganma to convert from temperature variance to APE
-    # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
-    ddlp_theta_avg = np.gradient(theta, np.log(pressure), axis=vertical_axis)
-
-    return - cn.Rd * exner_function(pressure) / ddlp_theta_avg
-
-
 def brunt_vaisala_squared(pressure, temperature, vertical_axis=0):
-
     # compute potential temperature
     theta = potential_temperature(pressure, temperature)
 

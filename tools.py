@@ -1,4 +1,5 @@
 import functools
+import time
 
 import _spherepack
 import numpy as np
@@ -10,6 +11,20 @@ from scipy.spatial import cKDTree
 from xarray import apply_ufunc, Dataset
 
 from spectral_analysis import lambda_from_deg
+
+
+class Timer(object):
+
+    def __init__(self, title=""):
+        self.title = title
+
+    def __enter__(self):
+        self.start = time.time()
+        return self
+
+    def __exit__(self, *args):
+        self.interval = time.time() - self.start
+        print("{}: time elapsed: {}".format(self.title, self.interval))
 
 
 def _find_coordinates(array, predicate, name):
@@ -137,11 +152,10 @@ def parse_dataset(dataset, variables=None):
             raise ValueError('Fields must be at least 3D.'
                              'Variable {} has {} dimensions'.format(name, values.ndim))
 
-    # Get coordinates and dimensions
-    coords = [dataset.coords[name] for name in arrays[variables[0]].dims]
+    # create dataset and fill nans with zeros for spectral computations
+    dataset = Dataset(arrays, coords=dataset.coords).fillna(0.0)
 
-    # get coordinates
-    return arrays, coords
+    return dataset
 
 
 def prepare_data(data, dim_order):
@@ -236,6 +250,7 @@ def recover_spectra(data, info_dict):
 
 
 def map_func(func, data, dim="plev", **kwargs):
+    # map function to all variables in dataset along axis
     res = apply_ufunc(func, data, input_core_dims=[[dim]],
                       kwargs=kwargs, dask='allowed',
                       vectorize=True)
@@ -333,20 +348,6 @@ def getspecindx(ntrunc):
     index_m = np.take(index_m.flatten(), indices)
 
     return np.squeeze(index_m), np.squeeze(index_n)
-
-
-def lmtosp(clm, ntrunc):
-    # transpose to spharm ordering (m, l)
-    clm = np.moveaxis(clm, 1, 2)
-    # pack coefficients into 1d with spharm index convention
-    return _spherepack.twodtooned(*clm, ntrunc).squeeze()
-
-
-def sptolm(cn, lmax):
-    # unpack coefficients into 2d
-    clm = _spherepack.onedtotwod(cn, lmax)
-    # transpose to spharm ordering (m, l)
-    return np.moveaxis(clm, 2, 1)
 
 
 def transform_io(func, order='C'):
@@ -467,7 +468,7 @@ def inspect_gridtype(latitudes):
         reference, wts = gaussian_lats_wts(nlat)
 
         if not np.allclose(latitudes, reference, atol=tolerance):
-            raise ValueError('latitudes are neither equally-spaced or Gaussian')
+            raise ValueError('Wrong grid type: latitudes are neither equally-spaced or Gaussian')
         gridtype = 'gaussian'
 
     return gridtype, reference, wts
@@ -815,59 +816,117 @@ def transform_spectra(s):
     return mean_confidence_interval(st, confidence=0.95, axis=0)
 
 
-def linear_interp1d(x, xp, *args, scale='log', fill_value=np.nan, axis=None, jobs=None):
-    """
-    Perform parallel 1D interpolation in logarithmic space of multiple arrays in args
-    """
-    if axis is None:
-        axis = -1
+def broadcast_indices(indices, shape, axis):
+    """Calculate index values to properly broadcast index array within data array.
+    The purpose of this function is work around the challenges trying to work with arrays of
+    indices that need to be "broadcast" against full slices for other dimensions.
+    [Taken from Metpy v.1.4]
 
-    # convert nodes to logarithmic space
+    """
+    ret = []
+    ndim = len(shape)
+    for dim in range(ndim):
+        if dim == axis:
+            ret.append(indices)
+        else:
+            broadcast_slice = [np.newaxis] * ndim
+            broadcast_slice[dim] = slice(None)
+            dim_ind = np.arange(shape[dim])
+            ret.append(dim_ind[tuple(broadcast_slice)])
+    return tuple(ret)
+
+
+def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
+    r"""Interpolates data with any shape over a specified axis.
+    Interpolation over a specified axis for arrays of any shape.
+
+    Modified from nicely vectorized version from Metpy v.1.4
+
+    Parameters
+    ----------
+    x : array-like
+        1-D array of desired interpolated values.
+    xp : array-like
+        The x-coordinates of the data points.
+    args : array-like
+        The data to be interpolated. Can be multiple arguments, all must be the same shape as
+        xp.
+    axis : int, optional
+        The axis to interpolate over. Defaults to 0.
+    fill_value: float, optional
+        Specify handling of interpolation points out of data bounds. If None, will return
+        ValueError if points are out of bounds. Defaults to nan.
+    scale: str, optional
+        Interpolate in logarithmic ('log') or linear space
+    Returns
+    -------
+    array-like
+        Interpolated values for each point with coordinates sorted in ascending order.
+    """
+
     if scale == 'log':
         x = np.log(x)
         xp = np.log(xp)
 
-    # infer array shapes
-    data_shape = xp.shape
+    # Make x an array
+    x = np.asanyarray(x).reshape(-1)
 
-    # flatten array for parallel iteration
-    xp = np.moveaxis(xp, axis, -1)
+    # Sort input data
+    sort_args = np.argsort(xp, axis=axis)
+    sort_x = np.argsort(x)
 
-    arg_sorter = np.argsort(xp, axis=-1)
+    # The shape after all arrays are broadcast to each other
+    # Can't use broadcast_shapes until numpy >=1.20 is our minimum
+    final_shape = np.broadcast(xp, *args).shape
 
-    xp = np.take_along_axis(xp, arg_sorter, axis=-1)
+    # indices for sorting
+    sorter = broadcast_indices(sort_args, final_shape, axis)
 
-    result_shape = list(xp.shape)
-    result_shape[-1] = x.size
+    # sort xp -- need to make sure it's been manually broadcast due to our use of indices
+    # along all axes.
+    xp = np.broadcast_to(xp, final_shape)
+    xp = xp[sorter]
 
-    xp = xp.reshape((-1, data_shape[axis]))
+    # Ensure source arrays are also in sorted order
+    variables = [arr[sorter] for arr in args]
 
-    iter_size = xp.shape[0]
+    # Make x broadcast with xp
+    x_array = x[sort_x]
+    expand = [np.newaxis] * len(final_shape)
+    expand[axis] = slice(None)
+    x_array = x_array[tuple(expand)]
 
-    if jobs is None:
-        jobs = min(cpu_count(), iter_size)
+    # Calculate value above interpolated value
+    min_value = np.apply_along_axis(np.searchsorted, axis, xp, x[sort_x])
+    min_value2 = np.copy(min_value)
 
-    # Create pool of workers
-    pool = Parallel(n_jobs=jobs, backend="threading")
+    # If fill_value is none and data is out of bounds, raise value error
+    if ((np.max(min_value) == xp.shape[axis]) or (np.min(min_value) == 0)) and fill_value is None:
+        raise ValueError('Interpolation point out of data bounds encountered')
 
-    # wrapper of convolution function for parallel computations
-    interp_1d = functools.partial(np.interp, left=fill_value, right=fill_value)
+    # Warn if interpolated values are outside data bounds, will make these the values
+    # at end of data range.
+    if np.max(min_value) == xp.shape[axis]:
+        min_value2[min_value == xp.shape[axis]] = xp.shape[axis] - 1
+    if np.min(min_value) == 0:
+        min_value2[min_value == 0] = 1
 
-    results = []
-    for arr in args:
-        assert arr.shape == data_shape, "Inconsistent shapes between data array and coordinate."
+    # Get indices for broadcasting arrays
+    above = broadcast_indices(min_value2, final_shape, axis)
+    below = broadcast_indices(min_value2 - 1, final_shape, axis)
 
-        # sort array according to xp in increasing order
-        arr = np.take_along_axis(np.moveaxis(arr, axis, -1), arg_sorter, axis=-1)
+    # Calculate interpolation for each variable
+    for var in variables:
 
-        # flatten array for parallel iteration
-        arr = arr.reshape((-1, data_shape[axis]))
+        increment = (x_array - xp[below]) / (xp[above] - xp[below])
+        var_interp = var[below] + (var[above] - var[below]) * increment
 
-        # applying lanczos filter in parallel
-        result = np.array(pool(delayed(interp_1d)(x, xp[i], arr[i]) for i in range(iter_size)))
+        # Set points out of bounds to fill value.
+        var_interp[min_value == xp.shape[axis]] = fill_value
+        var_interp[x_array < xp[below]] = fill_value
 
-        result = np.moveaxis(result.reshape(result_shape), -1, axis)
+        # Check for input points in decreasing order and return output to match.
+        if x[0] > x[-1]:
+            var_interp = np.swapaxes(np.swapaxes(var_interp, 0, axis)[::-1], 0, axis)
 
-        results.append(result)
-
-    return results
+        yield var_interp

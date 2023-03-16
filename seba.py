@@ -6,20 +6,20 @@ from numpy.core.numeric import normalize_axis_index
 from scipy.integrate import simpson
 
 import constants as cn
-from shtns_backend import Spharmt, delayed, Parallel
+from fortran_libs import numeric_tools
+from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
+from spherical_harmonics import Spharmt, delayed, Parallel
 from thermodynamics import density as _density
 from thermodynamics import exner_function as _exner_function
 from thermodynamics import geopotential_height as _geopotential_height
-from thermodynamics import height_to_geopotential, stability_parameter
+from thermodynamics import height_to_geopotential, geopotential_to_height, stability_parameter
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores, get_number_chunks
-from tools import linear_interp1d
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
-from tools import rotate_vector, broadcast_1dto
+from tools import rotate_vector, broadcast_1dto, interpolate_1d
 from tools import terrain_mask, transform_io, inspect_gridtype
-from wave_diagnostics import coriolis_parameter
 
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
 
@@ -92,35 +92,27 @@ class EnergyBudget:
                             "containing the path to a netcdf dataset.")
 
         # Initialize variables
-        data, self.coords = parse_dataset(dataset, variables=variables)
+        dataset = parse_dataset(dataset, variables=variables)
 
-        # string needed for data preparation
-        self.info_coords = ''.join([c.axis for c in self.coords]).lower()
+        # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
+        self.coords = {dataset.coords[d].axis.lower(): dataset.coords[d] for d in dataset.dims}
+        self.info_coords = ''.join(self.coords)
 
-        # Get 3D fields
-        u = data.get('u').values
-        v = data.get('v').values
-        t = data.get('t').values
-        p = data.get('p').values
+        # Get 3D dynamic fields... entire data is load on memory at this step
+        u = dataset.get('u').values
+        v = dataset.get('v').values
+        t = dataset.get('t').values
+        p = dataset.get('p').values
+        omega = dataset.get('omega')
 
-        w = data.get('w')
-        omega = data.get('omega')
-
-        del data
-
-        if w is None and omega is None:
-            raise ValueError("Vertical velocity not found!")
-        elif (omega is not None) and (w is None):
-            # compute vertical velocity in height coordinates
-            omega = omega.values
-            w = vertical_velocity(p, omega, t)
-        elif (w is not None) and (omega is None):
-            # compute or load z coordinate
-            w = w.values
-            omega = pressure_vertical_velocity(p, w, t)
+        # check for vertical velocity
+        if omega is not None:
+            omega = dataset.omega.values
         else:
-            w = w.values
-            omega = omega.values
+            if dataset.get('w') is not None:
+                omega = pressure_vertical_velocity(p, dataset.w.values, t)
+            else:
+                raise ValueError("Vertical velocity not found in dataset!")
 
         # find coordinates
         self.latitude, self.nlat = _find_latitude(dataset)
@@ -142,22 +134,23 @@ class EnergyBudget:
             nlevels = p_levels.size
 
             print("Interpolating data to {} isobaric levels ...".format(p_levels.size))
+            # values outside interpolation range are set to zero
+            # (applies to levels below the surface p > ps)
+            fill_value = 0.0
 
-            z_axis = self.info_coords.find('z')
+            u, v, omega, t = interpolate_1d(p_levels, p, u, v, omega, t,
+                                            scale='log', fill_value=fill_value,
+                                            axis=self.info_coords.find('z'))
 
-            u, v, w, omega, t = linear_interp1d(p_levels, p, u, v, w, omega, t,
-                                                scale='log', fill_value=0.0,
-                                                axis=z_axis)
-            # replace pressure 3D array with isobaric levels
+            # replace 3D pressure array with 1D isobaric levels
             p = p_levels
 
-            # create new pressure coordinate
-            self.coords[z_axis] = xr.DataArray(data=p, dims=["plev"],
-                                               coords=dict(plev=("plev", p)),
-                                               attrs=dict(standard_name="pressure",
-                                                          long_name="pressure",
-                                                          positive="up", units="Pa",
-                                                          axis="Z"))
+            # create new pressure coordinates
+            self.coords['z'] = xr.DataArray(data=p, dims=["plev"],
+                                            coords=dict(plev=("plev", p)),
+                                            attrs=dict(standard_name="pressure",
+                                                       long_name="pressure", positive="up",
+                                                       units="Pa", axis="Z"))
 
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.grid_shape = (self.nlat, self.nlon)
@@ -172,9 +165,8 @@ class EnergyBudget:
 
         # reorder vertical dimension
         if self.direction < 0:
-            ind = self.info_coords.find('z')
-            self.coords[ind] = self.coords[ind].reindex({self.coords[ind].name: self.p})
-            self.coords[ind].attrs['positive'] = 'up'
+            self.coords['z'] = self.coords['z'].reindex({self.coords['z'].name: self.p})
+            self.coords['z'].attrs['positive'] = 'up'
 
         if ps is None:
             # Set first pressure level as surface pressure
@@ -225,7 +217,7 @@ class EnergyBudget:
         else:
             raise ValueError("Incorrect value for 'rsphere'.")
 
-        # Create sphere object for common functions
+        # Create sphere object for spectral transformations
         self.sphere = Spharmt(self.nlon, self.nlat, gridtype=self.gridtype,
                               rsphere=self.rsphere, jobs=self.jobs)
 
@@ -245,8 +237,7 @@ class EnergyBudget:
             self.latitude = self.latitude[::-1]
 
             # reorder latitude dimension from north to south
-            ind = self.info_coords.find('y')
-            self.coords[ind] = self.coords[ind].reindex({self.coords[ind].name: self.latitude})
+            self.coords['y'] = self.coords['y'].reindex({self.coords['y'].name: self.latitude})
 
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
         self.ncoeffs = self.sphere.nlm
@@ -256,7 +247,7 @@ class EnergyBudget:
         self.kappa_h = kappa_from_deg(self.degrees)
 
         # create wavenumber coordinates for spectral quantities
-        self.sp_coords = [c for ic, c in zip(self.info_coords, self.coords) if ic not in 'xy']
+        self.sp_coords = [c for ic, c in self.coords.items() if ic not in 'xy']
 
         self.sp_coords.append(xr.Coordinate('kappa', self.kappa_h,
                                             attrs={'standard_name': 'wavenumber',
@@ -285,18 +276,17 @@ class EnergyBudget:
 
         # Reshape and reorder data dimensions for computations
         # self.data_info stores information to recover the original shape.
-        self.w, self.data_info = self._transform_data(w)
+        self.omega, self.data_info = self._transform_data(omega, filtered=False)
+        del omega
 
         # create wind array from unfiltered wind components
         self.wind = np.stack((self._transform_data(u, filtered=False)[0],
                               self._transform_data(v, filtered=False)[0]))
+        del u, v
 
         # compute thermodynamic quantities with unfiltered temperature
-        self.t = self._transform_data(t, filtered=False)[0]
-        self.omega = self._transform_data(omega, filtered=False)[0]
-
-        # free up some memory
-        del u, v, t, w, omega
+        self.temperature = self._transform_data(t, filtered=False)[0]
+        del t
 
         # Compute vorticity and divergence of the wind field
         self.vrt_spc, self.div_spc = self.vorticity_divergence()
@@ -329,8 +319,11 @@ class EnergyBudget:
         self.alpha = self.filter_topography(self.alpha)
 
         # Compute geopotential (Compute before applying mask!)
-        self.height = self.geopotential_height()
-        self.phi = height_to_geopotential(self.height)
+        self.phi = self.geopotential()
+        self.height = geopotential_to_height(self.phi)
+
+        # self.height = self.geopotential_height()
+        # self.phi = height_to_geopotential(self.height)
 
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
@@ -350,7 +343,7 @@ class EnergyBudget:
         self.theta_pbn = self.filter_topography(self.theta_pbn)
         self.ddp_theta_pbn = self.filter_topography(self.ddp_theta_pbn)
 
-        # Static stability parameter ganma to convert from temperature variance to APE
+        # Parameter ganma to convert from temperature variance to APE
         self.ganma = stability_parameter(self.p, self.theta_avg, vertical_axis=-1)
 
     # -------------------------------------------------------------------------------
@@ -364,43 +357,89 @@ class EnergyBudget:
             coords = self.sp_coords
             data = recover_spectra(data, self.data_info)
         else:
-            coords = self.coords
+            coords = self.coords.values()
             data = recover_data(data, self.data_info)
 
         # create xarray.DataArray
-        data = xr.DataArray(data=data, name=name, coords=coords)
+        array = xr.DataArray(data=data, name=name, coords=coords)
 
         # add attributes to variable
         for attr, value in attributes.items():
-            data.attrs[attr] = value
+            array.attrs[attr] = value
 
-        return data
+        return array
 
     # -------------------------------------------------------------------------------
-    # Methods for computing thermodynamic quantities
+    # Methods for thermodynamic diagnostics
     # -------------------------------------------------------------------------------
     def potential_temperature(self):
         # computes potential temperature
-        return _potential_temperature(self.p, self.t)
+        return _potential_temperature(self.p, self.temperature)
 
     def density(self):
         # computes air density from pressure and temperature using the gas law
-        return _density(self.p, self.t)
+        return _density(self.p, self.temperature)
 
     def specific_volume(self):
         return 1.0 / self.density()
 
-    def geopotential_height(self):
+    def geopotential(self):
+        """
+        Computes geopotential at pressure surfaces assuming a hydrostatic atmosphere.
+        The geopotential is obtained by integrating the hydrostatic balance equation from the
+        surface to the top of the atmosphere. Uses terrain height and surface pressure as lower
+        boundary conditions. Uses compiled fortran libraries for performance.
+
+        :return: `np.ndarray`
+            geopotential (J/kg)
+        """
 
         # Compact horizontal coordinates into one dimension ...
-        data_shape = self.t.shape
+        data_shape = self.temperature.shape
+        proc_shape = (-1,) + data_shape[2:]
+
+        temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
+
+        sfcp = self.ps.flatten()
+
+        # Compute the depth of the atmosphere
+        depth = numeric_tools.hydrostatic_depth(sfcp, temperature, self.p)
+
+        # Convert surface height to geopotential to use as upper boundary condition
+        top_phi = height_to_geopotential(self.ghsl.flatten() + depth)
+
+        # Compute geopotential from temperature
+        # signature 'geopotential(surface_geopotential, temperature, pressure)'
+
+        sorter = np.argsort(self.p)  # ensure downward integration
+        temperature = np.take(temperature, sorter, axis=-1)
+
+        phi = numeric_tools.geopotential(top_phi, temperature, self.p[sorter])
+
+        # back to the original shape (same as temperature)
+        phi = np.moveaxis(phi, 0, 1).reshape(data_shape)
+
+        return np.take(phi, sorter[::-1], axis=-1)
+
+    def geopotential_height(self):
+        """
+        Computes geopotential height at pressure surfaces using the hypsometric equation.
+        Assumes a hydrostatic atmosphere. The geopotential at pressure levels
+        below the earth surface are undefined therefore set to 0
+
+        :return: `np.ndarray`
+            geopotential height (m)
+        """
+
+        # Compact horizontal coordinates into one dimension ...
+        data_shape = self.temperature.shape
         proc_shape = (-1,) + data_shape[2:]
 
         # create data chunks for parallel computation
         n_jobs = get_num_cores()
         n_chunks = get_number_chunks(self.ps.size, n_jobs, factor=4)
 
-        temperature = np.array_split(self.t.reshape(proc_shape), n_chunks, axis=0)
+        temperature = np.array_split(self.temperature.reshape(proc_shape), n_chunks, axis=0)
         sfc_pressure = np.array_split(self.ps.flatten(), n_chunks, axis=0)
         sfc_height = np.array_split(self.ghsl.flatten(), n_chunks, axis=0)
 
@@ -416,26 +455,6 @@ class EnergyBudget:
                                              sfc_height[i]) for i in range(n_chunks))
 
         return np.concatenate(height, axis=0).reshape(data_shape)
-
-    def geopotential(self):
-        """
-        Computes geopotential at pressure surfaces using the hypsometric equation.
-        Assumes a hydrostatic atmosphere. The geopotential at pressure levels
-        below the earth surface are undefined therefore set to 0
-
-        :return: `np.ndarray`
-            geopotential (J/kg)
-        """
-
-        if hasattr(self, 'height'):
-            height = self.height
-        else:
-            # Compute the geopotential height in meters
-            # (levels below the surface are set to zero)
-            height = self.geopotential_height()
-
-        # Convert geopotential height to geopotential
-        return height_to_geopotential(height)
 
     def geostrophic_wind(self):
         """
@@ -479,7 +498,9 @@ class EnergyBudget:
         Vertical kinetic energy calculated from pressure vertical velocity
         :return:
         """
-        kinetic_energy = self._scalar_spectra(self.w) / 2.0
+        w = vertical_velocity(self.p, self.omega, self.temperature)
+
+        kinetic_energy = self._scalar_spectra(w) / 2.0
 
         kinetic_energy = self.add_metadata(kinetic_energy, 'vke',
                                            gridtype='spectral',
@@ -1049,14 +1070,21 @@ class EnergyBudget:
         if z is None:
             z = self.p
         else:
-            assert z.size == scalar.shape[axis], "If given, 'z' must be the same size as 'scalar'" \
-                                                 " along the specified axis."
-        # scalar_shape = scalar.shape
-        # scalar = np.moveaxis(scalar, axis, -1).reshape((-1, scalar_shape[axis]))
-        # dz = np.diff(z)[0]
-        # grad = fortran_libs.numeric_tools.gradient(scalar, dz, order=5)
-        # return np.moveaxis(grad.reshape(scalar_shape), -1, axis)
-        return np.gradient(scalar, z, axis=axis, edge_order=1)
+            msg = "If given, 'z' must be the same size as 'scalar' along the specified axis."
+            assert z.size == scalar.shape[axis], msg
+
+        scalar = np.moveaxis(scalar, axis, -1)
+        scalar_shape = scalar.shape
+
+        scalar = scalar.reshape((-1, scalar_shape[-1]))
+
+        dz = np.diff(z)[0]
+
+        # compute gradient with 6th order compact finite difference scheme (Lele 1992)
+        # this scheme has spectral-like accuracy.
+        grad = numeric_tools.gradient(scalar, dz, order=6)
+
+        return np.moveaxis(grad.reshape(scalar_shape), -1, axis)
 
     def vertical_integration(self, scalar, pressure_range=None, axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
@@ -1322,9 +1350,9 @@ class EnergyBudget:
         norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, 1.0)
 
         # compute weighted average on gaussian grid and divide by norm
-        weighted_scalar = self.filter_topography(scalar)
+        filtered_scalar = self.filter_topography(scalar)
 
-        return self.global_average(weighted_scalar, axis=0) / norm
+        return self.global_average(filtered_scalar, axis=0) / norm
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean
@@ -1334,10 +1362,10 @@ class EnergyBudget:
         return scalar_avg, scalar - scalar_avg
 
     def _scalar_perturbation(self, scalar):
-        # Compute scalar perturbations
+        # Compute scalar perturbations in spectral space
         scalar_spc = self._spectral_transform(scalar)
 
-        # set mean coefficient (ls=ms=0) to 0.0
+        # set mean coefficient (ls=ms=0) to 0.0 and invert transformation
         mean_index = (self.sphere.order == 0) & (self.sphere.degree == 0)
         scalar_spc[mean_index] = 0.0
 

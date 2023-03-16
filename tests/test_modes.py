@@ -38,7 +38,7 @@ if __name__ == '__main__':
     sfc_hgt = dset_sfc.topography_c.values
     sfc_pres = dataset_dyn.ps.values
 
-    p_levels = np.linspace(1000e2, 50e2, 26)
+    p_levels = np.linspace(1000e2, 50e2, 20)
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, p_levels=p_levels,
@@ -164,8 +164,8 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
-    figure_name = '{}_wave_fluxes_section_{}.pdf'.format(model, resolution)
+    figure_name = '../figures/{}_wave_fluxes_section_{}.pdf'.format(model, resolution)
 
-    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'ke_vf'],
+    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vf_dke'],
                             resolution='n1024', y_limits=[1000., 100.],
                             fig_name=figure_name)
