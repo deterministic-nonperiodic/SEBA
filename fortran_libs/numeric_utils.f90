@@ -181,7 +181,7 @@ end subroutine model_message
  double precision              :: rhs (ns  )
  double precision              :: a, b, c, d, ds4, ds6
  logical                       :: flag
- integer                       :: i, ib
+ integer                       :: i
 
 ! output :
  double precision, intent(out) :: ads (ns)
@@ -593,15 +593,17 @@ end subroutine adams_moulton
  double precision, intent(in ) :: s    (ns)
  double precision, intent(in ) :: func (ns)
 
- double precision              :: ds   (ns-1)
+ double precision              :: ds   (ns)
  double precision              :: c1, c2, c3
  integer                       :: k
 
  double precision, intent(out) :: var (ns)
 
  var = 0.0
+
  ! calculate grid step
- ds = s(2:ns) - s(1:ns-1)
+ ds(1:ns-1) = s(2:ns) - s(1:ns-1)
+ ds(ns) = 0.0
 
  ! adams moulton-2 ...
  var(1) = var0
@@ -615,6 +617,7 @@ end subroutine adams_moulton
      c3 = -(ds(k) ** 3) / (6.0 * ds(k-1) * (ds(k) + ds(k-1)))
 
      var(k+1) = var(k) + c1 * func(k+1) + c2 * func(k) + c3 * func(k-1)
+
  end do
 
  return
@@ -726,78 +729,64 @@ end subroutine lagrange_intp
 !===================================================================================================
 
 !===================================================================================================
-  subroutine geopotential(phi, phi_bc, temperature, pressure, sp, ns, np)
+  subroutine geopotential(phi, pres, temp, sfch, sfcp, sp, ns, np)
 !===================================================================================================
 
  implicit none
 
  integer         , intent(in ) :: sp, ns, np
 
- double precision, intent(in ) :: pressure    (np)
- double precision, intent(in ) :: phi_bc      (sp, ns)
- double precision, intent(in ) :: temperature (sp, ns, np)
- double precision              :: rhs         (np)
+ double precision, intent(in ) :: pres   (np)
+ double precision, intent(in ) :: sfch   (ns)
+ double precision, intent(in ) :: sfcp   (ns)
+ double precision, intent(in ) :: temp   (sp, ns, np)
+ double precision              :: rhs    (np)
+ double precision              :: phi_bc, mid_rhs
 
- double precision              :: Rd
- integer                       :: i, j
+ double precision              :: Rd, g
+ integer                       :: i, j, kn, nc
 
  double precision, intent(out) :: phi (sp, ns, np)
 
  Rd = 287.058 ! gas constant for dry air (J / kg / K)
+ g = 9.80665  ! acceleration of gravity  (m / s**2)
 
- do i = 1, sp
-   do j = 1, ns
-     ! solving d(phi)/d(log p) = - Rd * T
-     rhs = - Rd * temperature(i, j, :) / pressure
+ phi = 0.0
 
-     call adaptative_adams_moulton(phi(i, j, :), phi_bc(i, j), rhs, pressure, np)
+ do i = 1, sp ! loop over samples
+   do j = 1, ns ! loop over spatial dimension
+
+     ! find the first level pierced by the surface (p <= sfcp)
+     kn = minloc(abs(pres - sfcp(j)), dim=1)
+
+     if (pres(kn) > sfcp(j)) then
+         kn = kn + 1
+     end if
+     nc = np + 1 - kn ! size of the column
+
+     ! storing d(phi)/d(p) = - Rd * T / p
+     rhs = - Rd * temp(i, j, :) / pres
+
+     ! calculate geopotential at first level above the surface
+     ! phi_bc = g * sfch(j) - 0.5 * Rd * (pressure(kn) - sfcp(j)) * (ts/ps + t1/p1)
+     if (kn > 1) then
+         ! using second order accurate mid-point method.
+         ! surface temperature is approximated by previous level (TODO: use actual Ts)
+         mid_rhs = 0.5 * (rhs(kn) - Rd * temp(i, j, kn-1) / sfcp(j))
+     else
+         mid_rhs = rhs(kn)
+     end if
+
+     ! lower boundary condition for geopotential
+     phi_bc = g * sfch(j) + (pres(kn) - sfcp(j)) * mid_rhs
+
+     ! vertical integration for all level above the surface (k >= kn)
+     ! using 4th order adams moulton multistep method.
+     call adaptative_adams_moulton(phi(i, j, kn:np), phi_bc, rhs(kn:np), pres(kn:np), nc)
 
    end do
  end do
 
  return
 end subroutine geopotential
-!===================================================================================================
-
-!===================================================================================================
-  subroutine hydrostatic_depth(depth, sfcp, temperature, pressure, sp, ns, np)
-!===================================================================================================
-
- implicit none
-
- integer         , intent(in ) :: sp, ns, np
-
- double precision, intent(in ) :: pressure    (np)
- double precision, intent(in ) :: sfcp        (ns)
- double precision, intent(in ) :: temperature (sp, ns, np)
-
- double precision              :: Rd, g
- integer                       :: i, j, kn
-
- double precision, intent(out) :: depth (sp, ns)
-
- depth = 0.0
-
- Rd = 287.058 ! gas constant for dry air (J / kg K)
- g = 9.80665  ! acceleration of gravity  (m / s**2)
-
- do i = 1, sp
-   do j = 1, ns
-
-     ! find the first level above the surface according to surface pressure (p < sfcp)
-     kn = 1
-     do while (pressure(kn) < sfcp(j) .and. kn < np)
-         kn = kn + 1
-     end do
-
-     ! Integrate the hypsometric equation from the surface to the top
-     call intdomvar(depth(i, j), temperature(i, j, kn:np), log(pressure(kn:np)), np - kn, np)
-
-   end do
- end do
-
- depth = - Rd * depth / g
-
- return
-end subroutine hydrostatic_depth
 !===================================================================================================

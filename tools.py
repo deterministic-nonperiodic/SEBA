@@ -1,7 +1,6 @@
 import functools
 import time
 
-import _spherepack
 import numpy as np
 import scipy.signal as sig
 import scipy.special as spec
@@ -386,10 +385,17 @@ def transform_io(func, order='C'):
 
 def regular_lats_wts(nlat):
     """
-        Computes the latitude points and weights of a regular grid
-        (equally spaced in longitude and latitude). Regular grids
-        will include the poles and equator if nlat is odd. The sampling
-        is a constant 180 deg/nlat. Weights are defined as the cosine of latitudes.
+    Computes the latitude points and weights of a regular grid
+    (equally spaced in longitude and latitude). Regular grids
+    will include the poles and equator if nlat is odd. The sampling
+    is a constant 180 deg/nlat. Weights are defined as the cosine of latitudes.
+
+    Parameters:
+        nlat (int): The number of latitude points.
+
+    Returns:
+        latitudes (numpy.ndarray): A 1D array containing the regular latitudes.
+        weights (numpy.ndarray): A 1D array containing the corresponding weights.
     """
     ns_latitude = 90. - (nlat + 1) % 2 * (90. / nlat)
 
@@ -400,33 +406,20 @@ def regular_lats_wts(nlat):
 
 def gaussian_lats_wts(nlat):
     """
-     compute the gaussian latitudes (in degrees) and quadrature weights.
-     @param nlat: number of gaussian latitudes desired.
-     @return: C{B{lats, wts}} - rank 1 numpy float64 arrays containing
-     gaussian latitudes (in degrees north) and gaussian quadrature weights.
+    Returns the Gaussian quadrature latitudes and weights for a given number of latitude points.
+
+    Parameters:
+        nlat (int): The number of latitude points.
+
+    Returns:
+        latitudes (numpy.ndarray): A 1D array containing the Gaussian quadrature latitudes.
+        weights (numpy.ndarray): A 1D array containing the corresponding weights.
     """
+    nodes, weights = spec.roots_legendre(nlat)
+    # ensure north-south orientation (weights are symmetric)
+    latitudes = np.arcsin(nodes[::-1]) * 180.0 / np.pi
 
-    # get the gaussian co-latitudes and weights using gaqd.
-    colats, wts, ierror = _spherepack.gaqd(nlat)
-
-    if ierror:
-        raise ValueError('In return from call to _spherepack.gaqd'
-                         'ierror =  {:d}'.format(ierror))
-
-    # convert co-latitude to degrees north latitude.
-    lats = 90.0 - colats * 180.0 / np.pi
-    return lats, wts
-
-
-def latitudes_weights(nlat, gridtype):
-    # Calculate latitudes and weights based on gridtype
-    if gridtype == 'gaussian':
-        # Get latitude of the gaussian grid and quadrature weights
-        lats, weights = gaussian_lats_wts(nlat)
-    else:
-        # Get latitude of the regular grid and quadrature weights
-        lats, weights = regular_lats_wts(nlat)
-    return lats, weights
+    return latitudes, weights
 
 
 def inspect_gridtype(latitudes):
@@ -456,7 +449,7 @@ def inspect_gridtype(latitudes):
     if equally_spaced:
         # The latitudes are equally-spaced. Construct reference global
         # equally spaced latitudes and check that the two match.
-        reference, wts = regular_lats_wts(nlat)
+        reference, weights = regular_lats_wts(nlat)
 
         if not np.allclose(latitudes, reference, atol=tolerance):
             raise ValueError('Invalid equally-spaced latitudes (they may be non-global)')
@@ -465,13 +458,13 @@ def inspect_gridtype(latitudes):
         # The latitudes are not equally-spaced, which suggests they might
         # be gaussian. Construct sample gaussian latitudes and check if
         # the two match.
-        reference, wts = gaussian_lats_wts(nlat)
+        reference, weights = gaussian_lats_wts(nlat)
 
         if not np.allclose(latitudes, reference, atol=tolerance):
             raise ValueError('Wrong grid type: latitudes are neither equally-spaced or Gaussian')
         gridtype = 'gaussian'
 
-    return gridtype, reference, wts
+    return gridtype, reference, weights
 
 
 def cumulative_flux(spectra, axis=0):
@@ -568,6 +561,15 @@ def search_closet(points, target_points):
         return nn_idx
 
 
+def indices_to_3d(mask, size):
+    shape = tuple(mask.shape) + (size,)
+
+    mask_bc, result_bc = np.broadcast_arrays(mask[..., np.newaxis], np.zeros(shape))
+    result_bc[mask_bc <= np.arange(size)] = 1.0
+
+    return result_bc
+
+
 def terrain_mask(p, ps, smooth=True, jobs=None):
     """
     Creates a terrain mask based on surface pressure and pressure profile
@@ -582,13 +584,9 @@ def terrain_mask(p, ps, smooth=True, jobs=None):
 
     # Search last level pierced by terrain for each vertical column
     level_m = p.size - np.searchsorted(np.sort(p), ps)
-    # level_m = search_closet(p, ps)
 
-    # create mask
-    beta = np.ones((nlat, nlon, nlevels))
-
-    for ij in np.ndindex(*level_m.shape):
-        beta[ij][:level_m[ij]] = 0.0
+    # create 3D mask from 2D mask
+    beta = indices_to_3d(level_m, nlevels)
 
     if smooth:  # generate a smoothed heavy-side function
         # Calculate normalised cut-off frequencies for zonal and meridional directions:
@@ -840,7 +838,7 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
     r"""Interpolates data with any shape over a specified axis.
     Interpolation over a specified axis for arrays of any shape.
 
-    Modified from nicely vectorized version from Metpy v.1.4
+    Modified from the nicely vectorized version in metpy v.1.4
 
     Parameters
     ----------

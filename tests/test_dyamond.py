@@ -22,13 +22,13 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n256'
+    resolution = 'n512'
     data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
     date_time = '20[0]'
-    file_names = data_path + '{}_atm_3d_inst_{}_{}.nc'
-    # file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
+    # file_names = data_path + '{}_atm_3d_inst_{}_{}.nc'
+    file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
 
     # # load earth topography and surface pressure
     # dset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
@@ -55,9 +55,7 @@ if __name__ == '__main__':
     prange_trp = [250e2, 500e2]
     prange_stp = [50e2, 250e2]
 
-    # Kinetic energy in vector form accumulate and integrate vertically
-    # average over samples:
-    # Ew_trp = AEB.vertical_integration(Ew, pressure_range=prange_trp).mean(-1)[1:-1]
+    # Kinetic energy in vector form accumulate and integrate vertically and average over samples:
     Ek_trp = map_func(budget.vertical_integration, Ek, pressure_range=prange_trp).mean(dim='time')
     Ew_trp = map_func(budget.vertical_integration, Ew, pressure_range=prange_trp).mean(dim='time')
     Ea_trp = map_func(budget.vertical_integration, Ea, pressure_range=prange_trp).mean(dim='time')

@@ -1,56 +1,11 @@
-# from functools import partial
-from multiprocessing import cpu_count
-
 import numpy as np
 import shtns
-from joblib import Parallel, delayed, cpu_count
-from tools import broadcast_1dto
+# from joblib import Parallel, delayed
+
+from tools import broadcast_1dto, cpu_count
 
 # private variables for class Spharmt
 _private_vars = ['nlon', 'nlat', 'gridtype', 'rsphere']
-
-
-# def delayed(func):
-#     def wrapper(*args, **kwargs):
-#         return partial(func, *args, **kwargs)
-#
-#     return wrapper
-#
-#
-# def call(f):
-#     return f()
-#
-#
-# class Parallel(object):
-#     def __init__(self, n_jobs=1, chunksize=1, ordered=True, **kwargs):
-#         self.n_jobs = n_jobs
-#         self.chunksize = chunksize
-#         self.ordered = ordered
-#         self.kwargs = kwargs
-#
-#     def __call__(self, args):
-#         n_jobs = get_num_cores() if self.n_jobs == -1 else self.n_jobs
-#         if n_jobs == 1:
-#             # sequential mode (useful for debugging)
-#             yield from map(call, args)
-#         else:
-#             # spawn workers
-#             pool = Pool(n_jobs, **self.kwargs)
-#             try:
-#                 if self.ordered:
-#                     yield from pool.imap(call, args, chunksize=self.chunksize)
-#                 else:
-#                     yield from pool.imap_unordered(call, args, chunksize=self.chunksize)
-#             except KeyboardInterrupt:
-#                 pool.terminate()
-#                 raise
-#             except Exception:
-#                 pool.terminate()
-#                 raise
-#             else:
-#                 pool.close()
-#             finally:
-#                 pool.join()
 
 
 class Spharmt(object):
@@ -134,7 +89,7 @@ class Spharmt(object):
         self.kappa_sq = - self.degree * (self.degree + 1.0).astype(complex) / self.rsphere
 
     def _map(self, func, *args):
-        """Wrapper function for running _shtns functions in parallel"""
+        """Wrapper function for running _shtns functions along sample dimension"""
 
         # Compact args to a single array (input arrays must be broadcastable)
         data = np.asarray(args)
@@ -151,9 +106,9 @@ class Spharmt(object):
             n_samples = 1
 
         # loop along the sample dimension and apply func in parallel
-        pool = Parallel(n_jobs=self.jobs, backend="threading")
-
-        results = np.array(pool(delayed(func)(*data[..., i]) for i in range(n_samples)))
+        # pool = Parallel(n_jobs=self.jobs, backend="threading")
+        # results = np.array(pool(delayed(func)(*data[..., i]) for i in range(n_samples)))
+        results = np.array([func(*data[..., i]) for i in range(n_samples)])
 
         if results.shape[0] == n_samples:
             results = np.moveaxis(results, 0, -1)

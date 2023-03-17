@@ -1,5 +1,3 @@
-from functools import partial
-
 import numpy as np
 import xarray as xr
 from numpy.core.numeric import normalize_axis_index
@@ -9,14 +7,13 @@ import constants as cn
 from fortran_libs import numeric_tools
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
-from spherical_harmonics import Spharmt, delayed, Parallel
+from spherical_harmonics import Spharmt
 from thermodynamics import density as _density
 from thermodynamics import exner_function as _exner_function
-from thermodynamics import geopotential_height as _geopotential_height
-from thermodynamics import height_to_geopotential, geopotential_to_height, stability_parameter
+from thermodynamics import geopotential_to_height, stability_parameter
 from thermodynamics import potential_temperature as _potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores, get_number_chunks
+from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
 from tools import rotate_vector, broadcast_1dto, interpolate_1d
 from tools import terrain_mask, transform_io, inspect_gridtype
@@ -170,13 +167,13 @@ class EnergyBudget:
 
         if ps is None:
             # Set first pressure level as surface pressure
-            dp = np.mean(abs(np.diff(self.p)))  # extrapolate linearly from first level
-            self.ps = np.broadcast_to(np.max(self.p) + dp, self.grid_shape)
+            # dp = np.mean(abs(np.diff(self.p)))  # extrapolate linearly from first level
+            self.ps = np.broadcast_to(np.max(self.p), self.grid_shape)
         elif np.isscalar(ps):
             self.ps = np.broadcast_to(ps, self.grid_shape)
         else:
             if isinstance(ps, xr.DataArray):
-                self.ps = ps.values.squeeze()
+                self.ps = np.squeeze(ps.values)
             else:
                 self.ps = ps.squeeze()
 
@@ -192,7 +189,7 @@ class EnergyBudget:
             self.ghsl = np.zeros(self.grid_shape)
         else:
             if isinstance(ghsl, xr.DataArray):
-                self.ghsl = ghsl.values.squeeze()
+                self.ghsl = np.squeeze(ghsl.values)
             else:
                 self.ghsl = ghsl.squeeze()
 
@@ -398,63 +395,20 @@ class EnergyBudget:
         data_shape = self.temperature.shape
         proc_shape = (-1,) + data_shape[2:]
 
+        pressure = self.p
         temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
 
-        sfcp = self.ps.flatten()
-
-        # Compute the depth of the atmosphere
-        depth = numeric_tools.hydrostatic_depth(sfcp, temperature, self.p)
-
-        # Convert surface height to geopotential to use as upper boundary condition
-        top_phi = height_to_geopotential(self.ghsl.flatten() + depth)
+        sfc_pressure = self.ps.flatten()
+        sfc_height = self.ghsl.flatten()
 
         # Compute geopotential from temperature
         # signature 'geopotential(surface_geopotential, temperature, pressure)'
-
-        sorter = np.argsort(self.p)  # ensure downward integration
-        temperature = np.take(temperature, sorter, axis=-1)
-
-        phi = numeric_tools.geopotential(top_phi, temperature, self.p[sorter])
+        phi = numeric_tools.geopotential(pressure, temperature, sfc_height, sfc_pressure)
 
         # back to the original shape (same as temperature)
         phi = np.moveaxis(phi, 0, 1).reshape(data_shape)
 
-        return np.take(phi, sorter[::-1], axis=-1)
-
-    def geopotential_height(self):
-        """
-        Computes geopotential height at pressure surfaces using the hypsometric equation.
-        Assumes a hydrostatic atmosphere. The geopotential at pressure levels
-        below the earth surface are undefined therefore set to 0
-
-        :return: `np.ndarray`
-            geopotential height (m)
-        """
-
-        # Compact horizontal coordinates into one dimension ...
-        data_shape = self.temperature.shape
-        proc_shape = (-1,) + data_shape[2:]
-
-        # create data chunks for parallel computation
-        n_jobs = get_num_cores()
-        n_chunks = get_number_chunks(self.ps.size, n_jobs, factor=4)
-
-        temperature = np.array_split(self.temperature.reshape(proc_shape), n_chunks, axis=0)
-        sfc_pressure = np.array_split(self.ps.flatten(), n_chunks, axis=0)
-        sfc_height = np.array_split(self.ghsl.flatten(), n_chunks, axis=0)
-
-        # passing static arguments to function '_geopotential_height'
-        _geopotential = partial(_geopotential_height, pressure=self.p, axis=-1)
-
-        # Create pool of workers
-        pool = Parallel(n_jobs=n_jobs, backend="threading")
-
-        # perform computations in parallel
-        height = pool(delayed(_geopotential)(temperature[i],
-                                             sfc_pressure[i],
-                                             sfc_height[i]) for i in range(n_chunks))
-
-        return np.concatenate(height, axis=0).reshape(data_shape)
+        return phi
 
     def geostrophic_wind(self):
         """
