@@ -69,7 +69,8 @@ end subroutine model_message
 
   ! loop over samples
   do k = 1, nt
-    call compactderv(dpds(k, :), var(k, :), ds, ns, nso, nsf, order)
+  !  call compactderv(dpds(k, :), var(k, :), ds, ns, nso, nsf, order)
+    call compact_derivative(dpds(k, :), var(k, :), ds, ns, order)
   enddo
 
  return
@@ -288,7 +289,7 @@ end subroutine model_message
 ! *------*------ ... ---*------*------*------*------*--- ... -----*------*
 ! 1     is             i-2    i-1     i     i+1    i+2           ie     ns
 !
-! options: ord = 1-2, 3-4, 5-6
+! options: order = 2-8
 !
 ! uses:
 !
@@ -299,14 +300,13 @@ end subroutine model_message
  integer         , intent(in ) :: order
  integer         , intent(in ) :: ns
  double precision, intent(in ) :: ds
- double precision, intent(in ) :: var (ns  )
-
+ double precision, intent(in ) :: var (ns)
 ! local :
- double precision              :: rhs (ns  )
+ double precision              :: rhs (ns)
  double precision              :: a, b, c, d, ds4, ds6
+ double precision              :: bflux4
  logical                       :: flag
- integer                       :: i, is, ie, ne
-
+ integer                       :: i, is, ie, bs, be, ne
 ! output :
  double precision, intent(out) :: ads (ns)
 
@@ -319,6 +319,10 @@ end subroutine model_message
 
   is = int(order / 2) + 1
   ie = ns + 1 - is
+
+  bs = is - 1
+  be = ie + 1
+
   ne = ie - is + 1
 
   ! compute ( u(i+1) - u(i-1) ) / 2 ds for all schemes
@@ -356,8 +360,9 @@ end subroutine model_message
       a = 3.0; b = 8.0; c = 3.0; d = 12.5
 
       ! compute b( u(i+2) - u(i-2) ) / 4 ds + c( u(i+3) - u(i-3) ) / 4 ds
+      rhs(is:ie) = d * rhs(is:ie)
       do i = is, ie
-          rhs(i) = d * rhs(i) + 1.6 * (var(i+2) - var(i-2))/ds4 - 0.1 * (var(i+3) - var(i-3))/ds6
+          rhs(i) = rhs(i) + 1.6 * (var(i+2) - var(i-2)) / ds4 - 0.1 * (var(i+3) - var(i-3)) / ds6
       enddo
 
     case default
@@ -374,16 +379,24 @@ end subroutine model_message
   ! Solve system and compute derivatives at the boundaries
   if (flag) then ! (only for order /= 2)
 
-    ! Second order boundaries conditions (test 4th)
-    ads(1:is-1) = rhs(1:is-1)
-    ads(ie+1:ns) = rhs(ie+1:ns)
+    !---------------------------------------------------------------------------------
+    ! Using fourth order explicit scheme at boundaries
+    !---------------------------------------------------------------------------------
+    do i = 1, bs
+        ads(i) =   bflux4(var(i), var(i+1), var(i+2), var(i+3), var(i+4)) / ds
+    end do
 
+    do i = be, ns
+        ads(i) = - bflux4(var(i), var(i-1), var(i-2), var(i-3), var(i-4)) / ds
+    end do
+
+    !---------------------------------------------------------------------------------
+    ! solving the tridiagonal system with constant coefficients. Using thomas O(n):
+    !---------------------------------------------------------------------------------
     ! first and last rows of the system:
-    rhs(is) = rhs(is) - a * ads(is-1)
-    rhs(ie) = rhs(ie) - c * ads(ie+1)
+    rhs(is) = rhs(is) - a * ads(bs)
+    rhs(ie) = rhs(ie) - c * ads(be)
 
-    ! solving the tridiagonal system with constant coefficients
-    ! using thomas algorithm O(n):
     call cons_thomas(rhs(is:ie), a, b, c, ne)
 
     ads(is:ie) = rhs(is:ie)
@@ -523,10 +536,24 @@ end subroutine gen_thomas
   !              36.0 * q_ipm2 - 16.0 * q_ipm3 + 3.0 * q_ipm4 ) / 12.0
 
   coeffs = [-25.0, 48.0, -36.0, 16.0, -3.0] / 12.0
-  bflux4 = dot_product([q_icen, q_ipm1, q_ipm2, q_ipm3, q_ipm4], coeffs )
+  bflux4 = dot_product([q_icen, q_ipm1, q_ipm2, q_ipm3, q_ipm4], coeffs)
 
   return
  end function bflux4
+
+ ! points [ i, i+-1, i+-2, i+-3, i+-4 ]
+ double precision function bflux6(q_icen, q_ipm1, q_ipm2, q_ipm3, q_ipm4)
+  double precision, intent(in) :: q_icen, q_ipm1, q_ipm2, q_ipm3, q_ipm4
+  double precision             :: coeffs(5)
+
+  ! foward difference (backward is: '-flux4' with reversed arguments )
+  ! bflux4 = - ( 25.0 * q_icen - 48.0 * q_ipm1 +                             &
+  !              36.0 * q_ipm2 - 16.0 * q_ipm3 + 3.0 * q_ipm4 ) / 12.0
+  coeffs = [-25.0/12.0, 4.0, -3.0, 4.0/3.0, -1.0/4.0]
+  bflux6 = dot_product([q_icen, q_ipm1, q_ipm2, q_ipm3, q_ipm4], coeffs)
+
+  return
+ end function bflux6
 
  ! points [ i-+1, i, i+-1, i+-2, i+-3 ]
  double precision function iflux4(q_imp1, q_icen, q_ipm1, q_ipm2, q_ipm3)
@@ -538,7 +565,7 @@ end subroutine gen_thomas
   !             18.0 * q_ipm1 +  6.0 * q_ipm2 - q_ipm3 ) / 12
 
   coeffs = [-3.0, -10.0, 18.0, -6.0, 1.0] / 12.0
-  iflux4 = dot_product([q_imp1, q_icen, q_ipm1, q_ipm2, q_ipm3], coeffs )
+  iflux4 = dot_product([q_imp1, q_icen, q_ipm1, q_ipm2, q_ipm3], coeffs)
 
   return
  end function iflux4
@@ -749,7 +776,7 @@ end subroutine lagrange_intp
  double precision, intent(out) :: phi (sp, ns, np)
 
  Rd = 287.058 ! gas constant for dry air (J / kg / K)
- g = 9.80665  ! acceleration of gravity  (m / s**2)
+ g = 9.806650 ! acceleration of gravity  (m / s**2)
 
  phi = 0.0
 
@@ -772,7 +799,7 @@ end subroutine lagrange_intp
      if (kn > 1) then
          ! using second order accurate mid-point method.
          ! surface temperature is approximated by previous level (TODO: use actual Ts)
-         mid_rhs = 0.5 * (rhs(kn) - Rd * temp(i, j, kn-1) / sfcp(j))
+         mid_rhs = 0.5 * (rhs(kn) + rhs(kn-1) * pres(kn-1) / sfcp(j))
      else
          mid_rhs = rhs(kn)
      end if
@@ -790,3 +817,47 @@ end subroutine lagrange_intp
  return
 end subroutine geopotential
 !===================================================================================================
+
+!===================================================================================================
+    subroutine DHYDRO(ZH, P, TKV, ZSFC, NLVL)
+
+        implicit none
+
+    ! NCL: zh = hydro (p,tkv,zsfc)
+
+    ! use the hydrostatic eqn to get geopotential height
+    ! .   it is assumed that p(1) and tkv(1) contain the
+    ! .   surface quantities corresponding to zsfc.
+
+    ! .   missing data not allowed
+    ! input
+
+    ! no. levels; error code
+      INTEGER NLVL
+      ! pres (Pa)
+      ! temp (K) at each "p"
+      ! sfc geopotential height (gpm)
+      DOUBLE PRECISION p(NLVL), TKV(NLVL), ZSFC
+
+      ! calculated geopotential (gpm)
+      DOUBLE PRECISION zh(NLVL)
+      ! local
+      INTEGER nl
+      DOUBLE PRECISION g, Rd, RDAG, TVBAR
+
+      g = 9.80665D0 ! gravity at 45 deg lat used by the WMO
+      Rd = 287.04D0 ! gas const dry air (j/{kg-k})
+      RDAG = Rd / g
+
+      ! calculate geopotential height if initial z available [hydrostatic eq]
+
+      zh(1) = ZSFC
+      DO nl = 2, NLVL
+      ! same as [ln(p(nl)+ln(p(nl-1)]
+          TVBAR = (TKV(nl)*LOG(P(nl)) + TKV(nl-1)*LOG(P(nl-1))) / LOG(P(nl)*P(nl-1))
+
+          zh(nl) = zh(nl-1) + RDAG*TVBAR*LOG(P(nl-1) / P(nl))
+      END DO
+
+      RETURN
+    end subroutine

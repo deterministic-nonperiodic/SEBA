@@ -44,6 +44,101 @@ if __name__ == '__main__':
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, p_levels=p_levels,
                           filter_terrain=True, jobs=1)
 
+    # Compute diagnostics
+    Ek = budget.horizontal_kinetic_energy()
+    Ea = budget.available_potential_energy()
+    Ew = budget.vertical_kinetic_energy()
+
+    prange_trp = [250e2, 500e2]
+    prange_stp = [50e2, 250e2]
+
+    # Kinetic energy in vector form accumulate and integrate vertically and average over samples:
+    Ek_trp = map_func(budget.vertical_integration, Ek, pressure_range=prange_trp).mean(dim='time')
+    Ew_trp = map_func(budget.vertical_integration, Ew, pressure_range=prange_trp).mean(dim='time')
+    Ea_trp = map_func(budget.vertical_integration, Ea, pressure_range=prange_trp).mean(dim='time')
+
+    Ek_stp = map_func(budget.vertical_integration, Ek, pressure_range=prange_stp).mean(dim='time')
+    Ew_stp = map_func(budget.vertical_integration, Ew, pressure_range=prange_stp).mean(dim='time')
+    Ea_stp = map_func(budget.vertical_integration, Ea, pressure_range=prange_stp).mean(dim='time')
+
+    # ----------------------------------------------------------------------------------------------
+    # Visualization of Kinetic energy and Available potential energy
+    # ----------------------------------------------------------------------------------------------
+    kappa = 1e3 * Ek_trp.kappa.values  # km^-1
+
+    if kappa.size < 1000:
+        x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
+        xticks = np.array([1, 10, 100, 1000])
+    else:
+        x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
+        xticks = np.array([2, 20, 200, 2000])
+
+    y_limits = [1e-4, 5e7]
+
+    x_lscale = kappa_from_lambda(np.linspace(3200, 650., 2))
+    x_sscale = kappa_from_lambda(np.linspace(450, 60., 2))
+
+    y_lscale = 5.0e-4 * x_lscale ** (-3.0)
+    y_sscale = 0.20 * x_sscale ** (-5.0 / 3.0)
+
+    x_lscale_pos = x_lscale.min()
+    x_sscale_pos = x_sscale.min()
+
+    y_lscale_pos = 2.6 * y_lscale.max()
+    y_sscale_pos = 2.6 * y_sscale.max()
+
+    s_lscale = r'$l^{-3}$'
+    s_sscale = r'$l^{-5/3}$'
+
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7., 5.8), constrained_layout=True)
+
+    ax.loglog(kappa, Ek_trp, label=r'$E_K$', linewidth=1.5, linestyle='-', color='red', alpha=0.85)
+    ax.loglog(kappa, Ea_trp, label=r'$E_A$', linewidth=1.5, linestyle='-', color='navy')
+    ax.loglog(kappa, Ew_trp, label=r'$E_w$', linewidth=1., linestyle='-', color='black')
+
+    ax.loglog(kappa, Ek_stp, label=r'    ', linewidth=1.5, linestyle='--', color='red', alpha=0.85)
+    ax.loglog(kappa, Ea_stp, label=r'    ', linewidth=1.5, linestyle='--', color='navy')
+    ax.loglog(kappa, Ew_stp, label=r'    ', linewidth=1., linestyle='--', color='black')
+
+    # Plot reference slopes
+    ax.loglog(x_sscale, y_sscale, lw=1.2, ls='dashed', color='gray')
+    ax.loglog(x_lscale, y_lscale, lw=1.2, ls='dashed', color='gray')
+
+    ax.annotate(s_lscale,
+                xy=(x_lscale_pos, y_lscale_pos), xycoords='data', color='gray',
+                horizontalalignment='left', verticalalignment='top', fontsize=14)
+    ax.annotate(s_sscale,
+                xy=(x_sscale_pos, y_sscale_pos), xycoords='data', color='gray',
+                horizontalalignment='left', verticalalignment='top', fontsize=14)
+
+    at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
+    at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
+    ax.add_artist(at)
+
+    ax.set_ylabel(r'Energy ($J~m^{-2}$)', fontsize=14)
+
+    secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
+
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+
+    ax.set_xticks(1e3 * kappa_from_deg(xticks))
+    ax.set_xticklabels(xticks)
+
+    secax.xaxis.set_major_formatter(ScalarFormatter())
+
+    # secax.set_xticks(1e-3 * lambda_from_deg(xticks))
+    # secax.set_xticklabels((np.sqrt(2.) * 1e-3 * lambda_from_deg(xticks)).astype(int))
+
+    ax.set_xlabel(r'Spherical harmonic degree', fontsize=14, labelpad=4)
+    secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
+
+    ax.set_xlim(*x_limits)
+    ax.set_ylim(*y_limits)
+    ax.legend(title=r"  Troposphere  /  Stratosphere", loc='upper right', fontsize=12, ncol=2)
+
+    plt.show()
+    plt.close(fig)
+
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
@@ -64,7 +159,7 @@ if __name__ == '__main__':
 
     # Perform vertical integration along last axis
     layers = {
-        'Stratosphere': [50e2, 250e2],
+        # 'Stratosphere': [50e2, 250e2],
         'Free troposphere': [250e2, 850e2],
         # 'Lower troposphere': [500e2, 850e2]
     }
@@ -76,7 +171,6 @@ if __name__ == '__main__':
     # perform vertical integration
     fluxes_layers = {}
     for i, (level, prange) in enumerate(layers.items()):
-
         fluxes_layers[level] = map_func(budget.vertical_integration, dataset_fluxes,
                                         pressure_range=prange).mean(dim='time')
 

@@ -319,15 +319,11 @@ class EnergyBudget:
         self.phi = self.geopotential()
         self.height = geopotential_to_height(self.phi)
 
-        # self.height = self.geopotential_height()
-        # self.phi = height_to_geopotential(self.height)
-
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
         # Using A&L13 formula for the representative mean results in unstable
         # profiles in most cases! We use global average instead.
-        self.theta_avg = self._representative_mean(self.theta)
-        self.theta_pbn = self.theta - self.theta_avg
+        self.theta_avg, self.theta_pbn = self._split_mean_perturbation(self.theta)
 
         # self.theta_pbn = self._scalar_perturbation(self.theta)
         # self.theta_avg = self.global_average(self.theta)
@@ -1027,18 +1023,22 @@ class EnergyBudget:
             msg = "If given, 'z' must be the same size as 'scalar' along the specified axis."
             assert z.size == scalar.shape[axis], msg
 
-        scalar = np.moveaxis(scalar, axis, -1)
-        scalar_shape = scalar.shape
+        dz = np.diff(z)
 
-        scalar = scalar.reshape((-1, scalar_shape[-1]))
+        # Using high order schemes for equally sampled data
+        # otherwise use second order central differences
+        if np.max(dz) == np.min(dz):
+            scalar = np.moveaxis(scalar, axis, -1)
+            scalar_shape = scalar.shape
+            scalar = scalar.reshape((-1, scalar_shape[-1]))
+            # compute gradient with 6th order compact finite difference scheme (Lele 1992)
+            # this scheme has spectral-like accuracy.
+            grad = numeric_tools.gradient(scalar, dz[0], order=6)
+            grad = np.moveaxis(grad.reshape(scalar_shape), -1, axis)
+        else:
+            grad = np.gradient(scalar, z, axis=axis)
 
-        dz = np.diff(z)[0]
-
-        # compute gradient with 6th order compact finite difference scheme (Lele 1992)
-        # this scheme has spectral-like accuracy.
-        grad = numeric_tools.gradient(scalar, dz, order=6)
-
-        return np.moveaxis(grad.reshape(scalar_shape), -1, axis)
+        return grad
 
     def vertical_integration(self, scalar, pressure_range=None, axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
@@ -1313,7 +1313,9 @@ class EnergyBudget:
         # and perturbations with respect to the mean
         scalar_avg = self._representative_mean(scalar)
 
-        return scalar_avg, scalar - scalar_avg
+        scalar_pbn = np.where(scalar > 0.0, scalar - scalar_avg, 0.0)
+
+        return scalar_avg, scalar_pbn
 
     def _scalar_perturbation(self, scalar):
         # Compute scalar perturbations in spectral space
