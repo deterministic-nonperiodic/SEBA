@@ -116,6 +116,8 @@ class EnergyBudget:
         self.longitude, self.nlon = _find_longitude(dataset)
         self.levels, nlevels = _find_levels(dataset)
 
+        dataset.close()
+
         # Get spatial dimensions
         if p.size == nlevels:
             print("Running with pressure coordinates")
@@ -178,7 +180,7 @@ class EnergyBudget:
                 self.ps = ps.squeeze()
 
             if np.ndim(self.ps) > 2:
-                self.ps = np.nanmean(self.ps, axis=0)
+                self.ps = np.nanmean(self.ps, axis=self.info_coords.find('t'))
 
             if np.shape(self.ps) != self.grid_shape:
                 raise ValueError('If given, the surface pressure must be a scalar or a '
@@ -381,7 +383,7 @@ class EnergyBudget:
         Computes geopotential at pressure surfaces assuming a hydrostatic atmosphere.
         The geopotential is obtained by integrating the hydrostatic balance equation from the
         surface to the top of the atmosphere. Uses terrain height and surface pressure as lower
-        boundary conditions. Uses compiled fortran libraries for performance.
+        boundary conditions. Uses compiled fortran libraries for higher performance.
 
         :return: `np.ndarray`
             geopotential (J/kg)
@@ -397,14 +399,18 @@ class EnergyBudget:
         sfc_pressure = self.ps.flatten()
         sfc_height = self.ghsl.flatten()
 
+        if hasattr(self, 'ts'):
+            ts = np.moveaxis(self.ts.reshape((-1, self.ts.shape[-1])), 1, 0)
+        else:
+            # compute surface temperature
+            ts = numeric_tools.surface_temperature(sfc_pressure, temperature, pressure)
+
         # Compute geopotential from temperature
         # signature 'geopotential(surface_geopotential, temperature, pressure)'
-        phi = numeric_tools.geopotential(pressure, temperature, sfc_height, sfc_pressure)
+        phi = numeric_tools.geopotential(pressure, temperature, sfc_height, sfc_pressure, sfct=ts)
 
         # back to the original shape (same as temperature)
-        phi = np.moveaxis(phi, 0, 1).reshape(data_shape)
-
-        return phi
+        return np.moveaxis(phi, 0, 1).reshape(data_shape)
 
     def geostrophic_wind(self):
         """
@@ -1024,21 +1030,20 @@ class EnergyBudget:
             assert z.size == scalar.shape[axis], msg
 
         dz = np.diff(z)
-
         # Using high order schemes for equally sampled data
         # otherwise use second order central differences
         if np.max(dz) == np.min(dz):
             scalar = np.moveaxis(scalar, axis, -1)
             scalar_shape = scalar.shape
             scalar = scalar.reshape((-1, scalar_shape[-1]))
-            # compute gradient with 6th order compact finite difference scheme (Lele 1992)
-            # this scheme has spectral-like accuracy.
-            grad = numeric_tools.gradient(scalar, dz[0], order=6)
-            grad = np.moveaxis(grad.reshape(scalar_shape), -1, axis)
+            # compute gradient with a 6th-order compact finite difference scheme (Lele 1992),
+            # and explicit 4th-order scheme at the boundary.
+            scalar_grad = numeric_tools.gradient(scalar, dz[0], order=6)
+            scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), -1, axis)
         else:
-            grad = np.gradient(scalar, z, axis=axis)
+            scalar_grad = np.gradient(scalar, z, axis=axis)
 
-        return grad
+        return scalar_grad
 
     def vertical_integration(self, scalar, pressure_range=None, axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
@@ -1088,9 +1093,9 @@ class EnergyBudget:
         scalar = np.take(scalar, level_mask, axis=axis)
 
         # Integrate scalar at pressure levels
-        integrated_scalar = - simpson(scalar, x=pressure[level_mask], axis=axis, even='avg')
+        scalar_int = - simpson(scalar, x=pressure[level_mask], axis=axis, even='avg')
 
-        return integrated_scalar / cn.g
+        return scalar_int / cn.g
 
     def global_average(self, scalar, weights=None, axis=None):
         """

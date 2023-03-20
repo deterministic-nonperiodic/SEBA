@@ -672,11 +672,9 @@ end subroutine adaptative_adams_moulton
  double precision, intent(out) :: intvar
 !===================================================================================================
 !
-!interpolacion polinomica(posible modificar la cantidad de nodos: nnods
-!                         entre 3-7 recomendado, para valores menores se
-!                         prefiere interpolacion lineal, para valores
-!                         mayores el metodo de lagrange es inadecuado )
-!
+!Polynomic interpolation (possible to modify the numnber of nodes: nnods between 3-7 is recommended,
+!                         reduces to linear interpolation for 2 nodes. Avoid using nnods > 7 nodes)
+
  nnods = 5
  nnstp = nnods - 1
  kend  = 1
@@ -706,12 +704,11 @@ end subroutine adaptative_adams_moulton
 
  end do
 
-!integracion por metodo de simpson ...
+ !Integrating using Simpson's rule on regularly spaced data...
 
-  intvar = ( vari(1) + vari(n) )
+ intvar = ( vari(1) + vari(n) )
 
-  intvar = dzi * ( intvar + 4.0 * sum(vari(1:n-1:2))   +                   &
-                            2.0 * sum(vari(2:n-1:2)) ) / 3.0
+ intvar = dzi * (intvar + 4.0 * sum(vari(1:n-1:2)) + 2.0 * sum(vari(2:n-1:2))) / 3.0
 
  return
  end subroutine intdomvar
@@ -721,7 +718,7 @@ end subroutine adaptative_adams_moulton
   subroutine lagrange_intp(datao, datai, posio, posii, nnods)
 !===================================================================================================
 !
-! Lagrange interpolation
+! Lagrange polynomic interpolation
 !
 integer,          intent(in ) :: nnods
 double precision, intent(in ) :: posio
@@ -734,6 +731,11 @@ integer                       :: i, j
 double precision, intent(out) :: datao
 
 datao = 0.0
+
+! check if the data is within the interpolation range
+!if (posio >= min(posii)).and.(posio <= max(posii)) then
+!
+!end if
 
 do i = 1, nnods
 
@@ -756,29 +758,75 @@ end subroutine lagrange_intp
 !===================================================================================================
 
 !===================================================================================================
-  subroutine geopotential(phi, pres, temp, sfch, sfcp, sp, ns, np)
+  subroutine surface_temperature(sfct, sfcp, temp, pres, nt, ns, np)
+!===================================================================================================
+
+ implicit none
+
+ integer,          intent(in ) :: nt, ns, np
+ double precision, intent(in ) :: pres (np)
+ double precision, intent(in ) :: sfcp (ns)
+ double precision, intent(in ) :: temp (nt, ns, np)
+
+ integer                       :: i, j, ks, ke, nn
+
+ double precision, intent(out) :: sfct (nt, ns)
+
+  sfct = 0.0
+
+  do i = 1, nt
+    do j = 1, ns
+      ! find the first level pierced by the surface (p <= sfcp)
+      ke = minloc(abs(pres - sfcp(j)), dim=1)
+
+      if (pres(ke) >= sfcp(j)) then
+          ke = ke + 1
+      end if
+      ks = max(ke - 1, 1)
+      nn = ke + 1 - ks ! number of nodes between 2-5
+
+      call lagrange_intp(sfct(i, j), temp(i, j, ks:ke), sfcp(j), pres(ks:ke), nn)
+
+    end do
+  end do
+
+ return
+ end subroutine surface_temperature
+!===================================================================================================
+
+!===================================================================================================
+  subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, sp, ns, np)
 !===================================================================================================
 
  implicit none
 
  integer         , intent(in ) :: sp, ns, np
 
- double precision, intent(in ) :: pres   (np)
- double precision, intent(in ) :: sfch   (ns)
- double precision, intent(in ) :: sfcp   (ns)
- double precision, intent(in ) :: temp   (sp, ns, np)
- double precision              :: rhs    (np)
+ double precision, intent(in ) :: pres (np)
+ double precision, intent(in ) :: sfch (ns)
+ double precision, intent(in ) :: sfcp (ns)
+ ! surface temperatue is optional. If not given,
+ ! it is approximated by linear interpolation.
+ double precision, optional, intent(in) :: sfct (sp, ns)
+
+ double precision, intent(in ) :: temp (sp, ns, np)
+ double precision              :: rhs  (np)
  double precision              :: phi_bc, mid_rhs
 
- double precision              :: Rd, g
- integer                       :: i, j, kn, nc
+ double precision              :: Rd, g, sfc_rhs
+ integer                       :: i, j, ks, kn, nc, nn
+ logical                       :: ts_flag
 
  double precision, intent(out) :: phi (sp, ns, np)
 
  Rd = 287.058 ! gas constant for dry air (J / kg / K)
  g = 9.806650 ! acceleration of gravity  (m / s**2)
 
+ ! initialize geopotential
  phi = 0.0
+
+ ! Check if surface temperature is passed as argument (default .false.)
+ ts_flag = present(sfct)
 
  do i = 1, sp ! loop over samples
    do j = 1, ns ! loop over spatial dimension
@@ -786,29 +834,35 @@ end subroutine lagrange_intp
      ! find the first level pierced by the surface (p <= sfcp)
      kn = minloc(abs(pres - sfcp(j)), dim=1)
 
-     if (pres(kn) > sfcp(j)) then
-         kn = kn + 1
+     if (pres(kn) >= sfcp(j)) then
+         kn = min(kn + 1, np)
      end if
-     nc = np + 1 - kn ! size of the column
+     nc = np + 1 - kn ! number of levels above the surface
 
-     ! storing d(phi)/d(p) = - Rd * T / p
+     ! Store profiles of: d(phi)/d(p) = - Rd * T(p) / p
      rhs = - Rd * temp(i, j, :) / pres
 
-     ! calculate geopotential at first level above the surface
-     ! phi_bc = g * sfch(j) - 0.5 * Rd * (pressure(kn) - sfcp(j)) * (ts/ps + t1/p1)
-     if (kn > 1) then
-         ! using second order accurate mid-point method.
-         ! surface temperature is approximated by previous level (TODO: use actual Ts)
-         mid_rhs = 0.5 * (rhs(kn) + rhs(kn-1) * pres(kn-1) / sfcp(j))
+     ! Calculate geopotential at first level above the surface
+     ! If surface temperature is given, the rhs at the surface is computed explicitly
+     if (ts_flag) then
+         sfc_rhs = - Rd * sfct(i, j) / sfcp(j)
      else
-         mid_rhs = rhs(kn)
+         ! Estimate rhs at the surface by linear interpolation
+         ks = max(kn - 1, 1)
+         nn = kn + 1 - ks ! number of nodes between 2-5
+
+         call lagrange_intp(sfc_rhs, temp(i, j, ks:kn), sfcp(j), pres(ks:kn), nn)
+         sfc_rhs = - Rd * sfc_rhs / sfcp(j)
      end if
 
-     ! lower boundary condition for geopotential
+     ! Using second order accurate mid-point method at first integration step
+     mid_rhs = 0.5 * (rhs(kn) + sfc_rhs)
+
+     ! lower boundary condition for geopotential (first level above the surface)
      phi_bc = g * sfch(j) + (pres(kn) - sfcp(j)) * mid_rhs
 
-     ! vertical integration for all level above the surface (k >= kn)
-     ! using 4th order adams moulton multistep method.
+     ! Vertical integration for all level above the surface (k > kn)
+     ! using 4th order adams moulton linear multistep method.
      call adaptative_adams_moulton(phi(i, j, kn:np), phi_bc, rhs(kn:np), pres(kn:np), nc)
 
    end do

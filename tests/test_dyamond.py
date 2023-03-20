@@ -22,30 +22,25 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n512'
+    resolution = 'n256'
     data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
     date_time = '20[0]'
-    # file_names = data_path + '{}_atm_3d_inst_{}_{}.nc'
     file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
 
     # # load earth topography and surface pressure
-    # dset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    # sfc_pres = dset_sfc.pres_sfc.values
+    dset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
+    sfc_pres = dset_sfc.pres_sfc.values
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
-    # dataset_tnd = xr.open_mfdataset('data/{}_atm_3d_tend_{}_{}.nc'.format(model, resolution,
-    #                                                                       date_time))
 
     # load earth topography and surface pressure
     dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
     sfc_hgt = dset_sfc.topography_c.values
-    sfc_pres = None
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres,
-                          filter_terrain=True, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, filter_terrain=True, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()
