@@ -135,7 +135,7 @@ class EnergyBudget:
             print("Interpolating data to {} isobaric levels ...".format(p_levels.size))
             # values outside interpolation range are set to zero
             # (applies to levels below the surface p > ps)
-            fill_value = 0.0
+            fill_value = np.nan
 
             u, v, omega, t = interpolate_1d(p_levels, p, u, v, omega, t,
                                             scale='log', fill_value=fill_value,
@@ -201,13 +201,10 @@ class EnergyBudget:
                     'Expected shape {}, but got {}!'.format(self.grid_shape, np.shape(ghsl)))
 
         # -----------------------------------------------------------------------------
-        # Create sphere object to perform the spectral computations.
+        # Create sphere object to perform the spectral transformations.
         # -----------------------------------------------------------------------------
-        # Inspect grid type and latitude sampling
+        # Inspect grid type based on the latitude sampling
         self.gridtype, self.latitude, self.weights = inspect_gridtype(self.latitude)
-
-        # nodes used in the Gauss-Legendre quadrature
-        self.fc = coriolis_parameter(self.latitude)
 
         if rsphere is None:
             self.rsphere = cn.earth_radius
@@ -217,8 +214,10 @@ class EnergyBudget:
             raise ValueError("Incorrect value for 'rsphere'.")
 
         # Create sphere object for spectral transformations
-        self.sphere = Spharmt(self.nlon, self.nlat, gridtype=self.gridtype,
-                              rsphere=self.rsphere, jobs=self.jobs)
+        self.sphere = Spharmt(self.nlon, self.nlat,
+                              gridtype=self.gridtype,
+                              rsphere=self.rsphere,
+                              jobs=self.jobs)
 
         # define the triangular truncation
         if truncation is None:
@@ -275,7 +274,7 @@ class EnergyBudget:
 
         # Reshape and reorder data dimensions for computations
         # self.data_info stores information to recover the original shape.
-        self.omega, self.data_info = self._transform_data(omega, filtered=False)
+        self.omega, self.data_info = self._transform_data(omega, filtered=True)
         del omega
 
         # create wind array from unfiltered wind components
@@ -306,6 +305,9 @@ class EnergyBudget:
         self.wind_div = self.filter_topography(self.wind_div)
         self.wind_shear = self.filter_topography(self.wind_shear)
 
+        # Coriolis parameter
+        self.fc = coriolis_parameter(self.latitude)
+
         # -----------------------------------------------------------------------------
         # Thermodynamic diagnostics:
         # -----------------------------------------------------------------------------
@@ -313,22 +315,16 @@ class EnergyBudget:
         self.exner = _exner_function(self.p)
         self.theta = self.potential_temperature()
 
-        # Compute specific volume (volume per unit mass)
-        self.alpha = self.specific_volume()
-        self.alpha = self.filter_topography(self.alpha)
-
         # Compute geopotential (Compute before applying mask!)
         self.phi = self.geopotential()
         self.height = geopotential_to_height(self.phi)
 
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
-        # Using A&L13 formula for the representative mean results in unstable
-        # profiles in most cases! We use global average instead.
         self.theta_avg, self.theta_pbn = self._split_mean_perturbation(self.theta)
 
-        # self.theta_pbn = self._scalar_perturbation(self.theta)
-        # self.theta_avg = self.global_average(self.theta)
+        #  filter potential temperature
+        self.theta = self.filter_topography(self.theta)
 
         # Compute vertical gradient of potential temperature perturbations
         # (done before filtering to avoid sharp gradients at interfaces)
@@ -374,9 +370,6 @@ class EnergyBudget:
     def density(self):
         # computes air density from pressure and temperature using the gas law
         return _density(self.p, self.temperature)
-
-    def specific_volume(self):
-        return 1.0 / self.density()
 
     def geopotential(self):
         """
@@ -436,17 +429,20 @@ class EnergyBudget:
         Horizontal kinetic energy after Augier and Lindborg (2013), Eq.13
         :return:
         """
-        vrt_sp = self.cross_spectrum(self.vrt_spc)
-        div_sp = self.cross_spectrum(self.div_spc)
+        if hasattr(self, 'vrt_spc') and hasattr(self, 'div_spc'):
+            vrt_spc = self.cross_spectrum(self.vrt_spc)
+            div_spc = self.cross_spectrum(self.div_spc)
 
-        kinetic_energy = (vrt_sp + div_sp) / (2.0 * self.vector_norm)
+            kinetic_energy = (vrt_spc + div_spc) / (2.0 * self.vector_norm)
+        else:
+            kinetic_energy = self._vector_spectra(self.wind) / 2.0
 
+        #  create dataset
         kinetic_energy = self.add_metadata(kinetic_energy, 'hke',
                                            gridtype='spectral',
                                            units='m**2 s**-2',
                                            standard_name='horizontal_kinetic_energy',
                                            long_name='horizontal kinetic energy per unit mass')
-
         return kinetic_energy
 
     def vertical_kinetic_energy(self):
@@ -458,12 +454,12 @@ class EnergyBudget:
 
         kinetic_energy = self._scalar_spectra(w) / 2.0
 
+        #  create dataset
         kinetic_energy = self.add_metadata(kinetic_energy, 'vke',
                                            gridtype='spectral',
                                            units='m**2 s**-2',
                                            standard_name='vertical_kinetic_energy',
                                            long_name='vertical kinetic energy per unit mass')
-
         return kinetic_energy
 
     def available_potential_energy(self):
@@ -616,8 +612,11 @@ class EnergyBudget:
         return
 
     def conversion_ape_dke(self):
-        # Conversion of Available Potential energy into kinetic energy (Eq. 19)
-        return - self._scalar_spectra(self.omega, self.alpha)
+        # Conversion of Available Potential energy into kinetic energy
+        # Equivalent to Eq. 19 of A&L, but using potential temperature.
+        ape_dke = - self._scalar_spectra(self.omega, self.theta)
+
+        return cn.Rd * self.exner * ape_dke / self.p
 
     def conversion_dke_rke(self):
         """Conversion from divergent to rotational kinetic energy
@@ -1302,23 +1301,32 @@ class EnergyBudget:
 
     def _representative_mean(self, scalar):
         # Computes representative mean of a scalar function:
-        # Mean over a constant pressure level excluding subterranean data.
+        # Mean over a constant pressure level for regions above the surface.
 
-        # Use globally averaged beta as a normalization factor
-        # gives a profile of the % of points above the surface at a given level.
+        # The globally averaged beta as used aa a scaling factor
+        # % of points above the surface at a given level.
         norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, 1.0)
 
         # compute weighted average on gaussian grid and divide by norm
-        filtered_scalar = self.filter_topography(scalar)
+        if not hasattr(scalar, 'mask'):
+            scalar = self.filter_topography(scalar)
 
-        return self.global_average(filtered_scalar, axis=0) / norm
+        return self.global_average(scalar, axis=0) / norm
 
-    def _split_mean_perturbation(self, scalar):
+    def _split_mean_perturbation(self, scalar, threshold=0.0):
         # Decomposes a scalar function into the representative mean
         # and perturbations with respect to the mean
-        scalar_avg = self._representative_mean(scalar)
 
-        scalar_pbn = np.where(scalar > 0.0, scalar - scalar_avg, 0.0)
+        # Using A&L13 formula for the "representative mean" results in an
+        # unstable boundary layer in most cases! We use global average instead.
+        scalar_avg = self._representative_mean(scalar)
+        # scalar_avg = self.global_average(scalar, axis=0)
+
+        # exclude masked fields (TODO use np.ma instead)
+        if not hasattr(scalar, 'mask'):
+            scalar_pbn = np.where(abs(scalar) > threshold, scalar - scalar_avg, threshold)
+        else:
+            scalar_pbn = scalar - scalar_avg
 
         return scalar_avg, scalar_pbn
 

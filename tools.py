@@ -923,6 +923,9 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
         var_interp[min_value == xp.shape[axis]] = fill_value
         var_interp[x_array < xp[below]] = fill_value
 
+        # if fill_value is nan or "masked" return masked arrays
+        var_interp = np.ma.masked_invalid(var_interp, copy=True)
+
         # Check for input points in decreasing order and return output to match.
         if x[0] > x[-1]:
             var_interp = np.swapaxes(np.swapaxes(var_interp, 0, axis)[::-1], 0, axis)
