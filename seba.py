@@ -267,10 +267,7 @@ class EnergyBudget:
         # -----------------------------------------------------------------------------
         self.filter_terrain = filter_terrain
 
-        if self.filter_terrain:
-            self.beta = terrain_mask(self.p, self.ps, smooth=True, jobs=self.jobs)
-        else:
-            self.beta = np.ones((self.nlat, self.nlon, self.nlevels))
+        self.beta = terrain_mask(self.p, self.ps, smooth=True, jobs=6)
 
         # Reshape and reorder data dimensions for computations
         # self.data_info stores information to recover the original shape.
@@ -388,6 +385,7 @@ class EnergyBudget:
 
         pressure = self.p
         temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
+        temperature = np.ma.filled(temperature, fill_value=0.0)
 
         sfc_pressure = self.ps.flatten()
         sfc_height = self.ghsl.flatten()
@@ -865,13 +863,6 @@ class EnergyBudget:
 
         return ape_tendency
 
-    @transform_io
-    def sfvp(self, vector):
-        """
-            Computes the streamfunction and potential of a vector field on the sphere.
-        """
-        return self.sphere.getpsichi(*vector)
-
     def helmholtz(self):
         """
         Perform a Helmholtz decomposition of the horizontal wind.
@@ -885,7 +876,7 @@ class EnergyBudget:
         """
 
         # streamfunction and velocity potential
-        psi_grid, chi_grid = self.sfvp(self.wind)
+        psi_grid, chi_grid = self.streamfunction_potential(self.wind)
 
         # Compute non-rotational components from streamfunction
         chi_grad = self.horizontal_gradient(chi_grid)
@@ -896,7 +887,7 @@ class EnergyBudget:
         return chi_grad, rotate_vector(psi_grad)
 
     # --------------------------------------------------------------------
-    # Helper methods
+    # Helper methods for spectral transformations
     # --------------------------------------------------------------------
     @transform_io
     def _spectral_transform(self, scalar):
@@ -913,6 +904,21 @@ class EnergyBudget:
             Wrapper around 'spectogrd' to process inputs and run in parallel.
         """
         return self.sphere.spectogrd(scalar_sp)
+
+    @transform_io
+    def _compute_rotdiv(self, vector):
+        """
+        Compute the spectral coefficients of vorticity and horizontal
+        divergence of a vector field on the sphere.
+        """
+        return self.sphere.getvrtdivspec(*vector)
+
+    @transform_io
+    def streamfunction_potential(self, vector):
+        """
+            Computes the streamfunction and potential of a vector field on the sphere.
+        """
+        return self.sphere.getpsichi(*vector)
 
     @transform_io
     def horizontal_gradient(self, scalar):
@@ -979,14 +985,6 @@ class EnergyBudget:
         # Horizontal advection of zonal and meridional wind components
         # (components stored along the first dimension)
         return kinetic_energy_gradient + self.vrt * rotate_vector(wind)
-
-    @transform_io
-    def _compute_rotdiv(self, vector):
-        """
-        Compute the spectral coefficients of vorticity and horizontal
-        divergence of a vector field on the sphere.
-        """
-        return self.sphere.getvrtdivspec(*vector)
 
     def _scalar_spectra(self, scalar_1, scalar_2=None):
         """
@@ -1274,7 +1272,10 @@ class EnergyBudget:
 
     def filter_topography(self, scalar):
         # masks scalar values pierced by the topography
-        return np.expand_dims(self.beta, -2) * scalar
+        if not np.ma.is_masked(scalar):
+            return np.expand_dims(self.beta, -2) * scalar
+        else:
+            return scalar
 
     def _transform_data(self, scalar, filtered=True):
         # Helper function
@@ -1308,12 +1309,11 @@ class EnergyBudget:
         norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, 1.0)
 
         # compute weighted average on gaussian grid and divide by norm
-        if not hasattr(scalar, 'mask'):
-            scalar = self.filter_topography(scalar)
+        scalar = self.filter_topography(scalar)
 
         return self.global_average(scalar, axis=0) / norm
 
-    def _split_mean_perturbation(self, scalar, threshold=0.0):
+    def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean
         # and perturbations with respect to the mean
 
@@ -1322,11 +1322,8 @@ class EnergyBudget:
         scalar_avg = self._representative_mean(scalar)
         # scalar_avg = self.global_average(scalar, axis=0)
 
-        # exclude masked fields (TODO use np.ma instead)
-        if not hasattr(scalar, 'mask'):
-            scalar_pbn = np.where(abs(scalar) > threshold, scalar - scalar_avg, threshold)
-        else:
-            scalar_pbn = scalar - scalar_avg
+        # exclude masked fields
+        scalar_pbn = scalar - scalar_avg
 
         return scalar_avg, scalar_pbn
 

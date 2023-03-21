@@ -374,6 +374,8 @@ def transform_io(func, order='C'):
         transformed_args = [self, ]
         for arg in args:
             if isinstance(arg, np.ndarray):
+                # fill masked arrays before spectral transforms
+                arg = np.ma.fix_invalid(arg).filled(fill_value=0.0)
                 transformed_args.append(self._pack_levels(arg, order=order))
 
         results = func(*transformed_args, **kwargs)
@@ -455,9 +457,8 @@ def inspect_gridtype(latitudes):
             raise ValueError('Invalid equally-spaced latitudes (they may be non-global)')
         gridtype = 'regular'
     else:
-        # The latitudes are not equally-spaced, which suggests they might
-        # be gaussian. Construct sample gaussian latitudes and check if
-        # the two match.
+        # The latitudes are not equally-spaced, which suggests they might be gaussian.
+        # Construct sample gaussian latitudes and check if the two match.
         reference, weights = gaussian_lats_wts(nlat)
 
         if not np.allclose(latitudes, reference, atol=tolerance):
@@ -480,7 +481,7 @@ def cumulative_flux(spectra, axis=0):
 
     # Set fluxes to 0 at ls=0 to avoid small truncation errors.
     for ln in range(dim_axis):
-        spectra_flux[ln] = spectra_flux[ln:].sum(axis=0)
+        spectra_flux[ln] = np.nansum(spectra_flux[ln:], axis=0)
 
     return np.moveaxis(spectra_flux, 0, axis)
 
