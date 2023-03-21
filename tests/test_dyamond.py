@@ -8,7 +8,7 @@ from matplotlib.ticker import ScalarFormatter
 from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
 from tools import map_func, cumulative_flux
-from visualization import AnchoredText
+from visualization import AnchoredText, fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -291,8 +291,8 @@ if __name__ == '__main__':
         ax.semilogx(kappa, cdr_vl, label=r'Relative vorticity', linewidth=1.6,
                     linestyle='-.', color='red')
 
-        ax.semilogx(kappa, cdr_cl, label=r'Coriolis', linewidth=1.6,
-                    linestyle='-.', color='green')
+        # ax.semilogx(kappa, cdr_cl, label=r'Coriolis', linewidth=1.6,
+        #             linestyle='-.', color='green')
 
         ax.set_ylabel(r'Cumulative energy flux ($W~m^{-2}$)', fontsize=16)
 
@@ -320,3 +320,12 @@ if __name__ == '__main__':
 
         plt.show()
         plt.close(fig)
+
+    # ---------------------------------------------------------------------------------------
+    # Visualize fluxes cross section
+    # ---------------------------------------------------------------------------------------
+    figure_name = '../figures/{}_fluxes_section_{}.pdf'.format(model, resolution)
+
+    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vf_dke'],
+                            resolution='n1024', y_limits=[1000., 100.],
+                            fig_name=figure_name)

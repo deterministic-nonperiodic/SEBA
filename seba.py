@@ -8,8 +8,8 @@ from fortran_libs import numeric_tools
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
-from thermodynamics import exner_function
-from thermodynamics import geopotential_to_height, stability_parameter, potential_temperature
+from thermodynamics import exner_function, potential_temperature
+from thermodynamics import geopotential_to_height, stability_parameter
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
@@ -22,7 +22,7 @@ _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
 class EnergyBudget:
     """
         Spectral Energy Budget of a dry hydrostatic Atmosphere.
-        Implements the formulation introduced by Augier and Lindborg (2013)
+        Implements the formulation developed by Augier and Lindborg (2013)
 
         Augier, P., and E. Lindborg (2013), A new formulation of the spectral energy budget
         of the atmosphere, with application to two high-resolution general circulation models,
@@ -679,30 +679,30 @@ class EnergyBudget:
         Computes each term in spectral energy budget and return as xr.DataArray objects.
         """
 
-        # Linear transfer due to Coriolis
-        lc_k = cumulative_flux(self.coriolis_linear_transfer())
-
         # Energy conversion between KE and APE (contains metadata)
         c_ka = cumulative_flux(self.conversion_ape_dke())
 
-        c_ka = self.add_metadata(c_ka, 'cka', gridtype='spectral',
-                                 units='W m**-2', standard_name='energy_conversion',
-                                 long_name='conversion from kinetic to'
-                                           'available potential energy')
-
         c_dr = cumulative_flux(self.conversion_dke_rke())
-
-        c_dr = self.add_metadata(c_dr, 'cdr', gridtype='spectral',
-                                 units='W m**-2', standard_name='energy_conversion',
-                                 long_name='conversion from divergent to'
-                                           'rotational kinetic energy')
 
         # Compute cumulative nonlinear spectral energy fluxes
         pi_r = cumulative_flux(self.rke_nonlinear_transfer())
         pi_d = cumulative_flux(self.dke_nonlinear_transfer())
         pi_a = cumulative_flux(self.ape_nonlinear_transfer())
 
+        # Linear transfer due to Coriolis
+        lc_k = cumulative_flux(self.coriolis_linear_transfer())
+
         # add metadata
+        c_ka = self.add_metadata(c_ka, 'cka', gridtype='spectral',
+                                 units='W m**-2', standard_name='energy_conversion',
+                                 long_name='conversion from kinetic to '
+                                           'available potential energy')
+
+        c_dr = self.add_metadata(c_dr, 'cdr', gridtype='spectral',
+                                 units='W m**-2', standard_name='energy_conversion',
+                                 long_name='conversion from divergent to '
+                                           'rotational kinetic energy')
+
         pi_r = self.add_metadata(pi_r, 'pi_rke', gridtype='spectral',
                                  units='W m**-2', standard_name='nonlinear_rke_flux',
                                  long_name='cumulative spectral flux of rotational kinetic energy')
@@ -1281,23 +1281,25 @@ class EnergyBudget:
         # Computes representative mean of a scalar function:
         # Mean over a constant pressure level for regions above the surface.
 
-        # The globally averaged beta as used aa a scaling factor
-        # % of points above the surface at a given level.
-        reduced_points = self.global_mean(self.beta, lat_axis=0).clip(cn.epsilon, 1.0)
+        if np.ma.is_masked(scalar):
+            # If the scalar is masked the average is performed only over unmasked data
+            reduced_points = 1.0
+        else:
+            # The globally averaged beta as used as a scaling factor to account for zeros in data.
+            # Gives the percentage of points above the surface at a given level.
+            reduced_points = self.global_mean(self.beta, lat_axis=0).clip(cn.epsilon, 1.0)
 
-        # compute weighted average on gaussian grid and divide by norm
-        # scalar = self.filter_topography(scalar)
+        # Compute weighted average on gaussian grid and divide by norm
         return self.global_mean(scalar, lat_axis=0) / reduced_points
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean and perturbations.
 
-        # A&L13 formula for the "representative mean"
-        # sometimes results in unstable boundary layers!
-        scalar_avg = self.global_mean(scalar, lat_axis=0)
+        # A&L13 formula for the representative mean
+        scalar_avg = self._representative_mean(scalar)
 
-        # The filtering operation (multiplication by smoothed mask 'beta')
-        scalar_pbn = scalar - self.filter_topography(scalar_avg)
+        # Calculate perturbation
+        scalar_pbn = scalar - scalar_avg
 
         return scalar_avg, scalar_pbn
 

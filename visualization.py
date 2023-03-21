@@ -644,6 +644,9 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
     level = 1e-2 * dataset['plev']
     kappa = 1e3 * dataset['kappa']
 
+    if 'time' in dataset.dims:
+        dataset = dataset.mean(dim='time')
+
     # -----------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # -----------------------------------------------------------------------------------
@@ -662,7 +665,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
 
     for m, (ax, varname) in enumerate(zip(axes, variables)):
 
-        spectra = 1e3 * dataset[varname].mean(dim='time').values
+        spectra = 1e3 * dataset[varname].values
         cs_limit = 0.65 * abs(spectra).max()
 
         # Create plots:
