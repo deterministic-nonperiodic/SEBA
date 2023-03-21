@@ -41,8 +41,7 @@ if __name__ == '__main__':
     p_levels = np.linspace(1000e2, 50e2, 20)
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, p_levels=p_levels,
-                          filter_terrain=True, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, p_levels=p_levels, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()

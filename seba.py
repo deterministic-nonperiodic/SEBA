@@ -50,7 +50,7 @@ class EnergyBudget:
             del self.__dict__[key]
 
     def __init__(self, dataset, variables=None, ps=None, ghsl=None, p_levels=None,
-                 truncation=None, rsphere=None, filter_terrain=False, jobs=None):
+                 truncation=None, rsphere=None, jobs=None):
         """
         Initializing EnergyBudget instance.
 
@@ -158,6 +158,8 @@ class EnergyBudget:
         self.nlevels = nlevels
         self.samples = np.prod(u.shape) // (np.prod(self.grid_shape) * self.nlevels)
 
+        self.data_shape = self.grid_shape + (self.samples, self.nlevels)
+
         # Infer direction of the vertical axis and flip accordingly
         self.direction = np.sign(p[0] - p[-1])
         self.p = np.asarray(sorted(p, reverse=True))
@@ -261,26 +263,24 @@ class EnergyBudget:
 
         # -----------------------------------------------------------------------------
         # Preprocessing data:
-        #  - Exclude interpolated subterranean data from spectral calculations.
+        #  - Exclude extrapolated data below the surface (p > ps).
         #  - Ensure latitude axis is oriented north-to-south.
         #  - Reverse vertical axis from the surface to the model top.
         # -----------------------------------------------------------------------------
-        self.filter_terrain = filter_terrain
-
-        self.beta = terrain_mask(self.p, self.ps, smooth=True, jobs=6)
+        self.beta = terrain_mask(self.p, self.ps, smooth=False)
 
         # Reshape and reorder data dimensions for computations
         # self.data_info stores information to recover the original shape.
-        self.omega, self.data_info = self._transform_data(omega, filtered=True)
+        self.omega, self.data_info = self._transform_data(omega)
         del omega
 
         # create wind array from unfiltered wind components
-        self.wind = np.stack((self._transform_data(u, filtered=False)[0],
-                              self._transform_data(v, filtered=False)[0]))
+        self.wind = np.stack((self._transform_data(u)[0],
+                              self._transform_data(v)[0]))
         del u, v
 
         # compute thermodynamic quantities with unfiltered temperature
-        self.temperature = self._transform_data(t, filtered=False)[0]
+        self.temperature = self._transform_data(t)[0]
         del t
 
         # Compute vorticity and divergence of the wind field
@@ -292,15 +292,11 @@ class EnergyBudget:
 
         # compute the vertical wind shear before filtering to avoid sharp gradients.
         self.wind_shear = self._vertical_gradient(self.wind)
+        # filtering horizontal wind after computing divergence/vorticity
+        self.wind_shear = self.filter_topography(self.wind_shear)
 
         # Perform Helmholtz decomposition
         self.wind_div, self.wind_rot = self.helmholtz()
-
-        # filtering horizontal wind after computing divergence/vorticity
-        self.wind = self.filter_topography(self.wind)
-        self.wind_rot = self.filter_topography(self.wind_rot)
-        self.wind_div = self.filter_topography(self.wind_div)
-        self.wind_shear = self.filter_topography(self.wind_shear)
 
         # Coriolis parameter
         self.fc = coriolis_parameter(self.latitude)
@@ -320,16 +316,13 @@ class EnergyBudget:
         # above the ground (representative mean) and the perturbations.
         self.theta_avg, self.theta_pbn = self._split_mean_perturbation(self.theta)
 
-        #  filter potential temperature
-        self.theta = self.filter_topography(self.theta)
-
         # Compute vertical gradient of potential temperature perturbations
         # (done before filtering to avoid sharp gradients at interfaces)
         self.ddp_theta_pbn = self._vertical_gradient(self.theta_pbn)
 
-        # Apply filter to 'theta_pbn' and 'ddp_theta_pbn'
-        self.theta_pbn = self.filter_topography(self.theta_pbn)
-        self.ddp_theta_pbn = self.filter_topography(self.ddp_theta_pbn)
+        # Apply filter to 'theta_pbn' and 'ddp_theta_pbn'. (Already filtered with mask!)
+        # self.theta_pbn = self.filter_topography(self.theta_pbn)
+        # self.ddp_theta_pbn = self.filter_topography(self.ddp_theta_pbn)
 
         # Parameter ganma to convert from temperature variance to APE
         self.ganma = stability_parameter(self.p, self.theta_avg, vertical_axis=-1)
@@ -1272,12 +1265,9 @@ class EnergyBudget:
 
     def filter_topography(self, scalar):
         # masks scalar values pierced by the topography
-        if not np.ma.is_masked(scalar):
-            return np.expand_dims(self.beta, -2) * scalar
-        else:
-            return scalar
+        return self.beta[..., np.newaxis, :] * scalar
 
-    def _transform_data(self, scalar, filtered=True):
+    def _transform_data(self, scalar):
         # Helper function
 
         # Move dimensions (nlat, nlon) forward and vertical axis last
@@ -1294,9 +1284,21 @@ class EnergyBudget:
             # Reverse data along vertical axis
             data = np.flip(data, axis=-1)
 
+        # Mask data pierced by the topography, if not already masked during the vertical
+        # interpolation. This is required to avoid calculating vertical gradients between
+        # masked and unmasked neighbours grid points in the vertical.
+        if not np.ma.is_masked(data):
+            mask = ~self.beta.astype(bool)
+
+            mask = np.broadcast_to(mask[..., np.newaxis, :], self.data_shape)
+            data = np.ma.masked_array(data, mask=mask)
+
+        data.set_fill_value(0.0)
+
         # Filter out interpolated subterranean data using smoothed Heaviside function
-        if filtered:
-            data = self.filter_topography(data)
+        # convert data to masked array according to not smoothed mask. It only has an
+        # effect on data constructed from vertical interpolation and if beta has smooth edges.
+        data = self.filter_topography(data)
 
         return data, data_info
 
@@ -1309,7 +1311,7 @@ class EnergyBudget:
         norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, 1.0)
 
         # compute weighted average on gaussian grid and divide by norm
-        scalar = self.filter_topography(scalar)
+        # scalar = self.filter_topography(scalar)
 
         return self.global_average(scalar, axis=0) / norm
 
@@ -1322,8 +1324,10 @@ class EnergyBudget:
         scalar_avg = self._representative_mean(scalar)
         # scalar_avg = self.global_average(scalar, axis=0)
 
-        # exclude masked fields
-        scalar_pbn = scalar - scalar_avg
+        # The filtering operation (multiplication by smoothed mask 'beta'),
+        # is not distributive because the full field and mean have different shapes.
+        # scalar_pbn = self.filter_topography(scalar) - self.filter_topography(scalar_avg)
+        scalar_pbn = scalar - self.filter_topography(scalar_avg)
 
         return scalar_avg, scalar_pbn
 

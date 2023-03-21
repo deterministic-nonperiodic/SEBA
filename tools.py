@@ -579,6 +579,10 @@ def terrain_mask(p, ps, smooth=True, jobs=None):
     :return: 'np.array'
         beta contains 0 for levels satisfying p > ps and 1 otherwise
     """
+    if jobs is None:
+        jobs = get_num_cores()
+    else:
+        jobs = int(jobs)
 
     nlevels = p.size
     nlat, nlon = ps.shape
@@ -596,11 +600,13 @@ def terrain_mask(p, ps, smooth=True, jobs=None):
 
         # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
         cutoff_freq = resolution / cutoff_scale
-        window_size = (2.0 / np.min(cutoff_freq)).astype(int)  # window size set to cutoff scale
+        # window size set to cutoff scale in grid points
+        window_size = (2.0 / np.min(cutoff_freq)).astype(int)
 
-        # Apply low-pass Lanczos filter for smoothing:
+        # Smoothing mask with a low-pass Lanczos filter (axis is the non-spatial dimension)
         beta = lowpass_lanczos(beta, window_size, cutoff_freq, axis=-1, jobs=jobs)
 
+    # clipping is necessary to remove overshoots
     return beta.clip(0.0, 1.0)
 
 

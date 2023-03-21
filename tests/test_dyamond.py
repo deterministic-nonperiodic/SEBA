@@ -40,7 +40,7 @@ if __name__ == '__main__':
     sfc_hgt = dset_sfc.topography_c.values
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, filter_terrain=True, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()
