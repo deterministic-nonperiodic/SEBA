@@ -2,7 +2,7 @@ import numpy as np
 from scipy.integrate import cumulative_trapezoid
 
 import constants as cn
-from tools import broadcast_1dto
+from tools import broadcast_1dto, gradient_1d
 
 
 def height_to_pressure_std(height):
@@ -233,17 +233,17 @@ def static_stability(pressure, temperature, vertical_axis=0):
         The profile of static stability.
     """
     theta = potential_temperature(pressure, temperature)
-    dp_theta = np.gradient(np.log(theta), pressure, axis=vertical_axis)
+    ddp_theta = gradient_1d(np.log(theta), pressure, axis=vertical_axis)
 
-    return - cn.Rd * (temperature / pressure) * dp_theta
+    return - cn.Rd * (temperature / pressure) * ddp_theta
 
 
 def stability_parameter(pressure, theta, vertical_axis=0):
     # Static stability parameter ganma to convert from temperature variance to APE
     # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
-    ddlp_theta = np.gradient(theta, np.log(pressure), axis=vertical_axis)
+    ddp_theta = gradient_1d(theta, pressure, axis=vertical_axis)
 
-    return - cn.Rd * exner_function(pressure) / ddlp_theta
+    return - cn.Rd * exner_function(pressure) / (pressure * ddp_theta)
 
 
 def density(pressure, temperature):

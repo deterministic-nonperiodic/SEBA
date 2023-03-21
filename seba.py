@@ -8,14 +8,12 @@ from fortran_libs import numeric_tools
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
-from thermodynamics import density as _density
-from thermodynamics import exner_function as _exner_function
-from thermodynamics import geopotential_to_height, stability_parameter
-from thermodynamics import potential_temperature as _potential_temperature
+from thermodynamics import exner_function
+from thermodynamics import geopotential_to_height, stability_parameter, potential_temperature
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
 from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
-from tools import rotate_vector, broadcast_1dto, interpolate_1d
+from tools import rotate_vector, broadcast_1dto, interpolate_1d, gradient_1d
 from tools import terrain_mask, transform_io, inspect_gridtype
 
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
@@ -261,13 +259,13 @@ class EnergyBudget:
         self.vector_norm = broadcast_1dto(self.kappa_h ** 2, spectrum_shape)
         self.vector_norm[0] = 1.0
 
-        # -----------------------------------------------------------------------------
+        # --------------------------------------------------------------------------------
         # Preprocessing data:
         #  - Exclude extrapolated data below the surface (p > ps).
         #  - Ensure latitude axis is oriented north-to-south.
         #  - Reverse vertical axis from the surface to the model top.
-        # -----------------------------------------------------------------------------
-        self.beta = terrain_mask(self.p, self.ps, smooth=False)
+        # --------------------------------------------------------------------------------
+        self.beta = terrain_mask(self.p, self.ps, smooth=False)  # mask is calculated once
 
         # Reshape and reorder data dimensions for computations
         # self.data_info stores information to recover the original shape.
@@ -291,7 +289,7 @@ class EnergyBudget:
         self.vrt = self._inverse_transform(self.vrt_spc)
 
         # compute the vertical wind shear before filtering to avoid sharp gradients.
-        self.wind_shear = self._vertical_gradient(self.wind)
+        self.wind_shear = self.vertical_gradient(self.wind)
         # filtering horizontal wind after computing divergence/vorticity
         self.wind_shear = self.filter_topography(self.wind_shear)
 
@@ -305,8 +303,8 @@ class EnergyBudget:
         # Thermodynamic diagnostics:
         # -----------------------------------------------------------------------------
         # Compute potential temperature
-        self.exner = _exner_function(self.p)
-        self.theta = self.potential_temperature()
+        self.exner = exner_function(self.p)
+        self.theta = potential_temperature(self.p, self.temperature)
 
         # Compute geopotential (Compute before applying mask!)
         self.phi = self.geopotential()
@@ -318,7 +316,7 @@ class EnergyBudget:
 
         # Compute vertical gradient of potential temperature perturbations
         # (done before filtering to avoid sharp gradients at interfaces)
-        self.ddp_theta_pbn = self._vertical_gradient(self.theta_pbn)
+        self.ddp_theta_pbn = self.vertical_gradient(self.theta_pbn)
 
         # Apply filter to 'theta_pbn' and 'ddp_theta_pbn'. (Already filtered with mask!)
         # self.theta_pbn = self.filter_topography(self.theta_pbn)
@@ -353,14 +351,6 @@ class EnergyBudget:
     # -------------------------------------------------------------------------------
     # Methods for thermodynamic diagnostics
     # -------------------------------------------------------------------------------
-    def potential_temperature(self):
-        # computes potential temperature
-        return _potential_temperature(self.p, self.temperature)
-
-    def density(self):
-        # computes air density from pressure and temperature using the gas law
-        return _density(self.p, self.temperature)
-
     def geopotential(self):
         """
         Computes geopotential at pressure surfaces assuming a hydrostatic atmosphere.
@@ -680,7 +670,7 @@ class EnergyBudget:
 
     def non_conservative_term(self):
         # non-conservative term J(p) in Eq. A11
-        dlog_gamma = self._vertical_gradient(np.log(self.ganma))
+        dlog_gamma = self.vertical_gradient(np.log(self.ganma))
 
         return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
 
@@ -731,8 +721,8 @@ class EnergyBudget:
                                  long_name='coriolis linear transfer')
 
         # Cumulative vertical energy fluxes
-        vf_k = cumulative_flux(self._vertical_gradient(self.ke_vertical_flux()))
-        vf_a = cumulative_flux(self._vertical_gradient(self.ape_vertical_flux()))
+        vf_k = cumulative_flux(self.vertical_gradient(self.ke_vertical_flux()))
+        vf_a = cumulative_flux(self.vertical_gradient(self.ape_vertical_flux()))
 
         # add metadata
         vf_k = self.add_metadata(vf_k, 'vf_dke', gridtype='spectral',
@@ -744,7 +734,7 @@ class EnergyBudget:
                                  long_name='cumulative vertical flux of '
                                            'available potential energy')
 
-        return pi_d, pi_r, lc_k, pi_a, c_ka, c_dr, vf_k, vf_a
+        return xr.merge([pi_d, pi_r, lc_k, pi_a, c_ka, c_dr, vf_k, vf_a], compat="no_conflicts")
 
     def get_ke_tendency(self, tendency, name=None, cumulative=False):
         r"""
@@ -1009,33 +999,16 @@ class EnergyBudget:
 
         return spectrum / self.vector_norm
 
-    def _vertical_gradient(self, scalar, z=None, axis=-1):
+    def vertical_gradient(self, scalar, z=None, vertical_axis=-1):
         """
             Computes vertical gradient of a scalar function d(scalar)/dz
         """
         if z is None:
             z = self.p
-        else:
-            msg = "If given, 'z' must be the same size as 'scalar' along the specified axis."
-            assert z.size == scalar.shape[axis], msg
 
-        dz = np.diff(z)
-        # Using high order schemes for equally sampled data
-        # otherwise use second order central differences
-        if np.max(dz) == np.min(dz):
-            scalar = np.moveaxis(scalar, axis, -1)
-            scalar_shape = scalar.shape
-            scalar = scalar.reshape((-1, scalar_shape[-1]))
-            # compute gradient with a 6th-order compact finite difference scheme (Lele 1992),
-            # and explicit 4th-order scheme at the boundary.
-            scalar_grad = numeric_tools.gradient(scalar, dz[0], order=6)
-            scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), -1, axis)
-        else:
-            scalar_grad = np.gradient(scalar, z, axis=axis)
+        return gradient_1d(scalar, z, axis=vertical_axis)
 
-        return scalar_grad
-
-    def vertical_integration(self, scalar, pressure_range=None, axis=-1):
+    def vertical_integration(self, scalar, pressure_range=None, vertical_axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
 
             .. math:: \Phi = \int_{z_b}^{z_t}\rho(z)\phi(z)~dz
@@ -1053,7 +1026,7 @@ class EnergyBudget:
 
         pressure_range: list,
             pressure interval limits: :math:`(p_t, p_b)`
-        axis: `int`
+        vertical_axis: `int`
             axis of integration
 
         Returns
@@ -1080,37 +1053,37 @@ class EnergyBudget:
         level_mask = np.where(level_mask)[0]
 
         # Get data inside integration interval along the vertical axis
-        scalar = np.take(scalar, level_mask, axis=axis)
+        scalar = np.take(scalar, level_mask, axis=vertical_axis)
 
         # Integrate scalar at pressure levels
-        scalar_int = - simpson(scalar, x=pressure[level_mask], axis=axis, even='avg')
+        scalar_int = - simpson(scalar, x=pressure[level_mask], axis=vertical_axis, even='avg')
 
         return scalar_int / cn.g
 
-    def global_average(self, scalar, weights=None, axis=None):
+    def global_mean(self, scalar, weights=None, lat_axis=None):
         """
         Computes the global weighted average of a scalar function on the sphere.
-        The weights are initialized according to 'grid_type':
-        for grid_type='gaussian' we use gaussian quadrature weights. If grid_type='regular'
-        the weights are defined as the cosine of latitude. If the grid is regular and latitude
-        points are not given it returns global mean with weights = 1/nlat (not recommended).
+        The weights are initialized according to 'grid_type': for grid_type='gaussian' we use
+        gaussian quadrature weights. If grid_type='regular' the weights are defined as the
+        cosine of latitude. If the grid is regular and latitude points are not available
+        it returns global mean with weights = 1 / nlat (not recommended).
 
         :param scalar: nd-array with data to be averaged
-        :param axis: axis of the meridional dimension.
+        :param lat_axis: axis of the meridional dimension.
         :param weights: 1D-array containing latitudinal weights
-        :return: Global average of a scalar function
+        :return: Global mean of a scalar function
         """
-        if axis is None:
-            axis = 0
+        if lat_axis is None:
+            lat_axis = 0
         else:
-            axis = normalize_axis_index(axis, scalar.ndim)
+            lat_axis = normalize_axis_index(lat_axis, scalar.ndim)
 
         # check array dimensions
-        if scalar.shape[axis] != self.nlat:
+        if scalar.shape[lat_axis] != self.nlat:
             raise ValueError("Scalar size along axis must be nlat."
-                             "Expected {} and got {}".format(self.nlat, scalar.shape[axis]))
+                             "Expected {} and got {}".format(self.nlat, scalar.shape[lat_axis]))
 
-        if scalar.shape[axis + 1] != self.nlon:
+        if scalar.shape[lat_axis + 1] != self.nlon:
             raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
 
         if weights is None:
@@ -1119,20 +1092,23 @@ class EnergyBudget:
         else:
             weights = np.asarray(weights)
 
-            if weights.size != scalar.shape[axis]:
+            if weights.size != scalar.shape[lat_axis]:
                 raise ValueError("If given, 'weights' must be a 1D array of length 'nlat'."
                                  "Expected length {} but got {}.".format(self.nlat, weights.size))
 
         # Compute area-weighted average on the sphere (using either gaussian or linear weights)
-        return np.average(scalar, weights=weights, axis=axis).mean(axis=axis)
+        # Added masked-arrays support to exclude data below the surface. "np.average" doesn't work!
+        scalar_average = np.ma.average(scalar, weights=weights, axis=lat_axis)
+
+        # mean along the longitude dimension (same as lat_axis after array reduction)
+        return np.nanmean(scalar_average, axis=lat_axis)
 
     def integrate_order(self, cs_lm, degrees=None):
-        """Returns the cross-spectrum of the spherical harmonic coefficients as a
-        function of spherical harmonic degree.
+        """Accumulates the cross-spectrum as a function of spherical harmonic degree.
 
         Signature
         ---------
-        array = cross_spectrum(clm1, [clm2, normalization, convention, unit])
+        array = integrate_order(cs_lm, [degrees])
 
         Parameters
         ----------
@@ -1187,7 +1163,6 @@ class EnergyBudget:
 
         # Using the normalization in equation (7) of Lambert [1984].
         # spectrum /= 2.0
-
         return spectrum
 
     def cross_spectrum(self, clm1, clm2=None, degrees=None, convention='power', integrate=True):
@@ -1279,7 +1254,7 @@ class EnergyBudget:
             # Reverse latitude dimension
             data = np.flip(data, axis=0)
 
-        # Ensure the surface is at index 0
+        # Ensure that the vertical dimension is ordered from the surface to the model top
         if self.direction < 0:
             # Reverse data along vertical axis
             data = np.flip(data, axis=-1)
@@ -1308,25 +1283,20 @@ class EnergyBudget:
 
         # The globally averaged beta as used aa a scaling factor
         # % of points above the surface at a given level.
-        norm = self.global_average(self.beta, axis=0).clip(cn.epsilon, 1.0)
+        reduced_points = self.global_mean(self.beta, lat_axis=0).clip(cn.epsilon, 1.0)
 
         # compute weighted average on gaussian grid and divide by norm
         # scalar = self.filter_topography(scalar)
-
-        return self.global_average(scalar, axis=0) / norm
+        return self.global_mean(scalar, lat_axis=0) / reduced_points
 
     def _split_mean_perturbation(self, scalar):
-        # Decomposes a scalar function into the representative mean
-        # and perturbations with respect to the mean
+        # Decomposes a scalar function into the representative mean and perturbations.
 
-        # Using A&L13 formula for the "representative mean" results in an
-        # unstable boundary layer in most cases! We use global average instead.
-        scalar_avg = self._representative_mean(scalar)
-        # scalar_avg = self.global_average(scalar, axis=0)
+        # A&L13 formula for the "representative mean"
+        # sometimes results in unstable boundary layers!
+        scalar_avg = self.global_mean(scalar, lat_axis=0)
 
-        # The filtering operation (multiplication by smoothed mask 'beta'),
-        # is not distributive because the full field and mean have different shapes.
-        # scalar_pbn = self.filter_topography(scalar) - self.filter_topography(scalar_avg)
+        # The filtering operation (multiplication by smoothed mask 'beta')
         scalar_pbn = scalar - self.filter_topography(scalar_avg)
 
         return scalar_avg, scalar_pbn

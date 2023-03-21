@@ -8,7 +8,7 @@ import scipy.stats as stats
 from joblib import Parallel, delayed, cpu_count
 from scipy.spatial import cKDTree
 from xarray import apply_ufunc, Dataset
-
+from fortran_libs import numeric_tools
 from spectral_analysis import lambda_from_deg
 
 
@@ -839,6 +839,32 @@ def broadcast_indices(indices, shape, axis):
             dim_ind = np.arange(shape[dim])
             ret.append(dim_ind[tuple(broadcast_slice)])
     return tuple(ret)
+
+
+def gradient_1d(scalar, x, axis=-1):
+    """
+        Computes gradient of a scalar function d(scalar)/dz along axis.
+    """
+    msg = "'x' must be the same size as 'scalar' along the specified axis."
+    assert x.size == scalar.shape[axis], msg
+
+    dx = np.diff(x)
+
+    # Using high order schemes for equally sampled data
+    # otherwise use second order central differences
+    if np.max(dx) == np.min(dx):
+        scalar = np.moveaxis(scalar, axis, -1)
+        scalar_shape = scalar.shape
+
+        scalar = scalar.reshape((-1, scalar_shape[-1]))
+        # compute gradient with a 6th-order compact finite difference scheme (Lele 1992),
+        # and explicit 4th-order scheme at the boundary.
+        scalar_grad = numeric_tools.gradient(scalar, dx[0], order=6)
+        scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), -1, axis)
+    else:
+        scalar_grad = np.gradient(scalar, x, axis=axis)
+
+    return scalar_grad
 
 
 def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):

@@ -154,8 +154,6 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     dataset_fluxes = budget.cumulative_energy_fluxes()
 
-    dataset_fluxes = xr.merge(dataset_fluxes, compat="no_conflicts")
-
     # Perform vertical integration along last axis
     layers = {
         # 'Stratosphere': [50e2, 250e2],
@@ -189,10 +187,10 @@ if __name__ == '__main__':
 
         cak_l = fluxes_layers[level].cka.values
 
-        cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange, axis=-1).mean(-1)
-        cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange, axis=-1).mean(-1)
-        cdr_cl = budget.vertical_integration(cdr_c, pressure_range=prange, axis=-1).mean(-1)
-        cdr_l = budget.vertical_integration(cdr, pressure_range=prange, axis=-1).mean(-1)
+        cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange).mean(-1)
+        cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange).mean(-1)
+        cdr_cl = budget.vertical_integration(cdr_c, pressure_range=prange).mean(-1)
+        cdr_l = budget.vertical_integration(cdr, pressure_range=prange).mean(-1)
 
         # ------------------------------------------------------------------------------------------
         # Visualization of Kinetic energy budget

@@ -1,13 +1,13 @@
 import warnings
 
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 
 from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
-from tools import map_func
+from tools import map_func, cumulative_flux
 from visualization import AnchoredText
 
 params = {'xtick.labelsize': 'medium',
@@ -15,14 +15,14 @@ params = {'xtick.labelsize': 'medium',
           'text.usetex': True, 'font.size': 14,
           'font.family': 'serif', 'font.weight': 'normal'}
 plt.rcParams.update(params)
-plt.rcParams['legend.title_fontsize'] = 12
+plt.rcParams['legend.title_fontsize'] = 15
 
 warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n256'
+    resolution = 'n512'
     data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
@@ -31,13 +31,13 @@ if __name__ == '__main__':
 
     # # load earth topography and surface pressure
     dset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    sfc_pres = dset_sfc.pres_sfc.values
+    sfc_pres = dset_sfc.pres_sfc
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
 
     # load earth topography and surface pressure
     dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
-    sfc_hgt = dset_sfc.topography_c.values
+    sfc_hgt = dset_sfc.topography_c
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, jobs=1)
@@ -136,8 +136,8 @@ if __name__ == '__main__':
 
     plt.show()
 
-    fig.savefig('figures/icon_total_energy_spectra_{}.pdf'.format(resolution), dpi=300)
-    plt.close(fig)
+    # fig.savefig('figures/icon_total_energy_spectra_{}.pdf'.format(resolution), dpi=300)
+    # plt.close(fig)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
@@ -149,9 +149,7 @@ if __name__ == '__main__':
     # - linear spectral transfer due to coriolis
     # - Energy conversion from APE to KE
     # - Vertical energy fluxes
-    dataset_fluxes = budget.cumulative_energy_fluxes()
-
-    dataset_fluxes = xr.merge(dataset_fluxes, compat="no_conflicts").mean(dim='time')
+    dataset_fluxes = budget.cumulative_energy_fluxes().mean(dim='time')
 
     # Perform vertical integration along last axis
     layers = {
@@ -164,7 +162,6 @@ if __name__ == '__main__':
     }
 
     for i, (level, prange) in enumerate(layers.items()):
-
         fluxes_level = map_func(budget.vertical_integration, dataset_fluxes, pressure_range=prange)
 
         pik_l = fluxes_level.pi_dke.values + fluxes_level.pi_rke.values
@@ -227,6 +224,99 @@ if __name__ == '__main__':
                   loc='upper right', fontsize=14)
         plt.show()
 
-        fig.savefig('figures/{}_nonlinear_fluxes_{}_{}-{}.pdf'.format(
-            model, resolution, *prange_str), dpi=300)
+    # ----------------------------------------------------------------------------------------------
+    # Nonlinear transfer of Kinetic energy and Available potential energy
+    # ----------------------------------------------------------------------------------------------
+    kappa = 1e3 * budget.kappa_h
+
+    # conversion of divergent to rotational kinetic energy
+    cdr_w = cumulative_flux(budget.conversion_dke_rke_vertical()).mean(-2)
+    cdr_v = cumulative_flux(budget.conversion_dke_rke_vorticity()).mean(-2)
+    cdr_c = cumulative_flux(budget.conversion_dke_rke_coriolis()).mean(-2)
+
+    cdr = cdr_w + cdr_v + cdr_c
+
+    # ----------------------------------------------------------------------------------------------
+    # Load computed fluxes
+    # ----------------------------------------------------------------------------------------------
+    layers = {
+        'Free troposphere': [250e2, 500e2],
+        'Lower troposphere': [500e2, 950e2]
+    }
+
+    ke_limits = {'Free troposphere': [-0.6, 0.6],
+                 'Lower troposphere': [-0.6, 0.6]}
+
+    # perform vertical integration
+    fluxes_layers = {}
+    for i, (level, prange) in enumerate(layers.items()):
+        fluxes_layers[level] = map_func(budget.vertical_integration,
+                                        dataset_fluxes, pressure_range=prange)
+
+    for i, (level, prange) in enumerate(layers.items()):
+        # Integrate fluxes in layers
+        pid_l = fluxes_layers[level].pi_dke.values
+        pir_l = fluxes_layers[level].pi_rke.values
+        pik_l = pid_l + pir_l
+
+        cak_l = fluxes_layers[level].cka.values
+        lct_l = fluxes_layers[level].lc.values
+
+        cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange)
+        cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange)
+        cdr_cl = budget.vertical_integration(cdr_c, pressure_range=prange)
+        cdr_l = budget.vertical_integration(cdr, pressure_range=prange) - cdr_cl
+
+        # ------------------------------------------------------------------------------------------
+        # Visualization of Kinetic energy budget
+        # ------------------------------------------------------------------------------------------
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
+
+        at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
+        at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
+        ax.add_artist(at)
+
+        ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=2., linestyle='-', color='k')
+
+        # if model == 'ICON':
+        ax.semilogx(kappa, pid_l, label=r'$\Pi_D$', linewidth=1.6, linestyle='-', color='green')
+        ax.semilogx(kappa, pir_l, label=r'$\Pi_R$', linewidth=1.6, linestyle='-', color='red')
+
+        ax.semilogx(kappa, cdr_l, label=r'$C_{D \rightarrow R}$',
+                    linewidth=2., linestyle='-', color='blue')
+
+        ax.semilogx(kappa, cdr_wl, label=r'Vertical motion', linewidth=1.6,
+                    linestyle='-.', color='black')
+
+        ax.semilogx(kappa, cdr_vl, label=r'Relative vorticity', linewidth=1.6,
+                    linestyle='-.', color='red')
+
+        ax.semilogx(kappa, cdr_cl, label=r'Coriolis', linewidth=1.6,
+                    linestyle='-.', color='green')
+
+        ax.set_ylabel(r'Cumulative energy flux ($W~m^{-2}$)', fontsize=16)
+
+        ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=1., linestyle='dashed', alpha=0.5)
+
+        secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
+        secax.xaxis.set_major_formatter(ScalarFormatter())
+
+        ax.xaxis.set_major_formatter(ScalarFormatter())
+
+        ax.set_xticks(1e3 * kappa_from_deg(xticks))
+        ax.set_xticklabels(xticks)
+
+        ax.set_xlabel(r'wavenumber', fontsize=16, labelpad=4)
+        secax.set_xlabel(r'wavelength $(km)$', fontsize=16, labelpad=5)
+
+        ax.set_xlim(*x_limits)
+        ax.set_ylim(*ke_limits[level])
+
+        prange_str = [int(1e-2 * p) for p in sorted(prange)]
+
+        legend = ax.legend(title=r"{} ({:4d} - {:4d} hPa)".format(level, *prange_str),
+                           loc='upper right', fontsize=14, ncol=2)
+        ax.add_artist(legend)
+
+        plt.show()
         plt.close(fig)

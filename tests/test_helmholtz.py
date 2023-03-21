@@ -39,7 +39,7 @@ if __name__ == '__main__':
     sfc_pres = None
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_files, ghsl=sfc_hgt, ps=sfc_pres, filter_terrain=True, jobs=1)
+    budget = EnergyBudget(dataset_files, ghsl=sfc_hgt, ps=sfc_pres, jobs=1)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
@@ -107,21 +107,21 @@ if __name__ == '__main__':
 
     for i, (level, prange) in enumerate(layers.items()):
 
-        pik_l = budget.vertical_integration(pik, pressure_range=prange, axis=1).mean(0)
-        pid_l = budget.vertical_integration(pid, pressure_range=prange, axis=1).mean(0)
-        pir_l = budget.vertical_integration(pir, pressure_range=prange, axis=1).mean(0)
-        cak_l = budget.vertical_integration(cak, pressure_range=prange, axis=1).mean(0)
+        pik_l = budget.vertical_integration(pik, pressure_range=prange, vertical_axis=1).mean(0)
+        pid_l = budget.vertical_integration(pid, pressure_range=prange, vertical_axis=1).mean(0)
+        pir_l = budget.vertical_integration(pir, pressure_range=prange, vertical_axis=1).mean(0)
+        cak_l = budget.vertical_integration(cak, pressure_range=prange, vertical_axis=1).mean(0)
 
         flux_dict = {}
         for flux, value in param_fluxes.items():
             flux_dict[param_name[flux]] = budget.vertical_integration(value,
                                                                       pressure_range=prange,
-                                                                      axis=1).mean(0)
+                                                                      vertical_axis=1).mean(0)
 
-        cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange, axis=-1).mean(-1)
-        cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange, axis=-1).mean(-1)
-        cdr_cl = budget.vertical_integration(cdr_c, pressure_range=prange, axis=-1).mean(-1)
-        cdr_l = budget.vertical_integration(cdr, pressure_range=prange, axis=-1).mean(-1)
+        cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange).mean(-1)
+        cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange).mean(-1)
+        cdr_cl = budget.vertical_integration(cdr_c, pressure_range=prange).mean(-1)
+        cdr_l = budget.vertical_integration(cdr, pressure_range=prange).mean(-1)
 
         # ------------------------------------------------------------------------------------------
         # Visualization of Kinetic energy budget

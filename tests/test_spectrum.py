@@ -83,13 +83,13 @@ if __name__ == '__main__':
             # The global average of the dot product of two vectors must equal the sum
             # of the vectors' cross-spectrum along all spherical harmonic degrees.
             data_sqd = np.sum(data ** 2, axis=0)
-            data_ln = AEB.global_average(data_sqd, weights=weights_ln).mean(0)
-            data_gs = AEB.global_average(data_sqd, weights=weights_gs).mean(0)
+            data_ln = AEB.global_mean(data_sqd, weights=weights_ln).mean(0)
+            data_gs = AEB.global_mean(data_sqd, weights=weights_gs).mean(0)
             data_sp = AEB._vector_spectra(data).sum(0).mean(0)
         else:
             data_sqd = data ** 2
-            data_ln = AEB.global_average(data_sqd, weights=weights_ln).mean(0)
-            data_gs = AEB.global_average(data_sqd, weights=weights_gs).mean(0)
+            data_ln = AEB.global_mean(data_sqd, weights=weights_ln).mean(0)
+            data_gs = AEB.global_mean(data_sqd, weights=weights_gs).mean(0)
             data_sp = AEB._scalar_spectra(data).sum(0).mean(0)
 
         lines = ax.plot(data_ln.T, pressure, '-r', data_gs.T, pressure, '-b',
