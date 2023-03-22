@@ -16,7 +16,8 @@ from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cu
 from tools import rotate_vector, broadcast_1dto, interpolate_1d, gradient_1d
 from tools import terrain_mask, transform_io, inspect_gridtype
 
-_private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype', 'legfunc', 'rsphere']
+# declare global read-only variables
+_private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
 
 
 class EnergyBudget:
@@ -50,25 +51,35 @@ class EnergyBudget:
     def __init__(self, dataset, variables=None, ps=None, ghsl=None, p_levels=None,
                  truncation=None, rsphere=None, jobs=None):
         """
-        Initializing EnergyBudget instance.
+        Initializing EnergyBudget class.
 
         Signature
         ---------
-        energy_budget =  EnergyBudget(dataset, [ps, ghsl, leveltype='pressure',
-                 gridtype, truncation, rsphere, legfunc, axes, sample_axis, filter_terrain, jobs])
+        energy_budget =  EnergyBudget(dataset, [ps, ghsl, truncation, rsphere, jobs])
 
         Parameters
         ----------
-        :param dataset: xarray.Dataset, contains 3D analysis fields
+        :param dataset: xarray.Dataset or path to dataset. Contains 3D analysis fields:
             u: horizontal wind component in the zonal direction
             v: horizontal wind component in the meridional direction
             w: height/pressure vertical velocity depending on leveltype
             t: air temperature
             p: atmospheric pressure
 
+        :param variables: list of strings,
+            Mapping of dataset field names
+
         :param truncation:
             Truncation limit (triangular truncation) for the spherical harmonic computation.
+
         :param rsphere: averaged earth radius (meters)
+
+        :param p_levels: iterable, optional
+            Contains the pressure levels in (Pa) for vertical interpolation.
+
+        :param jobs: integer, optional, default None
+            Number of processors to parallelize operations along non-spatial dimensions.
+            Recommended jobs=1 since spectral transformations already run in parallel.
         """
 
         # making sure array splitting gives more chunks than jobs for parallel computations
@@ -100,7 +111,8 @@ class EnergyBudget:
         p = dataset.get('p').values
         omega = dataset.get('omega')
 
-        # check for vertical velocity
+        # Check for pressure velocity in dataset. If not present, it is estimated from
+        # height based vertical velocity. If neither is found raises ValueError.
         if omega is not None:
             omega = dataset.omega.values
         else:
@@ -109,7 +121,7 @@ class EnergyBudget:
             else:
                 raise ValueError("Vertical velocity not found in dataset!")
 
-        # find coordinates
+        # find dataset coordinates
         self.latitude, self.nlat = _find_latitude(dataset)
         self.longitude, self.nlon = _find_longitude(dataset)
         self.levels, nlevels = _find_levels(dataset)
@@ -1243,7 +1255,7 @@ class EnergyBudget:
         return self.beta[..., np.newaxis, :] * scalar
 
     def _transform_data(self, scalar):
-        # Helper function
+        # Helper function for preparing data for the analysis
 
         # Move dimensions (nlat, nlon) forward and vertical axis last
         # (Useful for cleaner vectorized operations)
@@ -1268,11 +1280,12 @@ class EnergyBudget:
             mask = np.broadcast_to(mask[..., np.newaxis, :], self.data_shape)
             data = np.ma.masked_array(data, mask=mask)
 
+        # masked elements are filled with zeros before the spectral analysis
         data.set_fill_value(0.0)
 
         # Filter out interpolated subterranean data using smoothed Heaviside function
-        # convert data to masked array according to not smoothed mask. It only has an
-        # effect on data constructed from vertical interpolation and if beta has smooth edges.
+        # convert data to masked array according to not smoothed mask. It only affects
+        # the data if the mask 'beta' has a smooth transition at the edges (0 - 1).
         data = self.filter_topography(data)
 
         return data, data_info
@@ -1286,10 +1299,10 @@ class EnergyBudget:
             reduced_points = 1.0
         else:
             # The globally averaged beta as used as a scaling factor to account for zeros in data.
-            # Gives the percentage of points above the surface at a given level.
+            # Gives the percentage of valid points above the surface at every level.
             reduced_points = self.global_mean(self.beta, lat_axis=0).clip(cn.epsilon, 1.0)
 
-        # Compute weighted average on gaussian grid and divide by norm
+        # Compute weighted average on gaussian grid and scale by the number of reduced points
         return self.global_mean(scalar, lat_axis=0) / reduced_points
 
     def _split_mean_perturbation(self, scalar):

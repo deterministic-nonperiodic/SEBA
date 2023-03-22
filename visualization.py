@@ -630,7 +630,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
     ax_titles = [DATA_KEYMAP[name] for name in variables]
 
     if y_limits is None:
-        y_limits = [1e-10, 1e2]
+        y_limits = [1000., 100.]
 
     if cmap is None:
         cmap = BWG
@@ -677,7 +677,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
         ax.contour(kappa, level, gaussian_filter(spectra, 1.2),
                    color='black', linewidths=0.8, levels=[0, ])
 
-        ax.set_ylim(1000., 100.)
+        ax.set_ylim(y_limits)
         ax.set_ylabel(r'Pressure (hPa)')
 
         if m == cols - 1:

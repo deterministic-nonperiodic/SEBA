@@ -35,10 +35,10 @@ if __name__ == '__main__':
     dset_sfc = xr.open_dataset(
         '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/DYAMOND2_topography_{}.nc'.format(resolution))
 
-    sfc_hgt = dset_sfc.topography_c.values
-    sfc_pres = dataset_dyn.ps.values
+    sfc_hgt = dset_sfc.topography_c
+    sfc_pres = dataset_dyn.ps
 
-    p_levels = np.linspace(1000e2, 50e2, 20)
+    p_levels = np.linspace(1000e2, 10e2, 41)
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, p_levels=p_levels, jobs=1)
@@ -258,5 +258,5 @@ if __name__ == '__main__':
     figure_name = '../figures/{}_wave_fluxes_section_{}.pdf'.format(model, resolution)
 
     fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vf_dke'],
-                            resolution='n1024', y_limits=[1000., 100.],
+                            resolution='n1024', y_limits=[1000., 10.],
                             fig_name=figure_name)

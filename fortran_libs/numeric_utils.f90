@@ -69,7 +69,6 @@ end subroutine model_message
 
   ! loop over samples
   do k = 1, nt
-  !  call compactderv(dpds(k, :), var(k, :), ds, ns, nso, nsf, order)
     call compact_derivative(dpds(k, :), var(k, :), ds, ns, order)
   enddo
 
@@ -153,148 +152,24 @@ end subroutine model_message
 !===================================================================================================
 
 !===================================================================================================
-  subroutine compactderv(ads, var, ds, ns, is, ie, order)
-!===================================================================================================
-!
-! module for computing high order centered compact finite differences
-! formulas for aproximating first derivatives amoung a line.
-! the system of equations is solved by thomas reduction algorithm.
-!
-!                       !  ds  !
-!
-! *------*------ ... ---*------*------*------*------*--- ... -----*------*
-! 1     is             i-2    i-1     i     i+1    i+2           ie     ns
-!
-! options: ord = 1-2, 3-4, 5-6
-!
-! uses:
-!
-! du/dx = compactderv( u(x), dx, nx, nxo, nxf, order )
-!
- implicit none
-! inputs :
- integer         , intent(in ) :: order
- integer         , intent(in ) :: ns, is, ie
- double precision, intent(in ) :: ds
- double precision, intent(in ) :: var (ns  )
-
-! local :
- double precision              :: rhs (ns  )
- double precision              :: a, b, c, d, ds4, ds6
- logical                       :: flag
- integer                       :: i
-
-! output :
- double precision, intent(out) :: ads (ns)
-
-  rhs = 0.0
-  ads = 0.0
-  flag = .true.
-
-  ds4 = 4.0 * ds
-  ds6 = 6.0 * ds
-
-  ! selecting coefficients for compact scheme depending on order
-  scheme_order: select case (order)
-
-    case(4) ! fourth order compact scheme o(dx^4)
-
-      a = 1.0; b = 4.0; c = 1.0; d = 6.0
-
-      ! store rhs of the system:
-      call linederv(rhs, var, ds, ns, is, ie, 2)
-      rhs(is:ie) = d * rhs(is:ie)
-
-    case(5, 6)
-      ! 5- modified sixth order compact scheme o(dx^6). lele, (1992).
-
-      ! define coefficients
-      if (order == 5) then
-        a = 2.5; b = 7.0; c = 2.5; d = 11.0
-      else
-        a = 3.0; b = 9.0; c = 3.0; d = 14.0
-      endif
-
-      ! compute ( u(i+1) - u(i-1) ) / 2 ds
-      call linederv(rhs, var, ds, ns, is, ie, 2)
-
-      ! compute ( u(i+2) - u(i-2) ) / 4 ds
-      do i = is+1, ie-1
-          rhs(i) = d * rhs(i) + ( var(i+2) - var(i-2) ) / ds4
-      enddo
-      rhs(is) = (d + 1.0) * rhs(is)
-      rhs(ie) = (d + 1.0) * rhs(ie)
-
-    case(8)
-      ! 5- modified sixth order compact scheme o(dx^6). lele, (1992).
-
-      ! define coefficients
-      a = 3.0; b = 8.0; c = 3.0; d = 12.5
-
-      ! compute a( u(i+1) - u(i-1) ) / 2 ds
-      call linederv(rhs, var, ds, ns, is, ie, 2)
-
-      ! compute b( u(i+2) - u(i-2) ) / 4 ds + c( u(i+3) - u(i-3) ) / 4 ds
-      do i = is+2, ie-2
-          rhs(i) = d * rhs(i) + 1.6 * (var(i+2) - var(i-2))/ds4 - 0.1 * (var(i+3) - var(i-3))/ds6
-      enddo
-
-      rhs(is) = (d + 1.0) * rhs(is)
-      rhs(ie) = (d + 1.0) * rhs(ie)
-
-    case default
-
-      ! no need to solve the system,
-      ! the algorithm is consistent with a=0, b=1, c=0 anyway
-      ! (single diagonal matrix can be explicitly solved)
-      flag = .false.
-
-      ! second order scheme  o(dx^2)
-      a = 0.0; b = 1.0; c = 0.0; d = 1.0
-      call linederv(ads, var, ds, ns, is, ie, 2)
-
-  end select scheme_order
-
-  if (flag) then ! (only for order /= 2)
-
-    ! boundaries are necesary 2nd order (test 4th)
-    ads(is-1) = rhs(is-1)
-    ads(ie+1) = rhs(ie+1)
-
-    ! firt and last rows of the system:
-    rhs(is) = rhs(is) - a * ads(is-1)
-    rhs(ie) = rhs(ie) - c * ads(ie+1)
-
-    ! solving the tridiagonal system with thomas algorithm O(n):
-    call cons_thomas(rhs(is:ie), a, b, c, ns-2)
-
-    ads(is:ie) = rhs(is:ie)
-
-  endif
-
-  return
- end subroutine compactderv
-!===================================================================================================
-
-!===================================================================================================
   subroutine compact_derivative(ads, var, ds, ns, order)
 !===================================================================================================
 !
 ! module for computing high order centered compact finite differences
-! formulas for aproximating first derivatives amoung a line.
-! the system of equations is solved by thomas reduction algorithm.
+! formulas for aproximating first derivatives amoung a line. The tridiagonal
+! system of equations is solved by thomas reduction algorithm O(ns).
 !
 !                       !  ds  !
 !
 ! *------*------ ... ---*------*------*------*------*--- ... -----*------*
 ! 1     is             i-2    i-1     i     i+1    i+2           ie     ns
 !
-! options: order = 2-8
+! options for scheme of orders between 2 and 8
 !
-! uses:
-!
-! du/dx = compactderv( u(x), dx, nx, nxo, nxf, order )
-!
+! Signature:
+! ----------
+! du/dx = compact_derivative(u(x), dx, nx, nxo, nxf, order)
+!---------------------------------------------------------------------------------------------------
  implicit none
 ! inputs :
  integer         , intent(in ) :: order
@@ -303,19 +178,20 @@ end subroutine model_message
  double precision, intent(in ) :: var (ns)
 ! local :
  double precision              :: rhs (ns)
- double precision              :: a, b, c, d, ds4, ds6
- double precision              :: bflux4
+ double precision              :: a, b, c, d
+ double precision              :: ds2, ds3
+ double precision              :: cflux2, cflux4, bflux4
  logical                       :: flag
- integer                       :: i, is, ie, bs, be, ne
-! output :
+ integer                       :: i, n, is, ie, bs, be, ne
+! output derivative:
  double precision, intent(out) :: ads (ns)
 
   rhs = 0.0
   ads = 0.0
   flag = .true.
 
-  ds4 = 4.0 * ds
-  ds6 = 6.0 * ds
+  ds2 = 2.0 * ds
+  ds3 = 3.0 * ds
 
   is = int(order / 2) + 1
   ie = ns + 1 - is
@@ -348,21 +224,25 @@ end subroutine model_message
         a = 3.0; b = 9.0; c = 3.0; d = 14.0
       endif
 
-      ! compute ( u(i+2) - u(i-2) ) / 4 ds
+      ! compute d(u[i+1] - u[i-1])/(2ds) + b(u[i+2] - u[i-2])/(4ds)
+      rhs(is:ie) = d * rhs(is:ie)
+
       do i = is, ie
-          rhs(i) = d * rhs(i) + ( var(i+2) - var(i-2) ) / ds4
+          rhs(i) = rhs(i) + cflux2(var(i-2), var(i+2)) / ds2
       enddo
 
     case(8)
-      ! 5- modified sixth order compact scheme o(dx^6). lele, (1992).
+      ! modified family of sixth-order compact scheme o(dx^6). lele, (1992).
 
       ! define coefficients
       a = 3.0; b = 8.0; c = 3.0; d = 12.5
 
-      ! compute b( u(i+2) - u(i-2) ) / 4 ds + c( u(i+3) - u(i-3) ) / 4 ds
+      ! compute d(u[i+1] - u[i-1])/(2ds) + b(u[i+2] - u[i-2])/(4ds) + c(u[i+3] - u[i-3])/(6ds)
       rhs(is:ie) = d * rhs(is:ie)
+
       do i = is, ie
-          rhs(i) = rhs(i) + 1.6 * (var(i+2) - var(i-2)) / ds4 - 0.1 * (var(i+3) - var(i-3)) / ds6
+          rhs(i) = rhs(i) + 1.6 * cflux2(var(i-2), var(i+2)) / ds2 &
+          &               - 0.1 * cflux2(var(i-3), var(i+3)) / ds3
       enddo
 
     case default
@@ -382,21 +262,30 @@ end subroutine model_message
     !---------------------------------------------------------------------------------
     ! Using fourth order explicit scheme at boundaries
     !---------------------------------------------------------------------------------
-    do i = 1, bs
+
+    ! Centered scheme at inner boundary points (3, bs), and (be, ns-3)
+    do i = 3, bs ! has no effect for order < 4 since bs = 2
+        n = be - 3 + i
+        ads(i) = cflux4(var(i-2), var(i-1), var(i+1), var(i+2)) / ds
+        ads(n) = cflux4(var(n-2), var(n-1), var(n+1), var(n+2)) / ds
+    end do
+
+    ! Forward-centered scheme at outer boundary points (1, 3), and (ns-2, ns)
+    do i = 1, 2
+        n = ns + 1 - i
         ads(i) =   bflux4(var(i), var(i+1), var(i+2), var(i+3), var(i+4)) / ds
+        ads(n) = - bflux4(var(n), var(n-1), var(n-2), var(n-3), var(n-4)) / ds
     end do
 
-    do i = be, ns
-        ads(i) = - bflux4(var(i), var(i-1), var(i-2), var(i-3), var(i-4)) / ds
-    end do
-
-    !---------------------------------------------------------------------------------
-    ! solving the tridiagonal system with constant coefficients. Using thomas O(n):
-    !---------------------------------------------------------------------------------
-    ! first and last rows of the system:
+    !------------------------------------------------------------------------------------
+    ! Solving the tridiagonal system with constant coefficients using thomas solver O(n)
+    !------------------------------------------------------------------------------------
+    ! Substract known values of the derivatives at the first and last row of the system
+    ! (calculated with 4th order scheme)
     rhs(is) = rhs(is) - a * ads(bs)
     rhs(ie) = rhs(ie) - c * ads(be)
 
+    ! Solve tridiagonal system for the interior grid points
     call cons_thomas(rhs(is:ie), a, b, c, ne)
 
     ads(is:ie) = rhs(is:ie)

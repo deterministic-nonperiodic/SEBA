@@ -8,6 +8,7 @@ import scipy.stats as stats
 from joblib import Parallel, delayed, cpu_count
 from scipy.spatial import cKDTree
 from xarray import apply_ufunc, Dataset
+
 from fortran_libs import numeric_tools
 from spectral_analysis import lambda_from_deg
 
@@ -841,28 +842,51 @@ def broadcast_indices(indices, shape, axis):
     return tuple(ret)
 
 
-def gradient_1d(scalar, x, axis=-1):
+def gradient_1d(scalar, x, axis=-1, order=6):
     """
-        Computes gradient of a scalar function d(scalar)/dz along axis.
+    Computes gradient of a scalar function d(scalar)/dx along a given axis.
+
+    Parameters
+    ----------
+    scalar: np.ndarray,
+            An N-dimensional array containing samples of a scalar function.
+    x: array_like
+        Coordinate of the values along dimension 'axis'
+
+    axis: int, optional, default axis=-1
+        Gradient is calculated only along the given axis.
+
+    order: int, default order=6 (higher combined accuracy)
+        Determines the order of the formal truncation error. Available options are 2-8.
+
+    Returns
+    -------
+        gradient : ndarray,
+            Gradient of the 'scalar' along 'axis'.
     """
-    msg = "'x' must be the same size as 'scalar' along the specified axis."
+
+    msg = "Coordinate 'x' must be the same size as 'scalar' along the specified axis."
     assert x.size == scalar.shape[axis], msg
 
+    # determine if the grid is regular
     dx = np.diff(x)
 
-    # Using high order schemes for equally sampled data
-    # otherwise use second order central differences
-    if np.max(dx) == np.min(dx):
+    is_regular = np.allclose(np.max(dx), np.min(dx), atol=1e-12)
+
+    if is_regular:
+        # Using high order schemes for regular grid, otherwise
+        # using second-order accurate central finite differences
         scalar = np.moveaxis(scalar, axis, -1)
         scalar_shape = scalar.shape
 
         scalar = scalar.reshape((-1, scalar_shape[-1]))
         # compute gradient with a 6th-order compact finite difference scheme (Lele 1992),
-        # and explicit 4th-order scheme at the boundary.
-        scalar_grad = numeric_tools.gradient(scalar, dx[0], order=6)
+        # and explicit 4th-order scheme at the boundaries.
+        scalar_grad = numeric_tools.gradient(scalar, dx[0], order=order)
         scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), -1, axis)
     else:
-        scalar_grad = np.gradient(scalar, x, axis=axis)
+        # Using numpy implementation of second-order finite differences for irregular grids
+        scalar_grad = np.gradient(scalar, x, axis=axis, edge_order=2)
 
     return scalar_grad
 
@@ -964,3 +988,7 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
             var_interp = np.swapaxes(np.swapaxes(var_interp, 0, axis)[::-1], 0, axis)
 
         yield var_interp
+
+
+if __name__ == '__main__':
+    pass
