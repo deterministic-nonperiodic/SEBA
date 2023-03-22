@@ -591,7 +591,7 @@ class EnergyBudget:
         # Turbulent kinetic energy flux (Eq.22)
         return - self._vector_spectra(self.wind, self.omega * self.wind) / 2.0
 
-    def ke_vertical_flux(self):
+    def dke_vertical_flux(self):
         # Vertical flux of total kinetic energy (Eq. A9)
         return self.pressure_flux() + self.ke_turbulent_flux()
 
@@ -733,7 +733,7 @@ class EnergyBudget:
                                  long_name='coriolis linear transfer')
 
         # Cumulative vertical energy fluxes
-        vf_k = cumulative_flux(self.vertical_gradient(self.ke_vertical_flux()))
+        vf_k = cumulative_flux(self.vertical_gradient(self.dke_vertical_flux()))
         vf_a = cumulative_flux(self.vertical_gradient(self.ape_vertical_flux()))
 
         # add metadata
