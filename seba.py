@@ -225,12 +225,6 @@ class EnergyBudget:
         else:
             raise ValueError("Incorrect value for 'rsphere'.")
 
-        # Create sphere object for spectral transformations
-        self.sphere = Spharmt(self.nlon, self.nlat,
-                              gridtype=self.gridtype,
-                              rsphere=self.rsphere,
-                              jobs=self.jobs)
-
         # define the triangular truncation
         if truncation is None:
             self.truncation = self.nlat - 1
@@ -239,6 +233,13 @@ class EnergyBudget:
 
             if self.truncation < 0 or self.truncation > self.nlat - 1:
                 raise ValueError('Truncation must be between 0 and {:d}'.format(self.nlat - 1, ))
+
+        # Create sphere object for spectral transformations
+        self.sphere = Spharmt(self.nlon, self.nlat,
+                              gridtype=self.gridtype,
+                              rsphere=self.rsphere,
+                              ntrunc=self.truncation,
+                              jobs=self.jobs)
 
         # reverse latitude array (weights are symmetric around the equator)
         self.reverse_latitude = self.latitude[0] < self.latitude[-1]
@@ -402,7 +403,7 @@ class EnergyBudget:
         """
         Computes the geostrophically balanced wind
         """
-        h_gradient = self.horizontal_gradient(self.height - self.ghsl)
+        h_gradient = self.horizontal_gradient(self.height)
 
         fc = broadcast_1dto(self.fc, h_gradient.shape)
 
@@ -1280,13 +1281,14 @@ class EnergyBudget:
             mask = np.broadcast_to(mask[..., np.newaxis, :], self.data_shape)
             data = np.ma.masked_array(data, mask=mask)
 
+        # else:
+        #     # Filter out interpolated subterranean data using smoothed Heaviside function
+        #     # convert data to masked array according to not smoothed mask. It only affects
+        #     # the data if the mask 'beta' has a smooth transition at the edges (0 - 1).
+        #     data = self.filter_topography(data)
+
         # masked elements are filled with zeros before the spectral analysis
         data.set_fill_value(0.0)
-
-        # Filter out interpolated subterranean data using smoothed Heaviside function
-        # convert data to masked array according to not smoothed mask. It only affects
-        # the data if the mask 'beta' has a smooth transition at the edges (0 - 1).
-        data = self.filter_topography(data)
 
         return data, data_info
 

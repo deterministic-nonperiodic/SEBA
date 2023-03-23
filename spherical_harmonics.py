@@ -74,17 +74,17 @@ class Spharmt(object):
 
         # Initialize 4pi-normalized harmonics with no CS phase shift (consistent with SPHEREPACK)
         # Alternatives are: sht_orthonormal or sht_schmidt.
-        self._shtns = shtns.sht(ntrunc, ntrunc, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
+        self.sht = shtns.sht(ntrunc, ntrunc, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
 
         if self.gridtype == 'gaussian':
-            self._shtns.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
+            self.sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
         else:
-            self._shtns.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
+            self.sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
 
         self.ntrunc = ntrunc
-        self.nlm = self._shtns.nlm
-        self.degree = self._shtns.l
-        self.order = self._shtns.m
+        self.nlm = self.sht.nlm
+        self.degree = self.sht.l
+        self.order = self.sht.m
 
         self.kappa_sq = - self.degree * (self.degree + 1.0).astype(complex) / self.rsphere
 
@@ -117,11 +117,11 @@ class Spharmt(object):
 
     def grdtospec(self, scalar):
         """compute spectral coefficients from gridded data"""
-        return self._map(self._shtns.analys, scalar)
+        return self._map(self.sht.analys, scalar)
 
     def spectogrd(self, scalar_spec):
         """compute gridded data from spectral coefficients"""
-        return self._map(self._shtns.synth, scalar_spec)
+        return self._map(self.sht.synth, scalar_spec)
 
     def laplacian(self, spec):
         """compute Laplacian in spectral space"""
@@ -139,7 +139,7 @@ class Spharmt(object):
 
     def getpsichi(self, u, v):
         """compute streamfunction and velocity potential from horizontal wind"""
-        psi_spec, chi_spec = self._map(self._shtns.analys, u, v)
+        psi_spec, chi_spec = self._map(self.sht.analys, u, v)
 
         psi_grid = self.rsphere * self.spectogrd(psi_spec)
         chi_grid = self.rsphere * self.spectogrd(chi_spec)
@@ -148,7 +148,7 @@ class Spharmt(object):
 
     def getvrtdivspec(self, u, v):
         """compute spectral coeffs of vorticity and divergence from wind vector"""
-        psi_spec, chi_spec = self._map(self._shtns.analys, u, v)
+        psi_spec, chi_spec = self._map(self.sht.analys, u, v)
 
         return self.laplacian(psi_spec), self.laplacian(chi_spec)
 
@@ -158,7 +158,7 @@ class Spharmt(object):
         psi_spec = self.invert_laplacian(vrt_spec)
         chi_spec = self.invert_laplacian(div_spec)
 
-        return self._map(self._shtns.synth, psi_spec, chi_spec)
+        return self._map(self.sht.synth, psi_spec, chi_spec)
 
     def getgrad(self, scalar):
         """Compute gradient vector of scalar function on the sphere"""
@@ -167,7 +167,7 @@ class Spharmt(object):
         scalar_spec = self.grdtospec(scalar)
 
         # compute horizontal gradient of a scalar from spectral coefficients
-        v, u = self._map(self._shtns.synth_grad, scalar_spec)
+        v, u = self._map(self.sht.synth_grad, scalar_spec)
 
         return u / self.rsphere, - v / self.rsphere
 
@@ -180,6 +180,6 @@ class Spharmt(object):
         scalar_spec = self.grdtospec(scalar)
 
         # compute horizontal gradient of a scalar from spectral coefficients
-        u, v = self._map(self._shtns.synth, np.zeros_like(scalar_spec), scalar_spec)
+        u, v = self._map(self.sht.synth, np.zeros_like(scalar_spec), scalar_spec)
 
         return u / self.rsphere, v / self.rsphere

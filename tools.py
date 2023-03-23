@@ -241,8 +241,6 @@ def recover_spectra(data, info_dict):
     Recover the shape and dimension order of an array output
     after calling 'prepare_data'.
     """
-    data = data.reshape(info_dict['interm_shape'][:1] + info_dict['interm_shape'][2:])
-
     spectra_order = info_dict['origin_order'].replace('x', '')
     spatial_dims = [spectra_order.find(dim) for dim in 'yz']
 

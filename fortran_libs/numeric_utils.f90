@@ -659,7 +659,7 @@ end subroutine lagrange_intp
 
  integer                       :: i, j, ks, ke, nn
  double precision              :: safe_temp
-
+ logical                       :: mask (np)
  double precision, intent(out) :: sfct (nt, ns)
 
   sfct = 0.0
@@ -667,19 +667,16 @@ end subroutine lagrange_intp
 
   do i = 1, nt
     do j = 1, ns
-      ! find the closest level to that pierced by the surface (p <= sfcp)
-      ke = minloc(abs(pres - sfcp(j)), dim=1)
 
-      ! Estimate rhs at the surface by linear interpolation
-      ks = max(ke - 1, 1)
-      ! check that the point below the surface is valid.
-      ! If not, then linear extrapolation from levels above is used.
-      do while (pres(ke) > sfcp(j) .or. temp(i, j, ks) < safe_temp .and. ke < np)
-         ks = ke
-         ke = ks + 1
-      end do
-      nn = ke + 1 - ks ! number of nodes between 2-5. If nn=1, the interpolator
-                       ! returns the same value. Working on log-pressure coordinate.
+      ! find the index ks closest to the first level pierced by the surface [pres(ke) <= sfcp(j)]
+      ! such that temperature is in a valid range [temp(i, j, ks) > safe_temp].
+      mask = pack(temp(i, j, :) > safe_temp, .not.isnan(temp(i, j, :)))
+
+      ks = minloc(abs(pres - sfcp(j)), mask=mask, dim=1)
+      ke = min(ks + 1, np)
+
+      nn = ke + 1 - ks
+
       call lagrange_intp(sfct(i, j), temp(i, j, ks:ke), log(sfcp(j)), log(pres(ks:ke)), nn)
 
     end do
@@ -738,13 +735,11 @@ end subroutine lagrange_intp
  do i = 1, sp ! loop over samples
    do j = 1, ns ! loop over spatial dimension
 
-     ! find the first level pierced by the surface (p <= sfcp)
-     kn = minloc(abs(pres - sfcp(j)), dim=1)
+     ! find the first level above the surface (p <= sfcp)
+     kn = minloc(abs(pres - sfcp(j)), mask=pres <= sfcp(j), dim=1)
 
-     if (pres(kn) >= sfcp(j)) then
-         kn = min(kn + 1, np)
-     end if
-     nc = np + 1 - kn ! number of levels above the surface
+     ! number of levels above the surface
+     nc = np + 1 - kn
 
      ! Using second order accurate mid-point method in log-pressure for the
      ! first integration step. Average temperature in the first two levels:
