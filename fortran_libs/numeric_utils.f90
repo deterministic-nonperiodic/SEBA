@@ -658,23 +658,29 @@ end subroutine lagrange_intp
  double precision, intent(in ) :: temp (nt, ns, np)
 
  integer                       :: i, j, ks, ke, nn
+ double precision              :: safe_temp
 
  double precision, intent(out) :: sfct (nt, ns)
 
   sfct = 0.0
+  safe_temp = 120.0 ! safe surface temperature (K)
 
   do i = 1, nt
     do j = 1, ns
-      ! find the first level pierced by the surface (p <= sfcp)
+      ! find the closest level to that pierced by the surface (p <= sfcp)
       ke = minloc(abs(pres - sfcp(j)), dim=1)
 
-      if (pres(ke) >= sfcp(j)) then
-          ke = ke + 1
-      end if
+      ! Estimate rhs at the surface by linear interpolation
       ks = max(ke - 1, 1)
-      nn = ke + 1 - ks ! number of nodes between 2-5
-
-      call lagrange_intp(sfct(i, j), temp(i, j, ks:ke), sfcp(j), pres(ks:ke), nn)
+      ! check that the point below the surface is valid.
+      ! If not, then linear extrapolation from levels above is used.
+      do while (pres(ke) > sfcp(j) .or. temp(i, j, ks) < safe_temp .and. ke < np)
+         ks = ke
+         ke = ks + 1
+      end do
+      nn = ke + 1 - ks ! number of nodes between 2-5. If nn=1, the interpolator
+                       ! returns the same value. Working on log-pressure coordinate.
+      call lagrange_intp(sfct(i, j), temp(i, j, ks:ke), log(sfcp(j)), log(pres(ks:ke)), nn)
 
     end do
   end do
@@ -697,26 +703,38 @@ end subroutine lagrange_intp
  ! surface temperatue is optional. If not given,
  ! it is approximated by linear interpolation.
  double precision, optional, intent(in) :: sfct (sp, ns)
+ double precision,           intent(in) :: temp (sp, ns, np)
 
- double precision, intent(in ) :: temp (sp, ns, np)
- double precision              :: rhs  (np)
- double precision              :: phi_bc, mid_rhs
+ double precision              :: sfc_temp (sp, ns)
+ double precision              :: lnp  (np)
+ double precision              :: lnps (ns)
 
- double precision              :: Rd, g, sfc_rhs
- integer                       :: i, j, ks, kn, nc, nn
- logical                       :: ts_flag
+ double precision              :: Rd, g
+ double precision              :: phi_bc, tbar
+
+ integer                       :: i, j, nc, kn
 
  double precision, intent(out) :: phi (sp, ns, np)
 
  Rd = 287.058 ! gas constant for dry air (J / kg / K)
  g = 9.806650 ! acceleration of gravity  (m / s**2)
 
- ! initialize geopotential
+ ! initializing geopotential array
  phi = 0.0
 
- ! Check if surface temperature is passed as argument (default .false.)
- ts_flag = present(sfct)
+ ! local arrays for working on log-pressure coordinates
+ lnp = log(pres)
+ lnps = log(sfcp)
 
+ ! Check if surface temperature is passed as argument (default .false.)
+ if (present(sfct)) then
+     sfc_temp = sfct
+ else
+     ! Approximate surface temperature by linear interpolation
+     call surface_temperature(sfc_temp, sfcp, temp, pres, sp, ns, np)
+ end if
+
+ ! Start vertical integration of the hydrostatic equation: d(phi)/d(log p) = - Rd * T(p)
  do i = 1, sp ! loop over samples
    do j = 1, ns ! loop over spatial dimension
 
@@ -728,31 +746,16 @@ end subroutine lagrange_intp
      end if
      nc = np + 1 - kn ! number of levels above the surface
 
-     ! Store profiles of: d(phi)/d(p) = - Rd * T(p) / p
-     rhs = - Rd * temp(i, j, :) / pres
+     ! Using second order accurate mid-point method in log-pressure for the
+     ! first integration step. Average temperature in the first two levels:
+     tbar = (lnp(kn) * temp(i, j, kn) + lnps(j) * sfc_temp(i, j)) / (lnp(kn) + lnps(j))
 
-     ! Calculate geopotential at first level above the surface
-     ! If surface temperature is given, the rhs at the surface is computed explicitly
-     if (ts_flag) then
-         sfc_rhs = - Rd * sfct(i, j) / sfcp(j)
-     else
-         ! Estimate rhs at the surface by linear interpolation
-         ks = max(kn - 1, 1)
-         nn = kn + 1 - ks ! number of nodes between 2-5
+     ! Lower boundary condition for the geopotential (first level above the surface)
+     phi_bc = g * sfch(j) - Rd * (lnp(kn) - lnps(j)) * tbar
 
-         call lagrange_intp(sfc_rhs, temp(i, j, ks:kn), sfcp(j), pres(ks:kn), nn)
-         sfc_rhs = - Rd * sfc_rhs / sfcp(j)
-     end if
-
-     ! Using second order accurate mid-point method at first integration step
-     mid_rhs = 0.5 * (rhs(kn) + sfc_rhs)
-
-     ! lower boundary condition for geopotential (first level above the surface)
-     phi_bc = g * sfch(j) + (pres(kn) - sfcp(j)) * mid_rhs
-
-     ! Vertical integration for all level above the surface (k > kn)
-     ! using 4th order adams moulton linear multistep method.
-     call adaptative_adams_moulton(phi(i, j, kn:np), phi_bc, rhs(kn:np), pres(kn:np), nc)
+     ! Vertical integration for levels above the surface: d(phi)/d(log p) = - Rd * T(p)
+     ! Integrating in log-pressure space using 4th-order Adams-Moulton linear multistep method.
+     call adaptative_adams_moulton(phi(i, j, kn:np), phi_bc, -Rd*temp(i, j, kn:np), lnp(kn:np), nc)
 
    end do
  end do
@@ -760,47 +763,3 @@ end subroutine lagrange_intp
  return
 end subroutine geopotential
 !===================================================================================================
-
-!===================================================================================================
-    subroutine DHYDRO(ZH, P, TKV, ZSFC, NLVL)
-
-        implicit none
-
-    ! NCL: zh = hydro (p,tkv,zsfc)
-
-    ! use the hydrostatic eqn to get geopotential height
-    ! .   it is assumed that p(1) and tkv(1) contain the
-    ! .   surface quantities corresponding to zsfc.
-
-    ! .   missing data not allowed
-    ! input
-
-    ! no. levels; error code
-      INTEGER NLVL
-      ! pres (Pa)
-      ! temp (K) at each "p"
-      ! sfc geopotential height (gpm)
-      DOUBLE PRECISION p(NLVL), TKV(NLVL), ZSFC
-
-      ! calculated geopotential (gpm)
-      DOUBLE PRECISION zh(NLVL)
-      ! local
-      INTEGER nl
-      DOUBLE PRECISION g, Rd, RDAG, TVBAR
-
-      g = 9.80665D0 ! gravity at 45 deg lat used by the WMO
-      Rd = 287.04D0 ! gas const dry air (j/{kg-k})
-      RDAG = Rd / g
-
-      ! calculate geopotential height if initial z available [hydrostatic eq]
-
-      zh(1) = ZSFC
-      DO nl = 2, NLVL
-      ! same as [ln(p(nl)+ln(p(nl-1)]
-          TVBAR = (TKV(nl)*LOG(P(nl)) + TKV(nl-1)*LOG(P(nl-1))) / LOG(P(nl)*P(nl-1))
-
-          zh(nl) = zh(nl-1) + RDAG*TVBAR*LOG(P(nl-1) / P(nl))
-      END DO
-
-      RETURN
-    end subroutine

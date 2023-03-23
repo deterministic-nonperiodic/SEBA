@@ -382,18 +382,18 @@ class EnergyBudget:
         temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
         temperature = np.ma.filled(temperature, fill_value=0.0)
 
-        sfc_pressure = self.ps.flatten()
-        sfc_height = self.ghsl.flatten()
+        sfcp = self.ps.flatten()
+        sfch = self.ghsl.flatten()
 
         if hasattr(self, 'ts'):
-            ts = np.moveaxis(self.ts.reshape((-1, self.ts.shape[-1])), 1, 0)
+            sfct = np.moveaxis(self.ts.reshape((-1, self.ts.shape[-1])), 1, 0)
         else:
             # compute surface temperature
-            ts = numeric_tools.surface_temperature(sfc_pressure, temperature, pressure)
+            sfct = numeric_tools.surface_temperature(sfcp, temperature, pressure)
 
         # Compute geopotential from temperature
         # signature 'geopotential(surface_geopotential, temperature, pressure)'
-        phi = numeric_tools.geopotential(pressure, temperature, sfc_height, sfc_pressure, sfct=ts)
+        phi = numeric_tools.geopotential(pressure, temperature, sfch, sfcp, sfct=sfct)
 
         # back to the original shape (same as temperature)
         return np.moveaxis(phi, 0, 1).reshape(data_shape)
