@@ -4,18 +4,13 @@ import warnings
 import numpy as np
 import xarray as xr
 from tqdm import tqdm
+from datetime import date
 
 from seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
 DATA_PATH = "data/"  # '/mnt/levante/energy_budget/test_data/'
-
-
-def reduce_to_1d(func, data, dim="plev", **kwargs):
-    res = xr.apply_ufunc(func, data, input_core_dims=[[dim]],
-                         kwargs=kwargs, dask='allowed', vectorize=True)
-    return res.mean(dim='time')
 
 
 def _process_model(model, resolution, date_time):
@@ -25,8 +20,8 @@ def _process_model(model, resolution, date_time):
     suffix = "_".join([resolution, date_time_op])
 
     file_names = DATA_PATH + '{}_atm_3d_inst_{}_gps_{}.nc'
+    dataset_dyn = file_names.format(model, resolution, date_time)
 
-    dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
     dataset_tnd = xr.open_mfdataset(DATA_PATH + '{}_atm_3d_tend_{}_gps_{}.nc'.format(model,
                                                                                      resolution,
                                                                                      date_time))
@@ -43,32 +38,36 @@ def _process_model(model, resolution, date_time):
     sfc_pres = dset_sfc.get('pres_sfc')
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, filter_terrain=False, jobs=1)
-
-    # Compute diagnostics
-    ek = budget.horizontal_kinetic_energy()
-    ea = budget.available_potential_energy()
-    ew = budget.vertical_kinetic_energy()
+    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, jobs=1)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    # - Nonlinear energy fluxes
-    # - linear spectral transfer due to coriolis
-    # - Energy conversion from APE to KE
-    # - Vertical energy fluxes
+    # - Nonlinear energy transfers for DKE and RKE
+    # - Energy conversion terms APE --> DKE and DKE --> RKE
+    # - Vertical pressure and turbulent fluxes
     fluxes = budget.cumulative_energy_fluxes()
+
+    # Compute spectral energy diagnostics
+    fluxes['hke'] = budget.horizontal_kinetic_energy()
+    fluxes['ape'] = budget.available_potential_energy()
+    fluxes['vke'] = budget.vertical_kinetic_energy()
 
     # ----------------------------------------------------------------------------------------------
     # Combine results into a dataset and export to netcdf
     # ----------------------------------------------------------------------------------------------
-    dataset = xr.merge([ek, ea, ew] + list(fluxes), compat="no_conflicts")
-    dataset.attrs.clear()  # clear global attributes
-    dataset.attrs.update(dataset_dyn.attrs)
-    dataset_dyn.close()
+    fluxes.attrs.clear()  # clear global attributes
 
-    dataset.to_netcdf("data/energy_budget/{}_energy_fluxes_{}.nc".format(model, suffix))
-    dataset.close()
+    attrs = {'Conventions': 'CF-1.6',
+             'source': 'git@github.com:coffeintocode/SEBA.git',
+             'institution': 'Max Planck Institute for Meteorology',
+             'title': '{}: Spectral Energy Budget of the Atmosphere.'.format(model.upper()),
+             'history': date.today().strftime('Created on %c'),
+             'references': ''}
+    fluxes.attrs.update(attrs)
+
+    fluxes.to_netcdf("data/energy_budget/{}_energy_fluxes_{}.nc".format(model, suffix))
+    fluxes.close()
 
     # ----------------------------------------------------------------------------------------------
     # Compute APE tendency from parameterized processes
@@ -110,13 +109,19 @@ def _process_model(model, resolution, date_time):
 
             ke_tendencies.append(ke_tendency)
 
+    dataset_tnd.close()
     # ----------------------------------------------------------------------------------------------
     # Combine results into a dataset and export to netcdf
     # ----------------------------------------------------------------------------------------------
     dataset = xr.merge(ape_tendencies + ke_tendencies, compat="no_conflicts")
     dataset.attrs.clear()  # clear global attributes
-    dataset.attrs.update(dataset_tnd.attrs)
-    dataset_tnd.close()
+    attrs = {'Conventions': 'CF-1.6',
+             'source': 'git@github.com:coffeintocode/SEBA.git',
+             'institution': 'Max Planck Institute for Meteorology',
+             'title': '{}: Parameterized Spectral Energy Fluxes.'.format(model.upper()),
+             'history': date.today().strftime('Created on %c'),
+             'references': ''}
+    dataset.attrs.update(attrs)
 
     dataset.to_netcdf(
         DATA_PATH + "/energy_budget/{}_physics_tendencies_{}.nc".format(model, suffix))
