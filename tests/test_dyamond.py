@@ -23,7 +23,7 @@ if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
     resolution = 'n512'
-    data_path = '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/'
+    data_path = '//data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
     date_time = '20[012]'

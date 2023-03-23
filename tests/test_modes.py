@@ -33,7 +33,7 @@ if __name__ == '__main__':
 
     # load earth topography and surface pressure
     dset_sfc = xr.open_dataset(
-        '/home/yanm/PycharmProjects/AMSJAS_SEBA/data/DYAMOND2_topography_{}.nc'.format(resolution))
+        '/home/yanm/PycharmProjects/SEBA/data/DYAMOND2_topography_{}.nc'.format(resolution))
 
     sfc_hgt = dset_sfc.topography_c
     sfc_pres = dataset_dyn.ps

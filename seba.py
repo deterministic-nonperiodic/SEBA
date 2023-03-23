@@ -1280,7 +1280,6 @@ class EnergyBudget:
 
             mask = np.broadcast_to(mask[..., np.newaxis, :], self.data_shape)
             data = np.ma.masked_array(data, mask=mask)
-
         # else:
         #     # Filter out interpolated subterranean data using smoothed Heaviside function
         #     # convert data to masked array according to not smoothed mask. It only affects
