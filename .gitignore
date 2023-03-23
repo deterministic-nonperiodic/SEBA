@@ -13,5 +13,6 @@ __pycache__/
 *$py.class
 # plots
 figures/
+data/
 *.F90
 *.so
