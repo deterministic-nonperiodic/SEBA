@@ -22,14 +22,15 @@ _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
 
 class EnergyBudget:
     """
+        Description:
+        ------------
         A collection of tools to compute the Spectral Energy Budget of a dry hydrostatic
         Atmosphere (SEBA). This package is developed for application to high-resolution
-        simulations of General Circulation Models (GCMs). SEBA implements the formalism
-        developed by Augier and Lindborg (2013) and includes the Helmholtz decomposition
-        into the rotational and divergent kinetic energy contributions to the nonlinear
-        kinetic energy fluxes introduced by Li et al. (2023).
-
-        The Spherical Harmonic Transforms are carried out with the high-performance SHTns library.
+        simulations of General Circulation Models (GCMs). SEBA is implemented based on the
+        formalism developed by Augier and Lindborg (2013) and includes the Helmholtz decomposition
+        into the rotational and divergent kinetic energy contributions to the nonlinear kinetic
+        energy fluxes introduced by Li et al. (2023). The Spherical Harmonic Transforms are
+        carried out with the high-performance SHTns library.
 
         References:
         -----------
@@ -75,18 +76,22 @@ class EnergyBudget:
 
         Parameters
         ----------
-        :param dataset: xarray.Dataset or path to dataset. Contains 3D analysis fields:
-            u: horizontal wind component in the zonal direction
-            v: horizontal wind component in the meridional direction
-            w: height/pressure vertical velocity depending on leveltype
+        :param dataset: xarray.Dataset or path to dataset. Contains 3D/4D analysis fields:
+            u: Horizontal wind component in the zonal direction
+            v: Horizontal wind component in the meridional direction
+            w: Height/pressure vertical velocity depending on leveltype (inferred from dataset)
             t: air temperature
-            p: atmospheric pressure
+            p: Atmospheric pressure. A 1D array for isobaric levels or a 3-4D array for arbitrary
+               vertical coordinate. Data is interpolated to pressure levels before the analysis.
 
-        :param variables: list of strings,
-            Mapping of dataset field names
+        :param variables: list of strings, optional,
+            Mapping of dataset field names if known ensuring all required variables are found.
+            If not given, variables are looked up based on standard conventions of names,
+            units and typical value ranges.
 
-        :param truncation:
-            Truncation limit (triangular truncation) for the spherical harmonic computation.
+        :param truncation: int, optional, default None
+            Triangular truncation for the spherical harmonic transforms. If truncation is not
+            specified then is set to 'nlat-1', where 'nlat' is the number of latitude points.
 
         :param rsphere: averaged earth radius (meters)
 
@@ -94,17 +99,17 @@ class EnergyBudget:
             Contains the pressure levels in (Pa) for vertical interpolation.
 
         :param jobs: integer, optional, default None
-            Number of processors to parallelize operations along non-spatial dimensions.
-            Recommended jobs=1 since spectral transformations already run in parallel.
+            Number of processors to operate along non-spatial dimensions in parallel.
+            Recommended jobs=1 since spectral transforms are already parallelized.
         """
 
-        # making sure array splitting gives more chunks than jobs for parallel computations
-        # if not given, the chunk size is set to the cpu count.
+        # check number of workers
         if jobs is None:
             self.jobs = get_num_cores()
         else:
             self.jobs = int(jobs)
 
+        # check input dataset
         if isinstance(dataset, str):
             dataset = xr.open_mfdataset(dataset, combine='by_coords', parallel=True)
         elif isinstance(dataset, xr.Dataset):
@@ -118,9 +123,14 @@ class EnergyBudget:
 
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         self.coords = {dataset.coords[d].axis.lower(): dataset.coords[d] for d in dataset.dims}
-        self.info_coords = ''.join(self.coords)
+        self.info_coords = ''.join(self.coords)  # string used for data reshaping and handling.
 
-        # Get 3D dynamic fields... entire data is load on memory at this step
+        # find dataset coordinates
+        self.latitude, self.nlat = _find_latitude(dataset)
+        self.longitude, self.nlon = _find_longitude(dataset)
+        self.leveltype, nlevels = _find_levels(dataset)
+
+        # Get ND dynamic fields... entire data is load on memory at this step
         u = dataset.get('u').values
         v = dataset.get('v').values
         t = dataset.get('t').values
@@ -137,30 +147,30 @@ class EnergyBudget:
             else:
                 raise ValueError("Vertical velocity not found in dataset!")
 
-        # find dataset coordinates
-        self.latitude, self.nlat = _find_latitude(dataset)
-        self.longitude, self.nlon = _find_longitude(dataset)
-        self.levels, nlevels = _find_levels(dataset)
-
         dataset.close()
 
         # Get spatial dimensions
-        if p.size == nlevels:
-            print("Running with pressure coordinates")
+        if self.leveltype == 'pressure':
+            print("Performing analysis on pressure coordinates")
         else:
-            assert p.shape == u.shape, "Pressure must be a 3D field when using height coordinates"
+            if p.shape != u.shape:
+                raise ValueError("Pressure field must match the dimensionality of the other "
+                                 "dynamic fields when using height coordinates."
+                                 "Expecting {} but got {}".format(u.shape, p.shape))
 
             # Perform interpolation to constant pressure levels (set bottom level to 1000 hPa)
             if p_levels is None:
-                p_levels = np.linspace(1000e2, p.min(), nlevels)
+                # creating levels from pressure range and number of levels if no pressure levels
+                # are given.
+                p_levels = np.linspace(1000e2, p.min(), nlevels)  # [Pa]
             else:
                 p_levels = np.array(p_levels)
+                assert p_levels.ndim == 1, "If given, 'p_levels' must be a 1D array."
 
             nlevels = p_levels.size
 
-            print("Interpolating data to {} isobaric levels ...".format(p_levels.size))
-            # values outside interpolation range are set to zero
-            # (applies to levels below the surface p > ps)
+            print("Interpolating data to {} isobaric levels ...".format(nlevels))
+            # values outside interpolation range are masked (levels below the surface p > ps)
             fill_value = np.nan
 
             u, v, omega, t = interpolate_1d(p_levels, p, u, v, omega, t,
@@ -180,18 +190,22 @@ class EnergyBudget:
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.grid_shape = (self.nlat, self.nlon)
 
-        # size of the non-spatial dimensions
+        # Size of the non-spatial dimensions (time, others ...). The analysis if performed over
+        # 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
         self.nlevels = nlevels
-        self.samples = np.prod(u.shape) // (np.prod(self.grid_shape) * self.nlevels)
+        self.samples = np.prod(u.shape) // (self.nlat * self.nlon * self.nlevels)
 
         self.data_shape = self.grid_shape + (self.samples, self.nlevels)
 
-        # Infer direction of the vertical axis and flip accordingly
-        self.direction = np.sign(p[0] - p[-1])
+        # Inferring the direction of the vertical axis and reordering
+        # from the surface to the model top if needed.
+        if not (np.all(p[1:] >= p[:-1]) or np.all(p[1:] <= p[:-1])):
+            raise ValueError("The vertical coordinate is not monotonic.")
+
+        self.reverse_levels = p[0] < p[-1]
         self.p = np.asarray(sorted(p, reverse=True))
 
-        # reorder vertical dimension
-        if self.direction < 0:
+        if self.reverse_levels:
             self.coords['z'] = self.coords['z'].reindex({self.coords['z'].name: self.p})
             self.coords['z'].attrs['positive'] = 'up'
 
@@ -216,14 +230,14 @@ class EnergyBudget:
                                  'but got {}!'.format(self.grid_shape, np.shape(self.ps)))
 
         if ghsl is None:
-            self.ghsl = np.zeros(self.grid_shape)
+            self.hs = np.zeros(self.grid_shape)
         else:
             if isinstance(ghsl, xr.DataArray):
-                self.ghsl = np.squeeze(ghsl.values)
+                self.hs = np.squeeze(ghsl.values)
             else:
-                self.ghsl = ghsl.squeeze()
+                self.hs = ghsl.squeeze()
 
-            if np.shape(self.ghsl) != self.grid_shape:
+            if np.shape(self.hs) != self.grid_shape:
                 raise ValueError(
                     'If given, the surface height must be a 2D array with shape (nlat, nlon)'
                     'Expected shape {}, but got {}!'.format(self.grid_shape, np.shape(ghsl)))
@@ -250,12 +264,10 @@ class EnergyBudget:
             if self.truncation < 0 or self.truncation > self.nlat - 1:
                 raise ValueError('Truncation must be between 0 and {:d}'.format(self.nlat - 1, ))
 
-        # Create sphere object for spectral transformations
+        # Create sphere object for spectral transforms
         self.sphere = Spharmt(self.nlon, self.nlat,
-                              gridtype=self.gridtype,
-                              rsphere=self.rsphere,
-                              ntrunc=self.truncation,
-                              jobs=self.jobs)
+                              gridtype=self.gridtype, rsphere=self.rsphere,
+                              ntrunc=self.truncation, jobs=self.jobs)
 
         # reverse latitude array (weights are symmetric around the equator)
         self.reverse_latitude = self.latitude[0] < self.latitude[-1]
@@ -263,17 +275,17 @@ class EnergyBudget:
         if self.reverse_latitude:
             self.latitude = self.latitude[::-1]
 
-            # reorder latitude dimension from north to south
+            # reorder latitude coordinates from north to south.
             self.coords['y'] = self.coords['y'].reindex({self.coords['y'].name: self.latitude})
 
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
-        self.ncoeffs = self.sphere.nlm
+        self.nlm = self.sphere.nlm
 
         # get spherical harmonic degree and horizontal wavenumber (rad / meter)
         self.degrees = np.arange(self.truncation + 1, dtype=int)
         self.kappa_h = kappa_from_deg(self.degrees)
 
-        # create wavenumber coordinates for spectral quantities
+        # create horizontal wavenumber coordinates for spectral quantities.
         self.sp_coords = [c for ic, c in self.coords.items() if ic not in 'xy']
 
         self.sp_coords.append(xr.Coordinate('kappa', self.kappa_h,
@@ -281,8 +293,8 @@ class EnergyBudget:
                                                    'long_name': 'horizontal wavenumber',
                                                    'axis': 'X', 'units': 'm**-1'}))
 
-        # normalization factor for calculating vector cross-spectrum:
-        # vector_norm = n * (n + 1) / re ** 2
+        # normalization factor for vector analysis:
+        # vector_norm = n * (n + 1) / re ** 2 =  kh ** -2
         spectrum_shape = (self.truncation + 1, self.samples, self.nlevels)
 
         self.vector_norm = broadcast_1dto(self.kappa_h ** 2, spectrum_shape)
@@ -290,7 +302,7 @@ class EnergyBudget:
 
         # --------------------------------------------------------------------------------
         # Preprocessing data:
-        #  - Exclude extrapolated data below the surface (p > ps).
+        #  - Exclude extrapolated data below the surface (p >= ps).
         #  - Ensure latitude axis is oriented north-to-south.
         #  - Reverse vertical axis from the surface to the model top.
         # --------------------------------------------------------------------------------
@@ -400,7 +412,7 @@ class EnergyBudget:
         temperature = np.ma.filled(temperature, fill_value=0.0)
 
         sfcp = self.ps.flatten()
-        sfch = self.ghsl.flatten()
+        sfch = self.hs.flatten()
 
         if hasattr(self, 'ts'):
             sfct = np.moveaxis(self.ts.reshape((-1, self.ts.shape[-1])), 1, 0)
@@ -604,13 +616,13 @@ class EnergyBudget:
         # Pressure flux (Eq.22)
         return - self._scalar_spectra(self.omega, self.height)
 
-    def ke_turbulent_flux(self):
+    def dke_turbulent_flux(self):
         # Turbulent kinetic energy flux (Eq.22)
         return - self._vector_spectra(self.wind, self.omega * self.wind) / 2.0
 
     def dke_vertical_flux(self):
         # Vertical flux of total kinetic energy (Eq. A9)
-        return self.pressure_flux() + self.ke_turbulent_flux()
+        return self.pressure_flux() + self.dke_turbulent_flux()
 
     def ape_vertical_flux(self):
         # Total APE vertical flux (Eq. A10)
@@ -708,7 +720,9 @@ class EnergyBudget:
         Computes each term in spectral energy budget and return as xr.DataArray objects.
         """
 
-        # Energy conversion between KE and APE (contains metadata)
+        # ------------------------------------------------------------------------------------------
+        # Energy conversions APE --> DKE and DKE --> RKE
+        # ------------------------------------------------------------------------------------------
         c_ka = cumulative_flux(self.conversion_ape_dke())
 
         c_dr = cumulative_flux(self.conversion_dke_rke())
@@ -749,11 +763,24 @@ class EnergyBudget:
                                  units='W m**-2', standard_name='linear_transfer',
                                  long_name='coriolis linear transfer')
 
-        # Cumulative vertical energy fluxes
-        vf_k = cumulative_flux(self.vertical_gradient(self.dke_vertical_flux()))
+        # ------------------------------------------------------------------------------------------
+        # Cumulative vertical fluxes of divergent kinetic energy
+        # ------------------------------------------------------------------------------------------
+        vf_p = self.pressure_flux()
+        vf_m = self.dke_turbulent_flux()
+
+        vf_k = cumulative_flux(self.vertical_gradient(vf_p + vf_m))
         vf_a = cumulative_flux(self.vertical_gradient(self.ape_vertical_flux()))
 
         # add metadata
+        vf_p = self.add_metadata(vf_p, 'pf_dke', gridtype='spectral',
+                                 units='W m**-2', standard_name='pressure_dke_flux',
+                                 long_name='vertical pressure flux')
+
+        vf_m = self.add_metadata(vf_m, 'mf_dke', gridtype='spectral',
+                                 units='W m**-2', standard_name='turbulent_dke_flux',
+                                 long_name='vertical turbulent flux of kinetic energy')
+
         vf_k = self.add_metadata(vf_k, 'vf_dke', gridtype='spectral',
                                  units='W m**-2', standard_name='vertical_dke_flux',
                                  long_name='cumulative vertical flux of kinetic energy')
@@ -763,7 +790,8 @@ class EnergyBudget:
                                  long_name='cumulative vertical flux of '
                                            'available potential energy')
 
-        return xr.merge([pi_d, pi_r, lc_k, pi_a, c_ka, c_dr, vf_k, vf_a], compat="no_conflicts")
+        return xr.merge([pi_d, pi_r, lc_k, pi_a, c_ka, c_dr,
+                         vf_p, vf_m, vf_k, vf_a], compat="no_conflicts")
 
     def get_ke_tendency(self, tendency, name=None, cumulative=False):
         r"""
@@ -1252,11 +1280,11 @@ class EnergyBudget:
             new_shape = np.shape(data)[:3]
         elif data_length == self.nlat:
             new_shape = np.shape(data)[:2]
-        elif data_length == self.ncoeffs:
+        elif data_length == self.nlm:
             new_shape = np.shape(data)[:1]
         else:
             raise ValueError("Inconsistent array shape: expecting "
-                             "first dimension of size {} or {}.".format(self.nlat, self.ncoeffs))
+                             "first dimension of size {} or {}.".format(self.nlat, self.nlm))
         return np.reshape(data, new_shape + (-1,), order=order).squeeze()
 
     def _unpack_levels(self, data, order='C'):
@@ -1284,7 +1312,7 @@ class EnergyBudget:
             data = np.flip(data, axis=0)
 
         # Ensure that the vertical dimension is ordered from the surface to the model top
-        if self.direction < 0:
+        if self.reverse_levels:
             # Reverse data along vertical axis
             data = np.flip(data, axis=-1)
 

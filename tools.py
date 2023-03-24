@@ -14,7 +14,7 @@ from spectral_analysis import lambda_from_deg
 
 
 class Timer(object):
-
+    # Simple class to perform profiling and check code performance
     def __init__(self, title=""):
         self.title = title
 
@@ -45,31 +45,35 @@ def _find_coordinates(array, predicate, name):
     return coord, dim
 
 
-def _find_latitude(array):
+def _find_latitude(dataset):
+    """Find a latitude dimension coordinate in an `xarray.Dataset`."""
+    return _find_coordinates(dataset, lambda c: (c.name in ('latitude', 'lat') or
+                                                 c.attrs.get('units') == 'degrees_north' or
+                                                 c.attrs.get('axis') == 'Y'), 'latitude')
+
+
+def _find_longitude(dataset):
     """Find a latitude dimension coordinate in an `xarray.DataArray`."""
-    return _find_coordinates(
-        array,
-        lambda c: (c.name in ('latitude', 'lat') or
-                   c.attrs.get('units') == 'degrees_north' or
-                   c.attrs.get('axis') == 'Y'), 'latitude')
+    return _find_coordinates(dataset, lambda c: (c.name in ('longitude', 'lon') or
+                                                 c.attrs.get('units') == 'degrees_east' or
+                                                 c.attrs.get('axis') == 'X'), 'longitude')
 
 
-def _find_longitude(array):
-    """Find a latitude dimension coordinate in an `xarray.DataArray`."""
-    return _find_coordinates(
-        array,
-        lambda c: (c.name in ('longitude', 'lon') or
-                   c.attrs.get('units') == 'degrees_east' or
-                   c.attrs.get('axis') == 'X'), 'longitude')
+def _find_levels(dataset):
+    """Find a vertical coordinate in an `xarray.DataArray`."""
 
+    levels, _ = _find_coordinates(dataset,
+                                  lambda c: (c.name in ('p', 'plev', 'pressure') or
+                                             c.attrs.get('units') in ('Pa', 'hPa',
+                                                                      'mb', 'millibar') or
+                                             c.attrs.get('axis') == 'Z'), 'pressure')
 
-def _find_levels(array):
-    """Find a latitude dimension coordinate in an `xarray.DataArray`."""
-    return _find_coordinates(
-        array,
-        lambda c: (c.name in ('p', 'plev', 'pressure') or
-                   c.attrs.get('units') in ('Pa', 'hPa', 'millibar') or
-                   c.attrs.get('axis') == 'Z'), 'pressure')
+    p = _find_variable(dataset, 'p', {'long_name': ['pressure', 'air_pressure'],
+                                      'units': ['Pa', 'hPa', 'mb', 'millibar']})
+
+    leveltype = ['pressure', 'height'][levels.ndim != p.ndim]
+
+    return leveltype, levels.size
 
 
 def _find_variable(dataset, name, var_attrs):
