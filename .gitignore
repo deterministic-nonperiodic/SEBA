@@ -16,3 +16,5 @@ figures/
 data/
 *.F90
 *.so
+.idea/
+processing/
