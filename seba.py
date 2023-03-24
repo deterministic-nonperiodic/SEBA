@@ -11,7 +11,7 @@ from spherical_harmonics import Spharmt
 from thermodynamics import exner_function, potential_temperature
 from thermodynamics import geopotential_to_height, stability_parameter
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import _find_latitude, _find_longitude, _find_levels, get_num_cores
+from tools import _find_latitude, _find_longitude, inspect_leveltype, get_num_cores
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
 from tools import rotate_vector, broadcast_1dto, interpolate_1d, gradient_1d
 from tools import terrain_mask, transform_io, inspect_gridtype
@@ -128,7 +128,7 @@ class EnergyBudget:
         # find dataset coordinates
         self.latitude, self.nlat = _find_latitude(dataset)
         self.longitude, self.nlon = _find_longitude(dataset)
-        self.leveltype, nlevels = _find_levels(dataset)
+        self.leveltype, nlevels = inspect_leveltype(dataset)
 
         # Get ND dynamic fields... entire data is load on memory at this step
         u = dataset.get('u').values

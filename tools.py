@@ -59,23 +59,6 @@ def _find_longitude(dataset):
                                                  c.attrs.get('axis') == 'X'), 'longitude')
 
 
-def _find_levels(dataset):
-    """Find a vertical coordinate in an `xarray.DataArray`."""
-
-    levels, _ = _find_coordinates(dataset,
-                                  lambda c: (c.name in ('p', 'plev', 'pressure') or
-                                             c.attrs.get('units') in ('Pa', 'hPa',
-                                                                      'mb', 'millibar') or
-                                             c.attrs.get('axis') == 'Z'), 'pressure')
-
-    p = _find_variable(dataset, 'p', {'long_name': ['pressure', 'air_pressure'],
-                                      'units': ['Pa', 'hPa', 'mb', 'millibar']})
-
-    leveltype = ['pressure', 'height'][levels.ndim != p.ndim]
-
-    return leveltype, levels.size
-
-
 def _find_variable(dataset, name, var_attrs):
     """
     Find a dimension coordinate in an `xarray.DataArray` that satisfies
@@ -102,11 +85,20 @@ def _find_variable(dataset, name, var_attrs):
 
 
 def inspect_leveltype(dataset):
-    levels, nlevels = _find_coordinates(dataset, lambda c: (c.name in ('p', 'plev', 'pressure') or
-                                                            c.attrs.get('units') in (
-                                                                'Pa', 'hPa', 'millibar') or
-                                                            c.attrs.get('axis') == 'Z'), 'pressure')
-    return levels, nlevels
+    """Find a vertical coordinate in an `xarray.DataArray`."""
+
+    levels, _ = _find_coordinates(dataset,
+                                  lambda c: (c.name in ('p', 'plev', 'pressure') or
+                                             c.attrs.get('units') in ('Pa', 'hPa',
+                                                                      'mb', 'millibar') or
+                                             c.attrs.get('axis') == 'Z'), 'pressure')
+
+    p = _find_variable(dataset, 'p', {'long_name': ['pressure', 'air_pressure'],
+                                      'units': ['Pa', 'hPa', 'mb', 'millibar']})
+
+    leveltype = ['pressure', 'height'][levels.ndim != p.ndim]
+
+    return leveltype, levels.size
 
 
 def parse_dataset(dataset, variables=None):
