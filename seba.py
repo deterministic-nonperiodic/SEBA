@@ -11,10 +11,10 @@ from spherical_harmonics import Spharmt
 from thermodynamics import exner_function, potential_temperature
 from thermodynamics import geopotential_to_height, stability_parameter
 from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import _find_latitude, _find_longitude, inspect_leveltype, get_num_cores
+from tools import _find_latitude, _find_longitude, inspect_leveltype, inspect_gridtype
 from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
 from tools import rotate_vector, broadcast_1dto, interpolate_1d, gradient_1d
-from tools import terrain_mask, transform_io, inspect_gridtype
+from tools import terrain_mask, transform_io, get_num_cores
 
 # declare global read-only variables
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
@@ -25,12 +25,16 @@ class EnergyBudget:
         Description:
         ------------
         A collection of tools to compute the Spectral Energy Budget of a dry hydrostatic
-        Atmosphere (SEBA). This package is developed for application to high-resolution
+        Atmosphere (SEBA). This package is developed for application to global numerical
         simulations of General Circulation Models (GCMs). SEBA is implemented based on the
         formalism developed by Augier and Lindborg (2013) and includes the Helmholtz decomposition
-        into the rotational and divergent kinetic energy contributions to the nonlinear kinetic
-        energy fluxes introduced by Li et al. (2023). The Spherical Harmonic Transforms are
-        carried out with the high-performance SHTns library.
+        into the rotational and divergent kinetic energy contributions to the nonlinear energy
+        fluxes introduced by Li et al. (2023). The Spherical Harmonic Transforms are carried out
+        with the high-performance SHTns C library. The analysis supports data sampled on a
+        regular (equally spaced in longitude and latitude) or gaussian (equally spaced in
+        longitude, latitudes located at roots of ordinary Legendre polynomial of degree nlat)
+        horizontal grids. The vertical grid can be arbitrary; if data is not sampled on
+        pressure levels it is interpolated to isobaric levels before the analysis.
 
         References:
         -----------
@@ -149,19 +153,17 @@ class EnergyBudget:
 
         dataset.close()
 
-        # Get spatial dimensions
-        if self.leveltype == 'pressure':
-            print("Performing analysis on pressure coordinates")
-        else:
+        # Perform interpolation to constant pressure levels if needed:
+        if self.leveltype != 'pressure':
+            # check pressure dimensions
             if p.shape != u.shape:
                 raise ValueError("Pressure field must match the dimensionality of the other "
                                  "dynamic fields when using height coordinates."
                                  "Expecting {} but got {}".format(u.shape, p.shape))
 
-            # Perform interpolation to constant pressure levels (set bottom level to 1000 hPa)
             if p_levels is None:
                 # creating levels from pressure range and number of levels if no pressure levels
-                # are given.
+                # are given (set bottom level to 1000 hPa)
                 p_levels = np.linspace(1000e2, p.min(), nlevels)  # [Pa]
             else:
                 p_levels = np.array(p_levels)
@@ -171,10 +173,8 @@ class EnergyBudget:
 
             print("Interpolating data to {} isobaric levels ...".format(nlevels))
             # values outside interpolation range are masked (levels below the surface p > ps)
-            fill_value = np.nan
-
             u, v, omega, t = interpolate_1d(p_levels, p, u, v, omega, t,
-                                            scale='log', fill_value=fill_value,
+                                            scale='log', fill_value=np.nan,
                                             axis=self.info_coords.find('z'))
 
             # replace 3D pressure array with 1D isobaric levels

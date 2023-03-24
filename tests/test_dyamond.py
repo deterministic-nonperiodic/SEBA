@@ -324,7 +324,7 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
-    figure_name = './figures/{}_fluxes_section_{}.pdf'.format(model, resolution)
+    figure_name = '../figures/{}_fluxes_section_{}.pdf'.format(model, resolution)
 
     fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vf_dke'],
                             resolution='n1024', y_limits=[1000., 100.],
