@@ -54,49 +54,6 @@ def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
     return - (cn.Rd / cn.g) * mean_temp
 
 
-def geopotential_height(temperature, sfc_p, sfc_h, pressure, axis=0):
-    """
-    Computes geopotential height from pressure and temperature profiles
-
-    :param temperature: temperature profile
-    :param pressure: pressure profile
-    :param sfc_p: surface pressure
-    :param sfc_h: surface height
-    :param axis: specifies axis of vertical dimension
-    :return: geopotential height
-    """
-    nlevels = pressure.size
-
-    temp = np.moveaxis(temperature, axis, 1)
-    # temp = np.moveaxis(temperature, axis, 0)
-
-    ashape = temperature.shape[:1]
-
-    # Compute height via the hypsometric equation (hydrostatic layer thickness).
-    height = np.zeros_like(temp)
-
-    # Search last level pierced by terrain for each vertical column
-    # works for data ordered from the surface to the model top
-    level_m = nlevels - np.searchsorted(np.sort(pressure), sfc_p)
-
-    for ij in np.ndindex(ashape):
-        # mask data above the surface
-        ind_atm = level_m[ij]
-
-        # approximate surface temperature with first level above the ground
-        ts = temp[ij][ind_atm:ind_atm + 1]
-
-        pres_m = np.append(sfc_p[ij], pressure[ind_atm:])
-        temp_m = np.append(ts, temp[ij][ind_atm:], axis=0)
-
-        # Integrating the hypsometric equation
-        layer_thickness = hydrostatic_thickness(pres_m, temp_m, initial=None, axis=0)
-        height[ij][ind_atm:] = sfc_h[ij] + layer_thickness
-
-    # return geopotential height (m)
-    return np.moveaxis(height, 1, axis)
-
-
 def height_to_geopotential(height):
     r"""Compute geopotential for a given height above sea level.
 

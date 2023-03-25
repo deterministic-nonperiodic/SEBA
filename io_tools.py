@@ -1,4 +1,5 @@
 import numpy as np
+import pint
 from xarray import apply_ufunc, Dataset, DataArray
 
 from thermodynamics import pressure_vertical_velocity
@@ -18,15 +19,15 @@ CF_variable_conventions = {
                           'pressure_velocity', 'pressure velocity'),
         "units": ("Pa s-1", 'Pa s**-1', 'Pa/s')
     },
-    "u": {
+    "u_wind": {
         "standard_name": ('zonal_wind', 'zonal wind', "eastward_wind"),
         "units": ("m s-1", "m s**-1", "m/s")
     },
-    "v": {
+    "v_wind": {
         "standard_name": ('meridional_wind', 'Meridional wind', "northward_wind"),
         "units": ("m s-1", "m s**-1", "m/s")
     },
-    'w': {
+    'w_wind': {
         'standard_name': ('vertical_velocity', 'vertical velocity', "upward_air_velocity"),
         'units': ("m s-1", "m s**-1", "m/s")
     },
@@ -63,6 +64,41 @@ CF_coordinate_conventions = {
         "axis": ('Z', 'vertical')
     }
 }
+
+expected_units = {
+    "u_wind": "m s**-1",
+    "v_wind": "m s**-1",
+    "w_wind": "m s**-1",
+    "temperature": "K",
+    "pressure": "Pa",
+    "omega": "Pa s**-1"
+}
+
+
+def check_and_convert_units(ds):
+    # Define the expected units for each variable
+
+    # Create a pint UnitRegistry object
+    reg = pint.UnitRegistry()
+
+    # Check and convert the units of each variable
+    for varname in ds.variables:
+        var = ds[varname]
+        if varname in expected_units:
+            expected_unit = expected_units[varname]
+            if var.units != expected_unit:
+                try:
+                    # Convert the values to the expected units
+                    var.values = (var.values * reg(var.attrs["units"])).to(expected_unit).magnitude
+
+                    # Update the units attribute of the variable
+                    var.attrs["units"] = expected_unit
+                except pint.errors.DimensionalityError:
+                    raise ValueError(f"Cannot convert {varname} units to {expected_unit}.")
+            else:
+                continue
+        else:
+            continue
 
 
 def map_func(func, data, dim="plev", **kwargs):
@@ -210,7 +246,7 @@ def parse_dataset(dataset, variables=None):
               'y' latitude, and 'x' for longitude are mandatory, while any other character
               may be used for other dimensions. Default is 'tzyx' or (time, levels, lat, lon)
     """
-    default_variables = ['u', 'v', 'omega', 'temperature', 'pressure']
+    default_variables = ['u_wind', 'v_wind', 'omega', 'temperature', 'pressure']
 
     if variables is None:
         variables = {name: name for name in default_variables}
@@ -228,6 +264,9 @@ def parse_dataset(dataset, variables=None):
         variables = merged_variables
     else:
         raise ValueError("Unknown type for 'variables', must be a dictionary")
+
+    # First check units and convert to standard if needed
+    check_and_convert_units(dataset)
 
     # find variables by name or candidates variables based on CF conventions
     arrays = {name_map[0]: _find_variable(dataset, name_map, raise_notfound=True)
@@ -247,15 +286,6 @@ def parse_dataset(dataset, variables=None):
             raise ValueError('Fields must be at least 3D.'
                              'Variable {} has {} dimensions'.format(name, values.ndim))
 
-    # Check for pressure velocity in dataset. If not present, it is estimated from
-    # height based vertical velocity. If neither is found raises ValueError.
-    if arrays.get('omega') is None:
-        p = arrays.get('pressure').values
-        t = arrays.get('temperature').values
-        w = _find_variable(dataset, 'w', raise_notfound=True)
-
-        arrays['omega'] = pressure_vertical_velocity(p, np.array(w), t)
-
     # find surface data arrays
     for name in ['ts', 'ps']:
 
@@ -264,6 +294,15 @@ def parse_dataset(dataset, variables=None):
         # surface data must have one less dimension
         if np.ndim(sfc_var) == len(dataset.dims) - 1:
             arrays[name] = sfc_var
+
+    # Check for pressure velocity in dataset. If not present, it is estimated from
+    # height based vertical velocity. If neither is found raises ValueError.
+    if arrays.get('omega') is None:
+        p = arrays.get('pressure').values
+        t = arrays.get('temperature').values
+        w = _find_variable(dataset, 'w_wind', raise_notfound=True)
+
+        arrays['omega'] = pressure_vertical_velocity(p, np.array(w), t)
 
     # create dataset and fill nans with zeros for spectral computations
     return Dataset(arrays, coords=dataset.coords).fillna(0.0)
@@ -285,8 +324,9 @@ def regrid_levels(dataset, p_levels=None):
         # check pressure dimensions
         if np.shape(pressure) != data_shape:
             raise ValueError("Pressure field must match the dimensionality of the other "
-                             "dynamic fields when using height coordinates."
-                             "Expected shape {}".format(data_shape))
+                             "dynamic fields when using height coordinates. "
+                             "Expected shape {}, but got {}".format(data_shape,
+                                                                    np.shape(pressure)))
 
         if p_levels is None:
             # creating levels from pressure range and number of levels if no pressure levels
@@ -301,7 +341,7 @@ def regrid_levels(dataset, p_levels=None):
         print("Interpolating data to {} isobaric levels ...".format(nlevels))
 
         # values outside interpolation range are masked (levels below the surface p > ps)
-        exclude_vars = ['pressure', 'ps', 'ts']
+        excluded_vars = ['pressure', 'ps', 'ts']
 
         dims = [dim for dim in dataset.dims]
         coords = [dataset.coords[d] for d in dataset.dims]
@@ -309,17 +349,18 @@ def regrid_levels(dataset, p_levels=None):
 
         dims[z_axis] = 'plev'
         coords[z_axis] = DataArray(data=p_levels, name='plev', dims=["plev"],
-                                        coords=dict(plev=("plev", p_levels)),
-                                        attrs=dict(standard_name="pressure",
-                                                   long_name="pressure", positive="up",
-                                                   units="Pa", axis="Z"))
+                                   coords=dict(plev=("plev", p_levels)),
+                                   attrs=dict(standard_name="pressure",
+                                              long_name="pressure", positive="up",
+                                              units="Pa", axis="Z"))
         coords = {coord.name: coord for coord in coords}
 
         result_dataset = {}
         for name, data in dataset.data_vars.items():
-            if name not in exclude_vars:
-                result, = interpolate_1d(p_levels, pressure.values, data.values,
-                                         scale='log', fill_value=np.nan, axis=z_axis)
+            if name not in excluded_vars:
+                result, = interpolate_1d(p_levels, pressure.values,
+                                         data.values, scale='log',
+                                         fill_value=np.nan, axis=z_axis)
 
                 result_dataset[name] = (dims, result, data.attrs)
 

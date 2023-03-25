@@ -64,7 +64,7 @@ if __name__ == '__main__':
         'theta_pbn': ('scalar', r'${\theta^{\prime}}^{2}~(K^{2})$'),
         'wind': ('vector', r'Horizontal kinetic energy  $(m^{2}~s^{-2})$')
     }
-    pressure = 1e-2 * AEB.p
+    pressure = 1e-2 * AEB.pressure
     lats, weights_gs = spharm.gaussian_lats_wts(AEB.nlat)
 
     weights_ln = weights_gs  # np.ones_like(lats) / lats.size

@@ -163,7 +163,7 @@ if __name__ == "__main__":
     hke_gps = 4 * np.pi * budget.horizontal_kinetic_energy().values.squeeze()
 
     # select levels
-    p_index = search_closet(budget.p, p_levels)
+    p_index = search_closet(budget.pressure, p_levels)
     hke_gps = hke_gps[p_index]
 
     # load ICON as control
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     hke_icon = 4 * np.pi * budget.horizontal_kinetic_energy().values.squeeze()
     vke_icon = 4 * np.pi * budget.vertical_kinetic_energy().values.squeeze()
 
-    p_index = search_closet(budget.p, p_levels)
+    p_index = search_closet(budget.pressure, p_levels)
     hke_icon = hke_icon.mean(0)[p_index]
     vke_icon = vke_icon.mean(0)[p_index]
 

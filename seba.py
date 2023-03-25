@@ -92,11 +92,11 @@ class EnergyBudget:
 
         :param variables: dict, optional,
             A dictionary mapping of the field names in the dataset to the internal variable names.
-            The default variable names are: ['u', 'v', 'omega', 'temperature', 'pressure'].
+            The default names are: ['u_wind', 'v_wind', 'omega', 'temperature', 'pressure'].
             Ensures all variables needed for the analysis are found. If not given, variables are
             looked up based on standard CF conventions of variable names, units and typical value
-            ranges. Example: variables = {'u': 'u-wind', 'temperature': 'temp'}. Note that often
-            used names 'u-wind' and 'temp' are not conventional names.
+            ranges. Example: variables = {'u_wind': 'U', 'temperature': 'temp'}. Note that often
+            used names 'U' and 'temp' are not conventional names.
 
         :param truncation: int, optional, default None
             Triangular truncation for the spherical harmonic transforms. If truncation is not
@@ -104,7 +104,7 @@ class EnergyBudget:
             latitude points.
 
         :param rsphere: float, optional,
-            Averaged earth radius (meters), default: rsphere = 6371200 m.
+            Averaged earth radius (meters), default 'rsphere = 6371200'.
 
         :param p_levels: iterable, optional
             Contains the pressure levels in (Pa) for vertical interpolation.
@@ -145,11 +145,11 @@ class EnergyBudget:
         self.longitude, self.nlon = _find_coordinate(dataset, "longitude")
 
         # Get ND dynamic fields... entire data is load on memory at this step
-        u = dataset['u'].to_masked_array()
-        v = dataset['v'].to_masked_array()
-        t = dataset['temperature'].to_masked_array()
-        p = dataset['pressure'].to_masked_array()
         omega = dataset['omega'].to_masked_array()
+        u_wind = dataset['u_wind'].to_masked_array()
+        v_wind = dataset['v_wind'].to_masked_array()
+        pressure = dataset['pressure'].to_masked_array()
+        temperature = dataset['temperature'].to_masked_array()
 
         # Get 2-3D surface fields
         self.ps = dataset.get('ps')
@@ -162,27 +162,27 @@ class EnergyBudget:
 
         # Size of the non-spatial dimensions (time, others ...). The analysis if performed over
         # 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
-        self.nlevels = p.size
-        self.samples = np.prod(u.shape) // (self.nlat * self.nlon * self.nlevels)
+        self.nlevels = pressure.size
+        self.samples = np.prod(u_wind.shape) // (self.nlat * self.nlon * self.nlevels)
 
         self.data_shape = self.grid_shape + (self.samples, self.nlevels)
 
         # Inferring the direction of the vertical axis and reordering
         # from the surface to the model top if needed.
-        if not (np.all(p[1:] >= p[:-1]) or np.all(p[1:] <= p[:-1])):
+        if not (np.all(pressure[1:] >= pressure[:-1]) or np.all(pressure[1:] <= pressure[:-1])):
             raise ValueError("The vertical coordinate is not monotonic.")
 
-        self.reverse_levels = p[0] < p[-1]
-        self.p = np.asarray(sorted(p, reverse=True))
+        self.reverse_levels = pressure[0] < pressure[-1]
+        self.pressure = np.asarray(sorted(pressure, reverse=True))
 
         if self.reverse_levels:
-            self.coords['z'] = reindex_coordinate(self.coords['z'], self.p)
+            self.coords['z'] = reindex_coordinate(self.coords['z'], self.pressure)
             self.coords['z'].attrs['positive'] = 'up'
 
         if self.ps is None:
             if ps is None:
                 # If surface pressure not found set first pressure level as surface pressure
-                self.ps = np.broadcast_to(np.max(p), self.grid_shape)
+                self.ps = np.broadcast_to(np.max(pressure), self.grid_shape)
             else:
                 if isinstance(ps, xr.DataArray):
                     self.ps = np.squeeze(ps.values)
@@ -274,7 +274,7 @@ class EnergyBudget:
         #  - Ensure latitude axis is oriented north-to-south.
         #  - Reverse vertical axis from the surface to the model top.
         # --------------------------------------------------------------------------------
-        self.beta = terrain_mask(self.p, self.ps, smooth=False)  # mask is calculated once
+        self.beta = terrain_mask(self.pressure, self.ps, smooth=False)  # mask is calculated once
 
         # Reshape and reorder data dimensions for computations
         # self.data_info stores information to recover the original shape.
@@ -282,13 +282,13 @@ class EnergyBudget:
         del omega
 
         # create wind array from unfiltered wind components
-        self.wind = np.stack((self._transform_data(u)[0],
-                              self._transform_data(v)[0]))
-        del u, v
+        self.wind = np.stack((self._transform_data(u_wind)[0],
+                              self._transform_data(v_wind)[0]))
+        del u_wind, v_wind
 
         # compute thermodynamic quantities with unfiltered temperature
-        self.temperature = self._transform_data(t)[0]
-        del t
+        self.temperature = self._transform_data(temperature)[0]
+        del temperature
 
         # Compute vorticity and divergence of the wind field
         self.vrt_spc, self.div_spc = self.vorticity_divergence()
@@ -310,8 +310,8 @@ class EnergyBudget:
         # Thermodynamic diagnostics:
         # -----------------------------------------------------------------------------
         # Compute potential temperature
-        self.exner = exner_function(self.p)
-        self.theta = potential_temperature(self.p, self.temperature)
+        self.exner = exner_function(self.pressure)
+        self.theta = potential_temperature(self.pressure, self.temperature)
 
         # Compute geopotential (Compute before applying mask!)
         self.phi = self.geopotential()
@@ -325,12 +325,8 @@ class EnergyBudget:
         # (done before filtering to avoid sharp gradients at interfaces)
         self.ddp_theta_pbn = self.vertical_gradient(self.theta_pbn)
 
-        # Apply filter to 'theta_pbn' and 'ddp_theta_pbn'. (Already filtered with mask!)
-        # self.theta_pbn = self.filter_topography(self.theta_pbn)
-        # self.ddp_theta_pbn = self.filter_topography(self.ddp_theta_pbn)
-
         # Parameter ganma to convert from temperature variance to APE
-        self.ganma = stability_parameter(self.p, self.theta_avg, vertical_axis=-1)
+        self.ganma = stability_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
 
     # -------------------------------------------------------------------------------
     # Methods for computing thermodynamic quantities
@@ -373,22 +369,22 @@ class EnergyBudget:
         data_shape = self.temperature.shape
         proc_shape = (-1,) + data_shape[2:]
 
-        pressure = self.p
         temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
         temperature = np.ma.filled(temperature, fill_value=0.0)
 
         sfcp = self.ps.flatten()
         sfch = self.hs.flatten()
 
+        # Get the surface temperature
         if self.ts is not None:
             sfct = np.moveaxis(self.ts.values.reshape((-1, self.ts.shape[-1])), 1, 0)
         else:
             # compute surface temperature by linear interpolation
-            sfct = numeric_tools.surface_temperature(sfcp, temperature, pressure)
+            sfct = numeric_tools.surface_temperature(sfcp, temperature, self.pressure)
 
-        # Compute geopotential from temperature
+        # Compute geopotential from the temperature field
         # signature 'geopotential(surface_geopotential, temperature, pressure)'
-        phi = numeric_tools.geopotential(pressure, temperature, sfch, sfcp, sfct=sfct)
+        phi = numeric_tools.geopotential(self.pressure, temperature, sfch, sfcp, sfct=sfct)
 
         # back to the original shape (same as temperature)
         return np.moveaxis(phi, 0, 1).reshape(data_shape)
@@ -438,7 +434,7 @@ class EnergyBudget:
         Vertical kinetic energy calculated from pressure vertical velocity
         :return:
         """
-        w = vertical_velocity(self.p, self.omega, self.temperature)
+        w = vertical_velocity(self.pressure, self.omega, self.temperature)
 
         kinetic_energy = self._scalar_spectra(w) / 2.0
 
@@ -604,7 +600,7 @@ class EnergyBudget:
         # Equivalent to Eq. 19 of A&L, but using potential temperature.
         ape_dke = - self._scalar_spectra(self.omega, self.theta)
 
-        return cn.Rd * self.exner * ape_dke / self.p
+        return cn.Rd * self.exner * ape_dke / self.pressure
 
     def conversion_dke_rke(self):
         """Conversion from divergent to rotational kinetic energy
@@ -1027,7 +1023,7 @@ class EnergyBudget:
             Computes vertical gradient of a scalar function d(scalar)/dz
         """
         if z is None:
-            z = self.p
+            z = self.pressure
 
         return gradient_1d(scalar, z, axis=vertical_axis)
 
@@ -1058,7 +1054,7 @@ class EnergyBudget:
             The vertically integrated scalar
         """
         if pressure_range is None:
-            pressure_range = [self.p[0], self.p[-1]]
+            pressure_range = [self.pressure[0], self.pressure[-1]]
         else:
             assert pressure_range[0] != pressure_range[1], "Inconsistent pressure levels" \
                                                            " for vertical integration."
@@ -1066,7 +1062,7 @@ class EnergyBudget:
         pressure_range = np.sort(pressure_range)
 
         # find pressure surfaces where integration takes place
-        pressure = self.p
+        pressure = self.pressure
 
         level_mask = (pressure >= pressure_range[0]) & (pressure <= pressure_range[1])
         # Excluding boundary points in vertical integration.

@@ -39,7 +39,7 @@ if __name__ == '__main__':
     sfc_hgt = dataset_sfc.topography_c
 
     p_levels = np.linspace(1000e2, 10e2, 41)
-    variables = {'u': 'ua', 'v': 'va'}
+    variables = {'u_wind': 'ua', 'v_wind': 'va'}
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, p_levels=p_levels, variables=variables, jobs=1)
