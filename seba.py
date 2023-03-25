@@ -5,15 +5,15 @@ from scipy.integrate import simpson
 
 import constants as cn
 from fortran_libs import numeric_tools
+from io_tools import parse_dataset, _find_coordinate, regrid_levels, reindex_coordinate
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
-from thermodynamics import exner_function, potential_temperature
+from thermodynamics import exner_function, potential_temperature, vertical_velocity
 from thermodynamics import geopotential_to_height, stability_parameter
-from thermodynamics import pressure_vertical_velocity, vertical_velocity
-from tools import _find_latitude, _find_longitude, inspect_leveltype, inspect_gridtype
-from tools import parse_dataset, prepare_data, recover_data, recover_spectra, cumulative_flux
-from tools import rotate_vector, broadcast_1dto, interpolate_1d, gradient_1d
+from tools import inspect_gridtype, cumulative_flux
+from tools import prepare_data, recover_data, recover_spectra
+from tools import rotate_vector, broadcast_1dto, gradient_1d
 from tools import terrain_mask, transform_io, get_num_cores
 
 # declare global read-only variables
@@ -80,7 +80,9 @@ class EnergyBudget:
 
         Parameters
         ----------
-        :param dataset: xarray.Dataset or path to dataset. Contains 3D/4D analysis fields:
+        :param dataset: xarray.Dataset or str indicating the path to a dataset.
+
+            The dataset must contain the following analysis fields:
             u: Horizontal wind component in the zonal direction
             v: Horizontal wind component in the meridional direction
             w: Height/pressure vertical velocity depending on leveltype (inferred from dataset)
@@ -88,23 +90,29 @@ class EnergyBudget:
             p: Atmospheric pressure. A 1D array for isobaric levels or a 3-4D array for arbitrary
                vertical coordinate. Data is interpolated to pressure levels before the analysis.
 
-        :param variables: list of strings, optional,
-            Mapping of dataset field names if known ensuring all required variables are found.
-            If not given, variables are looked up based on standard conventions of names,
-            units and typical value ranges.
+        :param variables: dict, optional,
+            A dictionary mapping of the field names in the dataset to the internal variable names.
+            The default variable names are: ['u', 'v', 'omega', 'temperature', 'pressure'].
+            Ensures all variables needed for the analysis are found. If not given, variables are
+            looked up based on standard CF conventions of variable names, units and typical value
+            ranges. Example: variables = {'u': 'u-wind', 'temperature': 'temp'}. Note that often
+            used names 'u-wind' and 'temp' are not conventional names.
 
         :param truncation: int, optional, default None
             Triangular truncation for the spherical harmonic transforms. If truncation is not
-            specified then is set to 'nlat-1', where 'nlat' is the number of latitude points.
+            specified then 'truncation=nlat-1' is used, where 'nlat' is the number of
+            latitude points.
 
-        :param rsphere: averaged earth radius (meters)
+        :param rsphere: float, optional,
+            Averaged earth radius (meters), default: rsphere = 6371200 m.
 
         :param p_levels: iterable, optional
             Contains the pressure levels in (Pa) for vertical interpolation.
+            Ignored if the data is already in pressure coordinates.
 
         :param jobs: integer, optional, default None
             Number of processors to operate along non-spatial dimensions in parallel.
-            Recommended jobs=1 since spectral transforms are already parallelized.
+            Recommended jobs=1 since spectral transforms are already efficiently parallelized.
         """
 
         # check number of workers
@@ -125,74 +133,36 @@ class EnergyBudget:
         # Initialize variables
         dataset = parse_dataset(dataset, variables=variables)
 
+        # Perform interpolation to constant pressure levels if needed
+        dataset = regrid_levels(dataset, p_levels=p_levels)
+
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         self.coords = {dataset.coords[d].axis.lower(): dataset.coords[d] for d in dataset.dims}
         self.info_coords = ''.join(self.coords)  # string used for data reshaping and handling.
 
         # find dataset coordinates
-        self.latitude, self.nlat = _find_latitude(dataset)
-        self.longitude, self.nlon = _find_longitude(dataset)
-        self.leveltype, nlevels = inspect_leveltype(dataset)
+        self.latitude, self.nlat = _find_coordinate(dataset, "latitude")
+        self.longitude, self.nlon = _find_coordinate(dataset, "longitude")
 
         # Get ND dynamic fields... entire data is load on memory at this step
-        u = dataset.get('u').values
-        v = dataset.get('v').values
-        t = dataset.get('t').values
-        p = dataset.get('p').values
-        omega = dataset.get('omega')
+        u = dataset['u'].to_masked_array()
+        v = dataset['v'].to_masked_array()
+        t = dataset['temperature'].to_masked_array()
+        p = dataset['pressure'].to_masked_array()
+        omega = dataset['omega'].to_masked_array()
 
-        # Check for pressure velocity in dataset. If not present, it is estimated from
-        # height based vertical velocity. If neither is found raises ValueError.
-        if omega is not None:
-            omega = dataset.omega.values
-        else:
-            if dataset.get('w') is not None:
-                omega = pressure_vertical_velocity(p, dataset.w.values, t)
-            else:
-                raise ValueError("Vertical velocity not found in dataset!")
+        # Get 2-3D surface fields
+        self.ps = dataset.get('ps')
+        self.ts = dataset.get('ts')
 
         dataset.close()
-
-        # Perform interpolation to constant pressure levels if needed:
-        if self.leveltype != 'pressure':
-            # check pressure dimensions
-            if p.shape != u.shape:
-                raise ValueError("Pressure field must match the dimensionality of the other "
-                                 "dynamic fields when using height coordinates."
-                                 "Expecting {} but got {}".format(u.shape, p.shape))
-
-            if p_levels is None:
-                # creating levels from pressure range and number of levels if no pressure levels
-                # are given (set bottom level to 1000 hPa)
-                p_levels = np.linspace(1000e2, p.min(), nlevels)  # [Pa]
-            else:
-                p_levels = np.array(p_levels)
-                assert p_levels.ndim == 1, "If given, 'p_levels' must be a 1D array."
-
-            nlevels = p_levels.size
-
-            print("Interpolating data to {} isobaric levels ...".format(nlevels))
-            # values outside interpolation range are masked (levels below the surface p > ps)
-            u, v, omega, t = interpolate_1d(p_levels, p, u, v, omega, t,
-                                            scale='log', fill_value=np.nan,
-                                            axis=self.info_coords.find('z'))
-
-            # replace 3D pressure array with 1D isobaric levels
-            p = p_levels
-
-            # create new pressure coordinates
-            self.coords['z'] = xr.DataArray(data=p, dims=["plev"],
-                                            coords=dict(plev=("plev", p)),
-                                            attrs=dict(standard_name="pressure",
-                                                       long_name="pressure", positive="up",
-                                                       units="Pa", axis="Z"))
 
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.grid_shape = (self.nlat, self.nlon)
 
         # Size of the non-spatial dimensions (time, others ...). The analysis if performed over
         # 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
-        self.nlevels = nlevels
+        self.nlevels = p.size
         self.samples = np.prod(u.shape) // (self.nlat * self.nlon * self.nlevels)
 
         self.data_shape = self.grid_shape + (self.samples, self.nlevels)
@@ -206,28 +176,25 @@ class EnergyBudget:
         self.p = np.asarray(sorted(p, reverse=True))
 
         if self.reverse_levels:
-            self.coords['z'] = self.coords['z'].reindex({self.coords['z'].name: self.p})
+            self.coords['z'] = reindex_coordinate(self.coords['z'], self.p)
             self.coords['z'].attrs['positive'] = 'up'
 
-        if ps is None:
-            # Set first pressure level as surface pressure
-            # dp = np.mean(abs(np.diff(self.p)))  # extrapolate linearly from first level
-            self.ps = np.broadcast_to(np.max(self.p), self.grid_shape)
-        elif np.isscalar(ps):
-            self.ps = np.broadcast_to(ps, self.grid_shape)
-        else:
-            if isinstance(ps, xr.DataArray):
-                self.ps = np.squeeze(ps.values)
+        if self.ps is None:
+            if ps is None:
+                # If surface pressure not found set first pressure level as surface pressure
+                self.ps = np.broadcast_to(np.max(p), self.grid_shape)
             else:
-                self.ps = ps.squeeze()
-
-            if np.ndim(self.ps) > 2:
-                self.ps = np.nanmean(self.ps, axis=self.info_coords.find('t'))
+                if isinstance(ps, xr.DataArray):
+                    self.ps = np.squeeze(ps.values)
+                else:
+                    self.ps = ps.squeeze()
 
             if np.shape(self.ps) != self.grid_shape:
                 raise ValueError('If given, the surface pressure must be a scalar or a '
                                  '2D array with shape (nlat, nlon). Expected shape {}, '
-                                 'but got {}!'.format(self.grid_shape, np.shape(self.ps)))
+                                 'but got {}!'.format(self.grid_shape, np.shape(ps)))
+        else:
+            self.ps = np.nanmean(self.ps, axis=self.info_coords.find('t'))
 
         if ghsl is None:
             self.hs = np.zeros(self.grid_shape)
@@ -276,7 +243,8 @@ class EnergyBudget:
             self.latitude = self.latitude[::-1]
 
             # reorder latitude coordinates from north to south.
-            self.coords['y'] = self.coords['y'].reindex({self.coords['y'].name: self.latitude})
+            # self.coords['y'] = self.coords['y'].reindex({self.coords['y'].name: self.latitude})
+            self.coords['y'] = reindex_coordinate(self.coords['y'], self.latitude)
 
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
         self.nlm = self.sphere.nlm
@@ -331,8 +299,6 @@ class EnergyBudget:
 
         # compute the vertical wind shear before filtering to avoid sharp gradients.
         self.wind_shear = self.vertical_gradient(self.wind)
-        # filtering horizontal wind after computing divergence/vorticity
-        self.wind_shear = self.filter_topography(self.wind_shear)
 
         # Perform Helmholtz decomposition
         self.wind_div, self.wind_rot = self.helmholtz()
@@ -414,10 +380,10 @@ class EnergyBudget:
         sfcp = self.ps.flatten()
         sfch = self.hs.flatten()
 
-        if hasattr(self, 'ts'):
-            sfct = np.moveaxis(self.ts.reshape((-1, self.ts.shape[-1])), 1, 0)
+        if self.ts is not None:
+            sfct = np.moveaxis(self.ts.values.reshape((-1, self.ts.shape[-1])), 1, 0)
         else:
-            # compute surface temperature
+            # compute surface temperature by linear interpolation
             sfct = numeric_tools.surface_temperature(sfcp, temperature, pressure)
 
         # Compute geopotential from temperature

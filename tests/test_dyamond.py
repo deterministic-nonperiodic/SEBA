@@ -7,7 +7,8 @@ from matplotlib.ticker import ScalarFormatter
 
 from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
-from tools import map_func, cumulative_flux
+from tools import cumulative_flux
+from io_tools import map_func
 from visualization import AnchoredText, fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
@@ -30,17 +31,17 @@ if __name__ == '__main__':
     file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
 
     # # load earth topography and surface pressure
-    dset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    sfc_pres = dset_sfc.pres_sfc
+    dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
+    sfc_pres = dataset_sfc.pres_sfc
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
 
     # load earth topography and surface pressure
-    dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
-    sfc_hgt = dset_sfc.topography_c
+    dataset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
+    sfc_hgt = dataset_sfc.topography_c
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ps=sfc_pres, ghsl=sfc_hgt, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()

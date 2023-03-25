@@ -5,9 +5,10 @@ import numpy as np
 import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
+from io_tools import map_func
 from seba import EnergyBudget
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
-from tools import cumulative_flux, map_func
+from tools import cumulative_flux
 from visualization import AnchoredText
 from visualization import fluxes_slices_by_models
 
@@ -32,17 +33,16 @@ if __name__ == '__main__':
     dataset_dyn = xr.open_mfdataset(file_names.format(model, date_time, resolution))
 
     # load earth topography and surface pressure
-    dset_sfc = xr.open_dataset(
+    dataset_sfc = xr.open_dataset(
         '/home/yanm/PycharmProjects/SEBA/data/DYAMOND2_topography_{}.nc'.format(resolution))
 
-    sfc_hgt = dset_sfc.topography_c
-    sfc_pres = dataset_dyn.ps
+    sfc_hgt = dataset_sfc.topography_c
 
     p_levels = np.linspace(1000e2, 10e2, 41)
+    variables = {'u': 'ua', 'v': 'va'}
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, ps=sfc_pres, p_levels=p_levels,
-                          truncation=360, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, p_levels=p_levels, variables=variables, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()

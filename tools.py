@@ -7,7 +7,6 @@ import scipy.special as spec
 import scipy.stats as stats
 from joblib import Parallel, delayed, cpu_count
 from scipy.spatial import cKDTree
-from xarray import apply_ufunc, Dataset
 
 from fortran_libs import numeric_tools
 from spectral_analysis import lambda_from_deg
@@ -25,133 +24,6 @@ class Timer(object):
     def __exit__(self, *args):
         self.interval = time.time() - self.start
         print("{}: time elapsed: {}".format(self.title, self.interval))
-
-
-def _find_coordinates(array, predicate, name):
-    """
-    Find a dimension coordinate in an `xarray.DataArray` that satisfies
-    a predicate function.
-    """
-    candidates = [coord
-                  for coord in [array.coords[n] for n in array.dims]
-                  if predicate(coord)]
-    if not candidates:
-        raise ValueError('cannot find a {!s} coordinate'.format(name))
-    if len(candidates) > 1:
-        msg = 'multiple {!s} coordinates are not allowed'
-        raise ValueError(msg.format(name))
-    coord = candidates[0]
-    dim = array.dims[coord.name]
-    return coord, dim
-
-
-def _find_latitude(dataset):
-    """Find a latitude dimension coordinate in an `xarray.Dataset`."""
-    return _find_coordinates(dataset, lambda c: (c.name in ('latitude', 'lat') or
-                                                 c.attrs.get('units') == 'degrees_north' or
-                                                 c.attrs.get('axis') == 'Y'), 'latitude')
-
-
-def _find_longitude(dataset):
-    """Find a latitude dimension coordinate in an `xarray.DataArray`."""
-    return _find_coordinates(dataset, lambda c: (c.name in ('longitude', 'lon') or
-                                                 c.attrs.get('units') == 'degrees_east' or
-                                                 c.attrs.get('axis') == 'X'), 'longitude')
-
-
-def _find_variable(dataset, name, var_attrs):
-    """
-    Find a dimension coordinate in an `xarray.DataArray` that satisfies
-    a predicate function.
-    """
-
-    # trying variable selection by name
-    array = dataset.variables.get(name)
-
-    if array is None:
-        # trying flexible candidates for the variable based on attributes
-        def predicate(d):
-            return any([d.attrs.get(key) in values for key, values in var_attrs.items()])
-
-        # list all candidates
-        candidates = [data for name, data in dataset.variables.items() if predicate(data)]
-
-        if not candidates:
-            raise ValueError('Cannot find variable {!s} in dataset.'.format(name))
-
-        array = candidates[0]
-
-    return array
-
-
-def inspect_leveltype(dataset):
-    """Find a vertical coordinate in an `xarray.DataArray`."""
-
-    levels, _ = _find_coordinates(dataset,
-                                  lambda c: (c.name in ('p', 'plev', 'pressure') or
-                                             c.attrs.get('units') in ('Pa', 'hPa',
-                                                                      'mb', 'millibar') or
-                                             c.attrs.get('axis') == 'Z'), 'pressure')
-
-    p = _find_variable(dataset, 'p', {'long_name': ['pressure', 'air_pressure'],
-                                      'units': ['Pa', 'hPa', 'mb', 'millibar']})
-
-    leveltype = ['pressure', 'height'][levels.ndim != p.ndim]
-
-    return leveltype, levels.size
-
-
-def parse_dataset(dataset, variables=None):
-    """
-        Parse input xarray dataset
-
-        Returns
-        _______
-        arrays: a list of requested DataArray objects
-
-        info_coords: string containing the order of the spatial dimensions: 'z' for levels,
-              'y' latitude, and 'x' for longitude are mandatory, while any other character
-              may be used for other dimensions. Default is 'tzyx' or (time, levels, lat, lon)
-    """
-    var_map = {
-        'u': {'long_name': ['zonal_wind', 'zonal wind'],
-              'units': ['m s**-1', 'm/s'], 'code': [131]},
-        'v': {'long_name': ['meridional_wind', 'meridional wind'],
-              'units': ['m s**-1', 'm/s'], 'code': [132]},
-        # 'w': {'long_name': ['vertical_velocity', 'vertical velocity'],
-        #       'units': ['m s**-1', 'm/s'], 'code': [120]},
-        'omega': {'long_name': ['pressure_velocity', 'pressure velocity'],
-                  'units': ['Pa s**-1', 'Pa/s'], 'code': [135]},
-        't': {'long_name': ['temperature', 'air_temperature'],
-              'units': ['K', 'kelvin'], 'code': [130]},
-        'p': {'long_name': ['pressure', 'air_pressure'], 'units': ['Pa', 'hPa', 'mb']}
-    }
-
-    if variables is None:
-        variables = list(var_map.keys())
-
-    # find variables by name or candidates from attrs
-    arrays = {name: _find_variable(dataset, name, attrs)
-              for (var_key, attrs), name in zip(var_map.items(), variables)}
-
-    if len(arrays) != len(variables):
-        raise ValueError("Missing variables!")
-
-    # check sanity of 3D fields
-    for name, values in arrays.items():
-
-        if np.isnan(values).any():
-            raise ValueError('Array {} contain missing values'.format(name))
-
-        # Make sure the shapes of the two components match.
-        if (name != 'p') and values.ndim < 3:
-            raise ValueError('Fields must be at least 3D.'
-                             'Variable {} has {} dimensions'.format(name, values.ndim))
-
-    # create dataset and fill nans with zeros for spectral computations
-    dataset = Dataset(arrays, coords=dataset.coords).fillna(0.0)
-
-    return dataset
 
 
 def prepare_data(data, dim_order):
@@ -241,18 +113,6 @@ def recover_spectra(data, info_dict):
     spatial_dims = [spectra_order.find(dim) for dim in 'yz']
 
     return np.moveaxis(data, [0, -1], spatial_dims)
-
-
-def map_func(func, data, dim="plev", **kwargs):
-    # map function to all variables in dataset along axis
-    res = apply_ufunc(func, data, input_core_dims=[[dim]],
-                      kwargs=kwargs, dask='allowed',
-                      vectorize=True)
-
-    if 'pressure_range' in kwargs.keys() and isinstance(data, Dataset):
-        res = res.assign_coords({'layer': kwargs['pressure_range']})
-
-    return res
 
 
 def get_num_cores():
