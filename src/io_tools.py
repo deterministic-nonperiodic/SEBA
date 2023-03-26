@@ -67,7 +67,7 @@ CF_coordinate_conventions = {
                           'height_above_geopotential_datum',
                           'height_above_mean_sea_level',
                           'height_above_reference_ellipsoid'),
-        "units": ('meter', 'm', 'Pa', 'hPa', 'mb', 'millibar'),
+        "units": ('meter', 'm', 'gpm', 'Pa', 'hPa', 'mb', 'millibar'),
         "axis": ('Z', 'vertical')
     }
 }
