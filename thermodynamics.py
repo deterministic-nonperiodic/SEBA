@@ -1,8 +1,7 @@
 import numpy as np
-from scipy.integrate import cumulative_trapezoid
-
 import constants as cn
 from tools import broadcast_1dto, gradient_1d
+from scipy.integrate import cumulative_trapezoid
 
 
 def height_to_pressure_std(height):

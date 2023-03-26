@@ -80,6 +80,18 @@ expected_units = {
 }
 
 
+def map_func(func, data, dim="plev", **kwargs):
+    # map function to all variables in dataset along axis
+    res = apply_ufunc(func, data, input_core_dims=[[dim]],
+                      kwargs=kwargs, dask='allowed',
+                      vectorize=True)
+
+    if 'pressure_range' in kwargs.keys() and isinstance(data, Dataset):
+        res = res.assign_coords({'layer': kwargs['pressure_range']})
+
+    return res
+
+
 def check_and_convert_units(ds):
     # Define the expected units for each variable
 
@@ -104,18 +116,6 @@ def check_and_convert_units(ds):
             var.attrs["units"] = expected_unit
         except pint.errors.DimensionalityError:
             raise ValueError(f"Cannot convert {varname} units to {expected_unit}.")
-
-
-def map_func(func, data, dim="plev", **kwargs):
-    # map function to all variables in dataset along axis
-    res = apply_ufunc(func, data, input_core_dims=[[dim]],
-                      kwargs=kwargs, dask='allowed',
-                      vectorize=True)
-
-    if 'pressure_range' in kwargs.keys() and isinstance(data, Dataset):
-        res = res.assign_coords({'layer': kwargs['pressure_range']})
-
-    return res
 
 
 def get_coordinate_names(dataset):
