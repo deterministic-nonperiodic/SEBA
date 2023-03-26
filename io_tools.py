@@ -242,9 +242,6 @@ def parse_dataset(dataset, variables=None):
         _______
         arrays: a list of requested DataArray objects
 
-        info_coords: string containing the order of the spatial dimensions: 'z' for levels,
-              'y' latitude, and 'x' for longitude are mandatory, while any other character
-              may be used for other dimensions. Default is 'tzyx' or (time, levels, lat, lon)
     """
     default_variables = ['u_wind', 'v_wind', 'omega', 'temperature', 'pressure']
 
@@ -309,7 +306,9 @@ def parse_dataset(dataset, variables=None):
 
 
 def regrid_levels(dataset, p_levels=None):
-    """Find a vertical coordinate in an `xarray.DataArray`."""
+    """
+
+    """
 
     # find vertical coordinate
     levels, nlevels = _find_coordinate(dataset, "level")
@@ -340,7 +339,6 @@ def regrid_levels(dataset, p_levels=None):
 
         print("Interpolating data to {} isobaric levels ...".format(nlevels))
 
-        # values outside interpolation range are masked (levels below the surface p > ps)
         excluded_vars = ['pressure', 'ps', 'ts']
 
         dims = [dim for dim in dataset.dims]
@@ -364,10 +362,17 @@ def regrid_levels(dataset, p_levels=None):
 
                 result_dataset[name] = (dims, result, data.attrs)
 
-        # add variable pressure
+        # add pressure field
         attrs = {'standard_name': "pressure", 'units': "Pa"}
         result_dataset['pressure'] = ('plev', p_levels, attrs)
 
+        # add surface variables if present
+        for svar in ['ps', 'ts']:
+            if svar in dataset:
+                sdata = dataset['ps']
+                result_dataset[svar] = (sdata.dims, sdata.values, sdata.attrs)
+
+        # Create new dataset with interpolated data
         dataset = Dataset(data_vars=result_dataset, coords=coords)
 
     return dataset
