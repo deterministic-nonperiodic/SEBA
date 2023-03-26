@@ -6,7 +6,7 @@ import xarray as xr
 from tqdm import tqdm
 from datetime import date
 
-from seba import EnergyBudget
+from src.seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 

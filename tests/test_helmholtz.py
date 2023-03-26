@@ -6,11 +6,11 @@ import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
 # from constants import cp
-from seba import EnergyBudget
-from spectral_analysis import kappa_from_deg, kappa_from_lambda
-from tools import cumulative_flux
-from visualization import AnchoredText
-from visualization import fluxes_slices_by_models
+from src.seba import EnergyBudget
+from src.spectral_analysis import kappa_from_deg, kappa_from_lambda
+from src.tools import cumulative_flux
+from src.visualization import AnchoredText
+from src.visualization import fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',

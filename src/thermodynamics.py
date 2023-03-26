@@ -4,30 +4,6 @@ from tools import broadcast_1dto, gradient_1d
 from scipy.integrate import cumulative_trapezoid
 
 
-def height_to_pressure_std(height):
-    r"""Convert height data to pressures using the U.S. standard atmosphere.
-
-    The implementation inverts the formula outlined in [Hobbs1977]_ pg.60-61.
-
-    Parameters
-    ----------
-    height : `pint.Quantity`
-        Atmospheric height
-
-    Returns
-    -------
-    `pint.Quantity`
-        The corresponding pressure value(s)
-
-    Notes
-    -----
-    .. math:: p = p_0 e^{\frac{g}{R \Gamma} \text{ln}(1-\frac{Z \Gamma}{T_0})}
-
-    """
-    p0 = 101325  # * units.Pa
-    return p0 * (1.0 - (cn.gamma / cn.t0) * height) ** (cn.g / (cn.Rd * cn.gamma))
-
-
 def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
     r"""Calculate the cumulative thickness of layers from temperature profiles
         via the hypsometric equation. Returns the thickness of layers between
@@ -84,7 +60,6 @@ def height_to_geopotential(height):
     where :math:`g_0` is standard gravity. It thereby accounts for the average effects of
     centrifugal force on apparent gravity, but neglects latitudinal variations due to
     centrifugal force and Earth's eccentricity.
-
     """
     return (cn.g * cn.earth_radius * height) / (cn.earth_radius + height)
 
@@ -120,9 +95,6 @@ def geopotential_to_height(geopotential):
     where :math:`g_0` is standard gravity. It thereby accounts for the average effects of
     centrifugal force on apparent gravity, but neglects latitudinal variations due to
     centrifugal force and Earth's eccentricity.
-
-    (Prior to MetPy v0.11, this formula instead calculated :math:`g(z)` from Newton's Law of
-    Gravitation assuming a spherical Earth and no centrifugal force effects.)
     """
     return (geopotential * cn.earth_radius) / (cn.g * cn.earth_radius - geopotential)
 

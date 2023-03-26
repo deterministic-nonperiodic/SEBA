@@ -5,11 +5,11 @@ import numpy as np
 import xarray as xr
 from numpy.core.numeric import normalize_axis_index
 
-from seba import EnergyBudget
-from spectral_analysis import kappa_from_lambda, kappa_from_deg
-from spectral_analysis import triangular_truncation
-from tools import search_closet, getspecindx
-from visualization import spectra_base_figure, reference_slopes
+from src.seba import EnergyBudget
+from src.spectral_analysis import kappa_from_lambda, kappa_from_deg
+from src.spectral_analysis import triangular_truncation
+from src.tools import search_closet, getspecindx
+from src.visualization import spectra_base_figure, reference_slopes
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',

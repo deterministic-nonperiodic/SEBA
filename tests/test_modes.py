@@ -5,12 +5,12 @@ import numpy as np
 import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
-from io_tools import map_func
-from seba import EnergyBudget
-from spectral_analysis import kappa_from_deg, kappa_from_lambda
-from tools import cumulative_flux
-from visualization import AnchoredText
-from visualization import fluxes_slices_by_models
+from src.io_tools import map_func
+from src.seba import EnergyBudget
+from src.spectral_analysis import kappa_from_deg, kappa_from_lambda
+from src.tools import cumulative_flux
+from src.visualization import AnchoredText
+from src.visualization import fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -39,7 +39,7 @@ if __name__ == '__main__':
     sfc_hgt = dataset_sfc.topography_c
 
     p_levels = np.linspace(1000e2, 10e2, 21)
-    variables = {'u_wind': 'ua', 'v_wind': 'va'}
+    variables = None  # {'u_wind': 'ua', 'v_wind': 'va'}
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, p_levels=p_levels, variables=variables, jobs=1)

@@ -6,7 +6,7 @@ import pyshtools as pysh
 import spharm
 import xarray as xr
 
-from seba import EnergyBudget
+from src.seba import EnergyBudget
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',

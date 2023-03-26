@@ -367,7 +367,7 @@ def spectral_fluxes_by_models(dataset, models=None, varname='Eh', compensate=Fal
 
     plt.show()
 
-    fig.savefig(os.path.join('figures', fig_name), dpi=300)
+    fig.savefig(os.path.join('../figures', fig_name), dpi=300)
     plt.close(fig)
 
 
@@ -444,7 +444,7 @@ def spectra_models_by_levels(dataset, models=None, varname='Eh',
 
     plt.show()
 
-    fig.savefig(os.path.join('figures', fig_name), dpi=300)
+    fig.savefig(os.path.join('../figures', fig_name), dpi=300)
     plt.close(fig)
 
 
@@ -617,7 +617,7 @@ def kinetic_energy_components(dataset, dataset_igws=None, dataset_rows=None, mod
 
     plt.show()
 
-    fig.savefig(os.path.join('figures', fig_name), dpi=300)
+    fig.savefig(os.path.join('../figures', fig_name), dpi=300)
     plt.close(fig)
 
 

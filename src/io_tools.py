@@ -1,3 +1,4 @@
+import re
 from typing import Optional
 
 import numpy as np
@@ -17,22 +18,23 @@ CF_variable_conventions = {
         "units": ('Pa', 'hPa', 'mb', 'millibar')
     },
     "omega": {
-        "standard_name": ("lagrangian_tendency_of_air_pressure",
-                          'pressure_velocity', 'pressure velocity'),
+        "standard_name": ('omega', 'lagrangian_tendency_of_air_pressure',
+                          'pressure_velocity', 'pressure velocity',
+                          'vertical_velocity', 'vertical velocity'),
         "units": ("Pa s-1", 'Pa s**-1', 'Pa/s')
     },
     "u_wind": {
-        "standard_name": ('u', 'zonal_wind', 'zonal wind',
+        "standard_name": ('u', 'ua', 'zonal_wind', 'zonal wind',
                           "eastward_wind", 'zonal wind component'),
         "units": ("m s-1", "m s**-1", "m/s")
     },
     "v_wind": {
-        "standard_name": ('v', 'meridional_wind', 'Meridional wind',
+        "standard_name": ('v', 'va', 'meridional_wind', 'Meridional wind',
                           'northward_wind', 'meridional wind component'),
         "units": ("m s-1", "m s**-1", "m/s")
     },
     'w_wind': {
-        'standard_name': ('w', 'vertical_velocity', 'vertical velocity',
+        'standard_name': ('w', 'wa', 'vertical_velocity', 'vertical velocity',
                           "upward_air_velocity", "vertical wind component"),
         'units': ("m s-1", "m s**-1", "m/s")
     },
@@ -79,6 +81,12 @@ expected_units = {
     "omega": "Pa s**-1"
 }
 
+cmd = re.compile(r'(?<=[A-Za-z)])(?![A-Za-z)])(?<![0-9\-][eE])(?<![0-9\-])(?=[0-9\-])')
+
+
+def _parse_power_units(unit_str):
+    return cmd.sub('**', unit_str)
+
 
 def map_func(func, data, dim="plev", **kwargs):
     # map function to all variables in dataset along axis
@@ -110,7 +118,8 @@ def check_and_convert_units(ds):
 
         try:
             # Convert the values to the expected units
-            var.values = (var.values * reg(var.attrs["units"])).to(expected_unit).magnitude
+            fixed_units = _parse_power_units(var.attrs["units"])
+            var.values = (var.values * reg(fixed_units)).to(expected_unit).magnitude
 
             # Update the units attribute of the variable
             var.attrs["units"] = expected_unit

@@ -5,8 +5,8 @@ from _spherepack import onedtotwod
 from sklearn import preprocessing
 
 from AtmosphericEnergyBudget import EnergyBudget
-from spectral_analysis import spectrum
-from tools import kappa_from_deg
+from src.spectral_analysis import spectrum
+from src.tools import kappa_from_deg
 
 
 def create_fractal_noise(samples, ny, nx, slopes=None, amplitude=1.0):
