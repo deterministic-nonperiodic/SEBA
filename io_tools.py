@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 import pint
 from xarray import apply_ufunc, Dataset, DataArray
@@ -20,23 +22,26 @@ CF_variable_conventions = {
         "units": ("Pa s-1", 'Pa s**-1', 'Pa/s')
     },
     "u_wind": {
-        "standard_name": ('zonal_wind', 'zonal wind', "eastward_wind"),
+        "standard_name": ('u', 'zonal_wind', 'zonal wind',
+                          "eastward_wind", 'zonal wind component'),
         "units": ("m s-1", "m s**-1", "m/s")
     },
     "v_wind": {
-        "standard_name": ('meridional_wind', 'Meridional wind', "northward_wind"),
+        "standard_name": ('v', 'meridional_wind', 'Meridional wind',
+                          'northward_wind', 'meridional wind component'),
         "units": ("m s-1", "m s**-1", "m/s")
     },
     'w_wind': {
-        'standard_name': ('vertical_velocity', 'vertical velocity', "upward_air_velocity"),
+        'standard_name': ('w', 'vertical_velocity', 'vertical velocity',
+                          "upward_air_velocity", "vertical wind component"),
         'units': ("m s-1", "m s**-1", "m/s")
     },
     'ts': {
-        "standard_name": ('surface_temperature', 'surface_air_temperature', 'ts', 'temp_sfc'),
+        "standard_name": ('ts', 'surface_temperature', 'surface_air_temperature'),
         "units": ('K', 'kelvin', 'Kelvin', 'degree_C')
     },
     "ps": {
-        "standard_name": ('surface_pressure', 'surface_air_pressure', 'ps', 'sfcp', 'pres_sfc'),
+        "standard_name": ('ps', 'surface_pressure', 'surface pressure', 'surface_air_pressure'),
         "units": ('Pa', 'hPa', 'mb', 'millibar'),
     }
 }
@@ -84,21 +89,21 @@ def check_and_convert_units(ds):
     # Check and convert the units of each variable
     for varname in ds.variables:
         var = ds[varname]
-        if varname in expected_units:
-            expected_unit = expected_units[varname]
-            if var.units != expected_unit:
-                try:
-                    # Convert the values to the expected units
-                    var.values = (var.values * reg(var.attrs["units"])).to(expected_unit).magnitude
-
-                    # Update the units attribute of the variable
-                    var.attrs["units"] = expected_unit
-                except pint.errors.DimensionalityError:
-                    raise ValueError(f"Cannot convert {varname} units to {expected_unit}.")
-            else:
-                continue
-        else:
+        if varname not in expected_units:
             continue
+
+        expected_unit = expected_units[varname]
+        if var.units == expected_unit:
+            continue
+
+        try:
+            # Convert the values to the expected units
+            var.values = (var.values * reg(var.attrs["units"])).to(expected_unit).magnitude
+
+            # Update the units attribute of the variable
+            var.attrs["units"] = expected_unit
+        except pint.errors.DimensionalityError:
+            raise ValueError(f"Cannot convert {varname} units to {expected_unit}.")
 
 
 def map_func(func, data, dim="plev", **kwargs):
@@ -143,6 +148,11 @@ def get_coordinate_names(dataset):
     return coord_names
 
 
+def ordered_dims(dataset):
+    # returns dimensions in dataset ordered according to how they appear in data
+    return [dataset.dims[name] for name in get_coordinate_names(dataset)]
+
+
 def _find_coordinate(ds, name):
     """
     Find a dimension coordinate in an `xarray.DataArray` that satisfies
@@ -174,10 +184,21 @@ def reindex_coordinate(coord, data):
     return coord.reindex({coord.name: data})
 
 
-def _find_variable(dataset, variable_name, raise_notfound=True):
+def is_standard_variable(data, standard_name):
+    var_attrs = data.attrs
+
+    cf_attrs = CF_variable_conventions[standard_name]
+
+    has_name = np.any([var_attrs.get(name) in cf_attrs["standard_name"]
+                       for name in ["name", "standard_name", "long_name"]])
+
+    return has_name and (var_attrs.get("units") in cf_attrs["units"])
+
+
+def _find_variable(dataset, variable_name, raise_notfound=True) -> Optional[DataArray]:
     """
     Given a xarray dataset and a variable name, identifies whether the variable
-    is in the dataset conforming to CF conventions.
+    is present in the dataset and conforms to CF conventions.
 
     Parameters
     ----------
@@ -186,12 +207,12 @@ def _find_variable(dataset, variable_name, raise_notfound=True):
     variable_name : str, dict
         The name of the variable to identify.
     raise_notfound: bool, optional, default True
-        If true, raises error if variable is not found, or returns None otherwise.
+        If raise_notfound=true, raises error if variable is not found, or returns None otherwise.
     Returns
     -------
-    str
-        A string indicating the type of variable that is in the dataset. Possible
-        values are "temperature", "pressure", "vertical velocity", "u", and "v".
+    DataArray or None,
+        A DataArray if variable is found in the dataset or None if not found and
+        raise_notfound=False. Raises ValueError otherwise.
     """
     if isinstance(variable_name, dict):
         (standard_name, variable_name), = variable_name.items()
@@ -205,33 +226,27 @@ def _find_variable(dataset, variable_name, raise_notfound=True):
     # try to get variable by literal name
     array = dataset.get(variable_name)
 
-    if array is None:
-        candidates = []
+    # Array was found by explicit name and is consistent with the CF conventions
+    if array is not None and is_standard_variable(array, standard_name):
+        return array
 
-        for var_name in dataset.variables:
-            # Check if the variable is in the dataset and consistent with the CF conventions
-            var_attrs = dataset[var_name].attrs
+    candidates = []
 
-            cf_attrs = CF_variable_conventions[standard_name]
+    for var_name in dataset.variables:
+        # Check if the variable is in the dataset and consistent with the CF conventions
+        if is_standard_variable(dataset[var_name], standard_name):
+            candidates.append(dataset[var_name])
 
-            has_name = np.any([var_attrs.get(name) in cf_attrs["standard_name"]
-                               for name in ["name", "standard_name", "long_name"]])
+    if not candidates:
+        if raise_notfound:
+            # variable is not in the dataset or not consistent with the CF conventions
+            msg = "The variable {} is not in the dataset or is " \
+                  "inconsistent with the CF conventions."
+            raise ValueError(msg.format(variable_name))
+        else:
+            return None
 
-            if has_name and (var_attrs.get("units") in cf_attrs["units"]):
-                candidates.append(dataset[var_name])
-
-        if not candidates:
-            if raise_notfound:
-                # variable is not in the dataset or not consistent with the CF conventions
-                msg = "The variable {} is not in the dataset or is " \
-                      "inconsistent with the CF conventions."
-                raise ValueError(msg.format(variable_name))
-            else:
-                return None
-
-        array = candidates[0]
-
-    return array
+    return candidates[0]
 
 
 def parse_dataset(dataset, variables=None):
@@ -286,93 +301,140 @@ def parse_dataset(dataset, variables=None):
     # find surface data arrays
     for name in ['ts', 'ps']:
 
+        # silence error for flexible variables.
         sfc_var = _find_variable(dataset, name, raise_notfound=False)
 
-        # surface data must have one less dimension
+        if sfc_var is None:
+            print("Warning: surface variable {} not found!".format(name))
+            continue
+        # Surface data must be exactly one dimension less than the total number of dimensions
+        # in dataset (Not sure if this is a good enough condition!?)
         if np.ndim(sfc_var) == len(dataset.dims) - 1:
             arrays[name] = sfc_var
 
     # Check for pressure velocity in dataset. If not present, it is estimated from
     # height based vertical velocity. If neither is found raises ValueError.
     if arrays.get('omega') is None:
-        p = arrays.get('pressure').values
-        t = arrays.get('temperature').values
-        w = _find_variable(dataset, 'w_wind', raise_notfound=True)
+        pressure = arrays.get('pressure').values
+        temperature = arrays.get('temperature').values
+        w_wind = _find_variable(dataset, 'w_wind', raise_notfound=True).values
 
-        arrays['omega'] = pressure_vertical_velocity(p, np.array(w), t)
+        arrays['omega'] = pressure_vertical_velocity(pressure, w_wind, temperature)
 
     # create dataset and fill nans with zeros for spectral computations
     return Dataset(arrays, coords=dataset.coords).fillna(0.0)
 
 
-def regrid_levels(dataset, p_levels=None):
+def interpolate_pressure_levels(dataset, p_levels=None):
     """
+    Interpolate all variables in dataset to pressure levels.
 
+    Parameters
+    ----------
+    dataset : xarray.Dataset
+        The input dataset to be interpolated.
+
+    p_levels : list, array, optional
+        The target levels to interpolate to. If not given, it is created from the number of
+        vertical levels of the variables in dataset and the pressure field.
+
+    Returns
+    -------
+    xarray.Dataset
+        The interpolated dataset.
+
+    Raises
+    ------
+    ValueError
+        If the input dataset is not on pressure levels and the pressure field is missing.
+
+    Notes
+    -----
+    This function checks if the input dataset is on pressure levels by examining its coordinate
+    variables. If the pressure coordinate variable is not present, or if it is not consistent
+    with CF conventions (standard name, units), this function assumes that the dataset is not on
+    pressure levels and attempts to interpolate all variables to pressure levels using linear
+    interpolation. If the pressure field is not present, or it is consistent with CF convention
+    raises a `ValueError`.
     """
 
     # find vertical coordinate
     levels, nlevels = _find_coordinate(dataset, "level")
 
-    # find pressure array
-    pressure = _find_variable(dataset, 'pressure')
+    # Finding pressure array in dataset. Silence error if not found (try to use coordinate)
+    pressure = _find_variable(dataset, 'pressure', raise_notfound=False)
 
-    # Perform interpolation to constant pressure levels if needed:
-    data_shape = tuple(dataset.dims[i] for i in dataset.dims)
+    # If the vertical coordinate is consistent with pressure standards, then no interpolation is
+    # needed: Data is already in pressure coordinates.
+    if is_standard_variable(levels, "pressure"):
+        # If pressure was not found create a new variable 'pressure' from levels.
+        if pressure is None:
+            dataset["pressure"] = levels
 
-    if levels.ndim != np.ndim(pressure):
-        # check pressure dimensions
-        if np.shape(pressure) != data_shape:
-            raise ValueError("Pressure field must match the dimensionality of the other "
-                             "dynamic fields when using height coordinates. "
-                             "Expected shape {}, but got {}".format(data_shape,
-                                                                    np.shape(pressure)))
+        return dataset
 
-        if p_levels is None:
-            # creating levels from pressure range and number of levels if no pressure levels
-            # are given (set bottom level to 1000 hPa)
-            p_levels = np.linspace(1000e2, np.min(pressure), nlevels)  # [Pa]
+    # Prepare data for interpolation to constant pressure levels:
+    if pressure is None:
+        raise ValueError("Pressure not found in dataset. If the data is not in pressure "
+                         "levels, a 3D pressure field must be provided!")
+
+    data_shape = tuple(ordered_dims(dataset))
+
+    # check pressure dimensions
+    if np.shape(pressure) != data_shape:
+        raise ValueError("Pressure field must match the dimensionality of the other "
+                         "dynamic fields for the interpolation. Expecting {}, "
+                         "but got {} instead.".format(data_shape, np.shape(pressure)))
+
+    if p_levels is None:
+        # creating levels from pressure range and number of levels if no pressure levels
+        # are given (set bottom level to 1000 hPa)
+        p_levels = np.linspace(1000e2, np.min(pressure), nlevels)  # [Pa]
+    else:
+        p_levels = np.array(p_levels)
+        assert p_levels.ndim == 1, "'p_levels' must be a one-dimensional array."
+
+    print("Interpolating data to {} isobaric levels ...".format(p_levels.size))
+
+    dims = get_coordinate_names(dataset)
+    coords = [dataset.coords[name] for name in dims]
+    z_axis = ''.join([coord.axis for coord in coords]).lower().find('z')
+
+    # Replace vertical coordinate with new pressure levels
+    dims[z_axis] = 'plev'
+    coords[z_axis] = DataArray(data=p_levels, name='plev', dims=["plev"],
+                               coords=dict(plev=("plev", p_levels)),
+                               attrs=dict(standard_name="pressure",
+                                          long_name="pressure", positive="up",
+                                          units="Pa", axis="Z"))
+    # create coordinate dictionary for dataset
+    coords = {coord.name: coord for coord in coords}
+
+    # Start vertical interpolation of required fields in dataset.
+    excluded_vars = []
+    result_dataset = {}
+    for name, data in dataset.data_vars.items():
+        # exclude pressure and all variables with the wrong dimensionality
+        if not data.equals(pressure) and data.ndim == pressure.ndim:
+            result, = interpolate_1d(p_levels, pressure.values,
+                                     data.values, scale='log',
+                                     fill_value=np.nan, axis=z_axis)
+
+            result_dataset[name] = (dims, result, data.attrs)
         else:
-            p_levels = np.array(p_levels)
-            assert p_levels.ndim == 1, "If given, 'p_levels' must be a 1D array."
+            excluded_vars.append(name)
 
-        nlevels = p_levels.size
+    print("Interpolation successfully completed.")
 
-        print("Interpolating data to {} isobaric levels ...".format(nlevels))
+    # replace pressure field in dataset with the new coordinate
+    attrs = {'standard_name': "pressure", 'units': "Pa"}
+    result_dataset['pressure'] = ('plev', p_levels, attrs)
 
-        excluded_vars = ['pressure', 'ps', 'ts']
+    # Add fields in dataset that were not interpolated except 'pressure'.
+    for svar in excluded_vars:
+        sdata = dataset[svar]
+        if not sdata.equals(pressure):
+            result_dataset[svar] = (sdata.dims, sdata.values, sdata.attrs)
 
-        dims = [dim for dim in dataset.dims]
-        coords = [dataset.coords[d] for d in dataset.dims]
-        z_axis = ''.join([coord.axis for coord in coords]).lower().find('z')
-
-        dims[z_axis] = 'plev'
-        coords[z_axis] = DataArray(data=p_levels, name='plev', dims=["plev"],
-                                   coords=dict(plev=("plev", p_levels)),
-                                   attrs=dict(standard_name="pressure",
-                                              long_name="pressure", positive="up",
-                                              units="Pa", axis="Z"))
-        coords = {coord.name: coord for coord in coords}
-
-        result_dataset = {}
-        for name, data in dataset.data_vars.items():
-            if name not in excluded_vars:
-                result, = interpolate_1d(p_levels, pressure.values,
-                                         data.values, scale='log',
-                                         fill_value=np.nan, axis=z_axis)
-
-                result_dataset[name] = (dims, result, data.attrs)
-
-        # add pressure field
-        attrs = {'standard_name': "pressure", 'units': "Pa"}
-        result_dataset['pressure'] = ('plev', p_levels, attrs)
-
-        # add surface variables if present
-        for svar in ['ps', 'ts']:
-            if svar in dataset:
-                sdata = dataset['ps']
-                result_dataset[svar] = (sdata.dims, sdata.values, sdata.attrs)
-
-        # Create new dataset with interpolated data
-        dataset = Dataset(data_vars=result_dataset, coords=coords)
-
-    return dataset
+    # Create new dataset with interpolated data
+    return Dataset(data_vars=result_dataset, coords=coords)

@@ -5,7 +5,8 @@ from scipy.integrate import simpson
 
 import constants as cn
 from fortran_libs import numeric_tools
-from io_tools import parse_dataset, _find_coordinate, regrid_levels, reindex_coordinate
+from io_tools import get_coordinate_names, reindex_coordinate
+from io_tools import parse_dataset, _find_coordinate, interpolate_pressure_levels
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
@@ -134,24 +135,26 @@ class EnergyBudget:
         dataset = parse_dataset(dataset, variables=variables)
 
         # Perform interpolation to constant pressure levels if needed
-        dataset = regrid_levels(dataset, p_levels=p_levels)
+        dataset = interpolate_pressure_levels(dataset, p_levels=p_levels)
 
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
-        self.coords = {dataset.coords[d].axis.lower(): dataset.coords[d] for d in dataset.dims}
+        # These coordinates are used to export data as xarray objects
+        self.coords = {dataset.coords[d].axis.lower(): dataset.coords[d]
+                       for d in get_coordinate_names(dataset)}
         self.info_coords = ''.join(self.coords)  # string used for data reshaping and handling.
 
         # find dataset coordinates
         self.latitude, self.nlat = _find_coordinate(dataset, "latitude")
         self.longitude, self.nlon = _find_coordinate(dataset, "longitude")
 
-        # Get ND dynamic fields... entire data is load on memory at this step
+        # Get dynamic fields as masked arrays... loading the entire data on memory at this step!
         omega = dataset['omega'].to_masked_array()
         u_wind = dataset['u_wind'].to_masked_array()
         v_wind = dataset['v_wind'].to_masked_array()
         pressure = dataset['pressure'].to_masked_array()
         temperature = dataset['temperature'].to_masked_array()
 
-        # Get 2-3D surface fields
+        # Get surface fields if given in dataset
         self.ps = dataset.get('ps')
         self.ts = dataset.get('ts')
 
@@ -160,11 +163,12 @@ class EnergyBudget:
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.grid_shape = (self.nlat, self.nlon)
 
-        # Size of the non-spatial dimensions (time, others ...). The analysis if performed over
-        # 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
+        # Get the size of the non-spatial dimensions (time, others ...). The analysis if performed
+        # over 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
         self.nlevels = pressure.size
         self.samples = np.prod(u_wind.shape) // (self.nlat * self.nlon * self.nlevels)
 
+        # resulting shape after collapsing all non-spatial dimension into samples.
         self.data_shape = self.grid_shape + (self.samples, self.nlevels)
 
         # Inferring the direction of the vertical axis and reordering
