@@ -7,14 +7,16 @@
 *.txt
 *.mod
 *.iml
+*.F90
+*.so
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-# plots
+# directories
 figures/
 data/
-*.F90
-*.so
+logs/
 .idea/
 processing/
+
