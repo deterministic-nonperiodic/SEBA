@@ -122,16 +122,15 @@ class EnergyBudget:
         else:
             self.jobs = int(jobs)
 
-        # check input dataset
+        # check if input dataset is a path to file
         if isinstance(dataset, str):
-            dataset = xr.open_mfdataset(dataset, combine='by_coords', parallel=True)
-        elif isinstance(dataset, xr.Dataset):
-            pass
-        else:
-            raise TypeError("Input 'dataset' must be xarray.Dataset instance or a string "
-                            "containing the path to a netcdf dataset.")
+            dataset = xr.open_mfdataset(dataset, combine='by_coords', parallel=False)
 
-        # Initialize variables
+        if not isinstance(dataset, xr.Dataset):
+            raise TypeError("Input parameter 'dataset' must be xarray.Dataset instance"
+                            "or a string containing the path to a netcdf file.")
+
+        # Initialize analysis variables
         dataset = parse_dataset(dataset, variables=variables)
 
         # Perform interpolation to constant pressure levels if needed
@@ -474,8 +473,8 @@ class EnergyBudget:
     # -------------------------------------------------------------------------------
     def ke_nonlinear_transfer(self):
         """
-        Kinetic energy spectral transfer due to nonlinear interactions
-        after Augier and Lindborg (2013), Eq.A2
+        Kinetic energy spectral transfer due to nonlinear interactions after
+        Augier and Lindborg (2013), Eq.A2
         :return:
             Spectrum of KE transfer across scales
         """
@@ -1022,14 +1021,11 @@ class EnergyBudget:
 
         return spectrum / self.vector_norm
 
-    def vertical_gradient(self, scalar, z=None, vertical_axis=-1):
+    def vertical_gradient(self, scalar, vertical_axis=-1):
         """
-            Computes vertical gradient of a scalar function d(scalar)/dz
+            Computes vertical gradient of a scalar function in pressure coordinates: d(scalar)/dp
         """
-        if z is None:
-            z = self.pressure
-
-        return gradient_1d(scalar, z, axis=vertical_axis)
+        return gradient_1d(scalar, self.pressure, axis=vertical_axis)
 
     def vertical_integration(self, scalar, pressure_range=None, vertical_axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
@@ -1072,7 +1068,7 @@ class EnergyBudget:
         # Excluding boundary points in vertical integration.
         level_mask &= (pressure != pressure[0]) & (pressure != pressure[-1])
 
-        # convert boolean mask to array index
+        # convert binary mask to array index
         level_mask = np.where(level_mask)[0]
 
         # Get data inside integration interval along the vertical axis

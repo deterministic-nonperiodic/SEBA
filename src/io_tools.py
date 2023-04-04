@@ -10,11 +10,11 @@ from tools import interpolate_1d
 
 CF_variable_conventions = {
     "temperature": {
-        "standard_name": ("air_temperature", 'temperature'),
+        "standard_name": ("t", "ta", "temp", "air_temperature", 'temperature'),
         "units": ('K', 'kelvin', 'Kelvin', 'degree_C')
     },
     "pressure": {
-        "standard_name": ("air_pressure", "pressure"),
+        "standard_name": ("p", "air_pressure", "pressure"),
         "units": ('Pa', 'hPa', 'mb', 'millibar')
     },
     "omega": {
@@ -81,6 +81,15 @@ expected_units = {
     "omega": "Pa s**-1"
 }
 
+expected_range = {
+    "u_wind": [-350., 350.],
+    "v_wind": [-350., 350.],
+    "w_wind": [-100., 100.],
+    "temperature": [120, 350.],
+    "pressure": [0.0, 2000e2],
+    "omega": [-100, 100]
+}
+
 cmd = re.compile(r'(?<=[A-Za-z)])(?![A-Za-z)])(?<![0-9\-][eE])(?<![0-9\-])(?=[0-9\-])')
 
 
@@ -113,18 +122,30 @@ def check_and_convert_units(ds):
             continue
 
         expected_unit = expected_units[varname]
-        if var.units == expected_unit:
-            continue
 
-        try:
-            # Convert the values to the expected units
-            fixed_units = _parse_power_units(var.attrs["units"])
-            var.values = (var.values * reg(fixed_units)).to(expected_unit).magnitude
+        var_units = var.attrs.get("units")
+        if var_units is None:
+            print(f"Warning: Units not found for variable {varname}")
 
-            # Update the units attribute of the variable
-            var.attrs["units"] = expected_unit
-        except pint.errors.DimensionalityError:
-            raise ValueError(f"Cannot convert {varname} units to {expected_unit}.")
+            if np.nanmax(var) <= expected_range[varname][1] and \
+                    np.nanmin(var) >= expected_range[varname][0]:
+
+                var_units = expected_unit
+            else:
+                raise ValueError(f"Variable '{varname}' has no units and values are outside "
+                                 f"admitted range: {expected_range[varname]}")
+
+        if var_units != expected_unit:
+            try:
+                # Convert the values to the expected units
+                fixed_units = reg(_parse_power_units(var_units))
+                var.values = (var.values * fixed_units).to(expected_unit).magnitude
+
+            except pint.errors.DimensionalityError:
+                raise ValueError(f"Cannot convert {varname} units to {expected_unit}.")
+
+        # Update the units attribute of the variable
+        var.attrs["units"] = var_units
 
 
 def get_coordinate_names(dataset):
@@ -199,9 +220,15 @@ def is_standard_variable(data, standard_name):
     cf_attrs = CF_variable_conventions[standard_name]
 
     has_name = np.any([var_attrs.get(name) in cf_attrs["standard_name"]
-                       for name in ["name", "standard_name", "long_name"]])
+                       for name in ["name", "standard_name", "long_name"]]) or \
+               data.name in cf_attrs["standard_name"]
 
-    return has_name and (var_attrs.get("units") in cf_attrs["units"])
+    units = var_attrs.get("units")
+
+    if units is not None:
+        return has_name and (units in cf_attrs["units"])
+    else:
+        return has_name
 
 
 def _find_variable(dataset, variable_name, raise_notfound=True) -> Optional[DataArray]:
@@ -235,8 +262,8 @@ def _find_variable(dataset, variable_name, raise_notfound=True) -> Optional[Data
     # try to get variable by literal name
     array = dataset.get(variable_name)
 
-    # Array was found by explicit name and is consistent with the CF conventions
-    if array is not None and is_standard_variable(array, standard_name):
+    # Array was found by explicit name (no checks needed)
+    if array is not None:
         return array
 
     candidates = []
@@ -286,9 +313,6 @@ def parse_dataset(dataset, variables=None):
     else:
         raise ValueError("Unknown type for 'variables', must be a dictionary")
 
-    # First check units and convert to standard if needed
-    check_and_convert_units(dataset)
-
     # find variables by name or candidates variables based on CF conventions
     arrays = {name_map[0]: _find_variable(dataset, name_map, raise_notfound=True)
               for name_map in variables.items()}
@@ -320,6 +344,9 @@ def parse_dataset(dataset, variables=None):
         # in dataset (Not sure if this is a good enough condition!?)
         if np.ndim(sfc_var) == len(dataset.dims) - 1:
             arrays[name] = sfc_var
+
+    # Check units and convert to standard if needed before computing vertical velocity
+    check_and_convert_units(dataset)
 
     # Check for pressure velocity in dataset. If not present, it is estimated from
     # height based vertical velocity. If neither is found raises ValueError.

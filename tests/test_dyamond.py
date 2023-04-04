@@ -22,8 +22,8 @@ warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     # Load dyamond dataset
-    model = 'ICON'
-    resolution = 'n512'
+    model = 'IFS'
+    resolution = 'n1024'
     data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
@@ -31,8 +31,8 @@ if __name__ == '__main__':
     file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
 
     # # load earth topography and surface pressure
-    dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    sfc_pres = dataset_sfc.pres_sfc
+    # dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
+    sfc_pres = None # dataset_sfc.pres_sfc
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
 
