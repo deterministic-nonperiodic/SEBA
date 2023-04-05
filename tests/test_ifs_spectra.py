@@ -8,7 +8,7 @@ from numpy.core.numeric import normalize_axis_index
 from src.seba import EnergyBudget
 from src.spectral_analysis import kappa_from_lambda, kappa_from_deg
 from src.spectral_analysis import triangular_truncation
-from src.tools import search_closet, getspecindx
+from src.tools import search_nn_index, getspecindx
 from src.visualization import spectra_base_figure, reference_slopes
 
 params = {'xtick.labelsize': 'medium',
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     # compute spectra from coefficients
     dataset_sps = xr.open_mfdataset("../data/IFS_atm_3d_inst_n256_sps_200.nc")
 
-    p_index = search_closet(dataset_sps.plev.values, p_levels)
+    p_index = search_nn_index(dataset_sps.plev.values, p_levels)
 
     # from IFS original spectral coefficients
     vrt_spc = dataset_sps.vor.values.mean(axis=0)
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     hke_gps = 4 * np.pi * budget.horizontal_kinetic_energy().values.squeeze()
 
     # select levels
-    p_index = search_closet(budget.pressure, p_levels)
+    p_index = search_nn_index(budget.pressure, p_levels)
     hke_gps = hke_gps[p_index]
 
     # load ICON as control
@@ -171,14 +171,14 @@ if __name__ == "__main__":
     hke_icon = 4 * np.pi * budget.horizontal_kinetic_energy().values.squeeze()
     vke_icon = 4 * np.pi * budget.vertical_kinetic_energy().values.squeeze()
 
-    p_index = search_closet(budget.pressure, p_levels)
+    p_index = search_nn_index(budget.pressure, p_levels)
     hke_icon = hke_icon.mean(0)[p_index]
     vke_icon = vke_icon.mean(0)[p_index]
 
     # DYAMOND simulations
     dataset_test = xr.open_mfdataset("../data/IFS_dyamond_test.nc")
 
-    p_index = search_closet(dataset_test.plev.values, p_levels)
+    p_index = search_nn_index(dataset_test.plev.values, p_levels)
 
     # from IFS original spectral coefficients
     vrt_spc = dataset_test.vo.values.mean(axis=0)

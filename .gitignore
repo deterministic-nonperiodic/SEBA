@@ -2,6 +2,9 @@
 *.rst
 *.xml
 *.nc
+*.grib
+*.grib2
+*.grb
 *.pdf
 *.dat
 *.txt

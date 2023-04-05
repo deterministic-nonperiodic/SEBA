@@ -6,7 +6,7 @@ import scipy.signal as sig
 import scipy.special as spec
 import scipy.stats as stats
 from joblib import Parallel, delayed, cpu_count
-from scipy.spatial import cKDTree
+from scipy.spatial import KDTree
 
 from fortran_libs import numeric_tools
 from spectral_analysis import lambda_from_deg
@@ -240,6 +240,33 @@ def transform_io(func, order='C'):
     return dimension_packer
 
 
+def convert_longitude(longitude):
+    """
+    Converts a longitude array from the range (-180, 180) to the range (0, 360).
+
+    Args:
+    - longitude: array representing the longitude values in degrees
+
+    Returns:
+    - array representing the converted longitude values in degrees
+    """
+    if np.any(longitude > 180.):
+        # longitudes are within (0, 360). Converting to (-180, 180)
+        return np.where(longitude > 180, longitude - 360, longitude)
+    else:
+        # Converting to (0, 360)
+        return np.where(longitude < 0, longitude + 360, longitude)
+
+
+def regular_longitudes(nlon):
+    """
+     Creates longitudes corresponding a regular grid with increment 2*pi / nlon radians.
+    """
+    assert nlon > 3, f"Wrong value for 'nlon' {nlon} - must be at least 4."
+
+    return np.arange(0., 360, 360.0 / nlon)
+
+
 def regular_lats_wts(nlat):
     """
     Computes the latitude points and weights of a regular grid
@@ -277,6 +304,48 @@ def gaussian_lats_wts(nlat):
     latitudes = np.arcsin(nodes[::-1]) * 180.0 / np.pi
 
     return latitudes, weights
+
+
+def bound_array(a, bounds=None):
+    # check the length of the input array and set value range
+    _range = (np.min(a), np.max(a)) if len(a) > 0 else (0, 0)
+    # handle default bounds
+    bounds = bounds or _range
+
+    # replace None in bounds: works as np.clip
+    bounds = [b if b is not None else r for b, r in zip(bounds, _range)]
+
+    # return values in array within the given bounds
+    return a[(a >= bounds[0]) & (a <= bounds[1])]
+
+
+def create_grid(nlat, grid_type='regular', bounds_box=None):
+    """
+    Creates coordinates for a regular or gaussian grid
+    with 'nlat' latitudes points and '2*nlat' longitude points.
+    """
+
+    if grid_type not in ['regular', 'gaussian']:
+        raise ValueError("Wrong specification of grid type."
+                         "Must be 'regular' or 'gaussian'.")
+
+    if bounds_box is None:
+        bounds_box = {"lat": None, "lon": None}
+
+    # generate array with longitudes
+    lons = regular_longitudes(2 * nlat)
+
+    # generate array with latitudes depending on grid type
+    if grid_type == 'regular':
+        lats, _ = regular_lats_wts(nlat)
+    else:
+        lats, _ = gaussian_lats_wts(nlat)
+
+    # bound arrays to a given range
+    lats = bound_array(lats, bounds=bounds_box['lat'])
+    lons = bound_array(lons, bounds=bounds_box['lon'])
+
+    return lats, lons
 
 
 def inspect_gridtype(latitudes):
@@ -402,19 +471,57 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     return np.moveaxis(result, 0, axis)
 
 
-def search_closet(points, target_points):
+def search_nn_index(points, target_points):
+    """Uses KDTree algorithm to search for the nearest neighbors in points
+       to each value in target_points.
+    """
     if target_points is None:
         return slice(None)
-    else:
-        points = np.atleast_2d(points).T
-        target_points = np.atleast_2d(target_points).T
-        # creates a search tree
-        # noinspection PyArgumentList
-        search_tree = cKDTree(points)
-        # nearest neighbour (k=1) in levels to each point in target levels
-        _, nn_idx = search_tree.query(target_points, k=1)
 
-        return nn_idx
+    points = np.atleast_2d(points)
+    target_points = np.atleast_2d(target_points)
+    # creates a search tree
+    # noinspection PyArgumentList
+    search_tree = KDTree(points)
+    # nearest neighbour (k=1) in levels to each point in target levels
+    _, nn_idx = search_tree.query(target_points, k=1)
+
+    return nn_idx
+
+
+def interpolate_nn_2d(x, y, data, xi, yi, axes=None):
+    """Uses KDTree to perform nearest neighbor interpolation.
+       Does essentially the same as scipy's NearestNDInterpolator but limited to 2D data.
+    """
+    if axes is None:
+        axes = (0, 1)
+
+    assert data.ndim >= 2, "Input array 'data' must be at least 2D."
+
+    # move spatial axes to first dimensions
+    data = np.moveaxis(data, axes, (0, 1))
+
+    assert data.shape[0] == y.size, f"Coordinate 'y' must have the same size " \
+                                    f"as data along dimension {axes[0]}"
+
+    assert data.shape[1] == x.size, f"Coordinate 'x' must have the same size " \
+                                    f"as data along dimension {axes[1]}"
+
+    # initialize the output sape from target coordinates
+    int_shape = (-1,) + data.shape[2:]
+    out_shape = (yi.size, xi.size) + int_shape[1:]
+
+    nodes = np.column_stack([mg.ravel() for mg in np.meshgrid(x, y)])
+    points = np.column_stack([mg.ravel() for mg in np.meshgrid(xi, yi)])
+
+    # finding indexes closest to each pair in target_points
+    nn_indexes = search_nn_index(nodes, points)
+
+    # get nearest neighbors from data
+    result = data.reshape(int_shape)[nn_indexes].reshape(out_shape)
+    result = np.moveaxis(result, (0, 1), axes)
+
+    return result
 
 
 def indices_to_3d(mask, size):

@@ -1,14 +1,14 @@
 import warnings
 
+import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 
+from src.io_tools import map_func
 from src.seba import EnergyBudget
 from src.spectral_analysis import kappa_from_deg, kappa_from_lambda
 from src.tools import cumulative_flux
-from src.io_tools import map_func
 from src.visualization import AnchoredText, fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
@@ -32,7 +32,7 @@ if __name__ == '__main__':
 
     # # load earth topography and surface pressure
     # dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    sfc_pres = None # dataset_sfc.pres_sfc
+    sfc_pres = None  # dataset_sfc.pres_sfc
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
 

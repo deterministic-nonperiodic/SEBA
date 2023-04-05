@@ -688,7 +688,7 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Energy conversions APE --> DKE and DKE --> RKE
         # ------------------------------------------------------------------------------------------
-        c_ka = cumulative_flux(self.conversion_ape_dke())
+        c_ad = cumulative_flux(self.conversion_ape_dke())
 
         c_dr = cumulative_flux(self.conversion_dke_rke())
 
@@ -701,32 +701,30 @@ class EnergyBudget:
         lc_k = cumulative_flux(self.coriolis_linear_transfer())
 
         # add metadata
-        c_ka = self.add_metadata(c_ka, 'cka', gridtype='spectral',
-                                 units='W m**-2', standard_name='energy_conversion',
-                                 long_name='conversion from kinetic to '
-                                           'available potential energy')
+        attrs = dict(gridtype='spectral', units='W m**-2')
 
-        c_dr = self.add_metadata(c_dr, 'cdr', gridtype='spectral',
-                                 units='W m**-2', standard_name='energy_conversion',
-                                 long_name='conversion from divergent to '
-                                           'rotational kinetic energy')
+        c_ad = self.add_metadata(c_ad, 'cad', standard_name='conversion_ape_dke',
+                                 long_name='conversion from available potential energy '
+                                           'to divergent kinetic energy', **attrs)
 
-        pi_r = self.add_metadata(pi_r, 'pi_rke', gridtype='spectral',
-                                 units='W m**-2', standard_name='nonlinear_rke_flux',
-                                 long_name='cumulative spectral flux of rotational kinetic energy')
+        c_dr = self.add_metadata(c_dr, 'cdr', standard_name='conversion_dke_rke',
+                                 long_name='conversion from divergent to rotational kinetic energy',
+                                 **attrs)
 
-        pi_d = self.add_metadata(pi_d, 'pi_dke', gridtype='spectral',
-                                 units='W m**-2', standard_name='nonlinear_dke_flux',
-                                 long_name='cumulative spectral flux of divergent kinetic energy')
+        pi_r = self.add_metadata(pi_r, 'pi_rke', standard_name='nonlinear_rke_flux',
+                                 long_name='cumulative spectral flux of rotational kinetic energy',
+                                 **attrs)
 
-        pi_a = self.add_metadata(pi_a, 'pi_ape', gridtype='spectral',
-                                 units='W m**-2', standard_name='nonlinear_ape_flux',
-                                 long_name='cumulative spectral flux of '
-                                           'available potential energy')
+        pi_d = self.add_metadata(pi_d, 'pi_dke', standard_name='nonlinear_dke_flux',
+                                 long_name='cumulative spectral flux of divergent kinetic energy',
+                                 **attrs)
 
-        lc_k = self.add_metadata(lc_k, 'lc', gridtype='spectral',
-                                 units='W m**-2', standard_name='linear_transfer',
-                                 long_name='coriolis linear transfer')
+        pi_a = self.add_metadata(pi_a, 'pi_ape', standard_name='nonlinear_ape_flux',
+                                 long_name='cumulative spectral flux of available potential energy',
+                                 **attrs)
+
+        lc_k = self.add_metadata(lc_k, 'lc', standard_name='coriolis_transfer',
+                                 long_name='coriolis linear transfer', **attrs)
 
         # ------------------------------------------------------------------------------------------
         # Cumulative vertical fluxes of divergent kinetic energy
@@ -755,7 +753,7 @@ class EnergyBudget:
                                  long_name='cumulative vertical flux of '
                                            'available potential energy')
 
-        return xr.merge([pi_d, pi_r, lc_k, pi_a, c_ka, c_dr,
+        return xr.merge([pi_d, pi_r, lc_k, pi_a, c_ad, c_dr,
                          vf_p, vf_m, vf_k, vf_a], compat="no_conflicts")
 
     def get_ke_tendency(self, tendency, name=None, cumulative=False):
@@ -1286,11 +1284,11 @@ class EnergyBudget:
 
             mask = np.broadcast_to(mask[..., np.newaxis, :], self.data_shape)
             data = np.ma.masked_array(data, mask=mask)
-        # else:
-        #     # Filter out interpolated subterranean data using smoothed Heaviside function
-        #     # convert data to masked array according to not smoothed mask. It only affects
-        #     # the data if the mask 'beta' has a smooth transition at the edges (0 - 1).
-        #     data = self.filter_topography(data)
+        else:
+            # Filter out interpolated subterranean data using smoothed Heaviside function
+            # convert data to masked array according to not smoothed mask. It only affects
+            # the data if the mask 'beta' has a smooth transition at the edges (0 - 1).
+            data = self.filter_topography(data)
 
         # masked elements are filled with zeros before the spectral analysis
         data.set_fill_value(0.0)
