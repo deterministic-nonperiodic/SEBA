@@ -32,17 +32,11 @@ if __name__ == '__main__':
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, date_time, resolution))
 
-    # load earth topography and surface pressure
-    dataset_sfc = xr.open_dataset(
-        '/home/yanm/PycharmProjects/SEBA/data/DYAMOND2_topography_{}.nc'.format(resolution))
-
-    sfc_hgt = dataset_sfc.topography_c
-
     p_levels = np.linspace(1000e2, 10e2, 21)
     variables = None  # {'u_wind': 'ua', 'v_wind': 'va'}
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfc_hgt, p_levels=p_levels, variables=variables, jobs=1)
+    budget = EnergyBudget(dataset_dyn, p_levels=p_levels, variables=variables, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()
@@ -186,7 +180,7 @@ if __name__ == '__main__':
         pir_l = fluxes_layers[level].pi_rke.values
         pik_l = pid_l + pir_l
 
-        cak_l = fluxes_layers[level].cka.values
+        cak_l = fluxes_layers[level].cad.values
 
         cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange).mean(-1)
         cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange).mean(-1)

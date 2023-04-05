@@ -7,7 +7,7 @@ import pint
 from xarray import apply_ufunc, Dataset, DataArray, open_dataset
 
 from thermodynamics import pressure_vertical_velocity
-from tools import interpolate_1d, create_grid, inspect_gridtype
+from tools import interpolate_1d, inspect_gridtype
 
 path_global_topo = "../data/topo_global_n1250m.nc"
 
@@ -503,9 +503,9 @@ def get_surface_elevation(latitude, longitude):
         # opening existing dataset
         ds = open_dataset(expected_path)
 
-        # sorting according to required latitudes and longitudes
+        # sorting according to required longitudes. Latitudes are sorted (north-to-south)
         if np.allclose(longitude, np.sort(longitude)):
-            ds = ds.sortby('lon')
+            ds = ds.sortby('lon').sortby('lat', ascending=False)
 
         if np.allclose(ds.lon.values, longitude):
             # return DataArray with surface elevation
@@ -532,55 +532,3 @@ def get_surface_elevation(latitude, longitude):
 
         # return DataArray with surface elevation
         return ds.elevation
-
-
-def process_elevation_dataset(ds, grid=None):
-    # rename data from source to elevation and remove bathymetric data.
-    ds = ds.rename({'SRTM15Plus': "elevation", "x": "lon", "y": "lat"}).clip(min=0.0)
-
-    # set global attributes from spatial reference
-    ds.attrs = ds.spatial_ref.attrs
-
-    # drop spatial reference variable
-    ds = ds.drop_vars('spatial_ref').squeeze(drop=True)
-
-    # change elevation attributes
-    ds.elevation.attrs["units"] = "m"
-    ds.elevation.attrs["standard_name"] = "land_surface_elevation"
-
-    ds.lon.attrs["units"] = "degree_east"
-    ds.lat.attrs["units"] = "degree_north"
-
-    if isinstance(grid, str):
-
-        is_grid = len(grid) >= 2 and grid[0] in ('r', 'n') and grid[1:].isdigit()
-        if not is_grid:
-            raise ValueError("Parameter 'grid' must be a string containing a gridtype "
-                             "identifier 'r' or 'n' for regular or gaussian grids respectively;"
-                             "followed by a string denoting the number of latitude points.")
-
-        grid_type = 'gaussian' if grid[0] == "n" else 'regular'
-        nlat = 2 * int(grid[1:])
-
-        # get dataset coordinates and convert to (0, 360)
-        lons = np.where(ds.lon < 0, ds.lon + 360, ds.lon)
-        lats = ds.lat.values
-
-        bounds_box = {
-            "lat": (np.min(lats), np.max(lats)),
-            "lon": (np.min(lons), np.max(lons)),
-        }
-        # creating new grid for remapping
-        lats, lons = create_grid(nlat, grid_type=grid_type, bounds_box=bounds_box)
-
-        # convert between (0, 360) and (-180, 180) ranges if needed
-        if np.any(ds.lon < 0.):  # checks dataset longitudes' range
-            lons = np.where(lons > 180.0, lons - 360.0, lons)
-
-        # interpolate to desired resolution. Using nearest neighbor since source
-        # resolution is sufficiently high (500 m)
-        ds = ds.interp(lat=lats, lon=lons, method="nearest")
-
-        ds.attrs["grid"] = grid_type
-
-    return ds

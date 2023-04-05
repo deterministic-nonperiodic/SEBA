@@ -41,7 +41,7 @@ if __name__ == '__main__':
     sfc_hgt = dataset_sfc.topography_c
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ps=sfc_pres, ghsl=sfc_hgt, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ps=sfc_pres, jobs=1)
 
     # Compute diagnostics
     Ek = budget.horizontal_kinetic_energy()
@@ -260,7 +260,7 @@ if __name__ == '__main__':
         pir_l = fluxes_layers[level].pi_rke.values
         pik_l = pid_l + pir_l
 
-        cak_l = fluxes_layers[level].cka.values
+        cak_l = fluxes_layers[level].cad.values
         lct_l = fluxes_layers[level].lc.values
 
         cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange)

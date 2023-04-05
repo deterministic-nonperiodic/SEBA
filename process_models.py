@@ -34,11 +34,10 @@ def _process_model(model, resolution, date_time):
     else:
         print("No surface pressure file found!")
 
-    sfch = dset_sfc.get('topography_c')
     sfcp = dset_sfc.get('pres_sfc')
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ghsl=sfch, ps=sfcp, jobs=1)
+    budget = EnergyBudget(dataset_dyn, ps=sfcp, jobs=1)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy

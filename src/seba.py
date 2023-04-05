@@ -5,7 +5,7 @@ from scipy.integrate import simpson
 
 import constants as cn
 from fortran_libs import numeric_tools
-from io_tools import get_coordinate_names, reindex_coordinate
+from io_tools import get_coordinate_names, reindex_coordinate, get_surface_elevation
 from io_tools import parse_dataset, _find_coordinate, interpolate_pressure_levels
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
@@ -70,7 +70,7 @@ class EnergyBudget:
         else:
             del self.__dict__[key]
 
-    def __init__(self, dataset, variables=None, ps=None, ghsl=None, p_levels=None,
+    def __init__(self, dataset, variables=None, ps=None, p_levels=None,
                  truncation=None, rsphere=None, jobs=None):
         """
         Initializing class EnergyBudget.
@@ -198,19 +198,6 @@ class EnergyBudget:
                                  'but got {}!'.format(self.grid_shape, np.shape(ps)))
         else:
             self.ps = np.nanmean(self.ps, axis=self.info_coords.find('t'))
-
-        if ghsl is None:
-            self.hs = np.zeros(self.grid_shape)
-        else:
-            if isinstance(ghsl, xr.DataArray):
-                self.hs = np.squeeze(ghsl.values)
-            else:
-                self.hs = ghsl.squeeze()
-
-            if np.shape(self.hs) != self.grid_shape:
-                raise ValueError(
-                    'If given, the surface height must be a 2D array with shape (nlat, nlon)'
-                    'Expected shape {}, but got {}!'.format(self.grid_shape, np.shape(ghsl)))
 
         # -----------------------------------------------------------------------------
         # Create sphere object to perform the spectral transformations.
@@ -375,8 +362,11 @@ class EnergyBudget:
         temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
         temperature = np.ma.filled(temperature, fill_value=0.0)
 
-        sfcp = self.ps.flatten()
-        sfch = self.hs.flatten()
+        sfcp = self.ps.ravel()
+
+        # get surface elevation for the given grid.
+        sfch = get_surface_elevation(self.latitude, self.longitude)
+        sfch = sfch.values.ravel()
 
         # Get the surface temperature
         if self.ts is not None:
