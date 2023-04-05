@@ -9,7 +9,7 @@ from xarray import apply_ufunc, Dataset, DataArray, open_dataset
 from thermodynamics import pressure_vertical_velocity
 from tools import interpolate_1d, inspect_gridtype
 
-path_global_topo = "../data/topo_global_n1250m.nc"
+path_global_topo = "data/topo_global_n1250m.nc"
 
 CF_variable_conventions = {
     "temperature": {

@@ -24,7 +24,7 @@ if __name__ == '__main__':
     # Load dyamond dataset
     model = 'IFS'
     resolution = 'n1024'
-    data_path = '../data/'
+    data_path = 'data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
     date_time = '20[0]'
@@ -35,10 +35,6 @@ if __name__ == '__main__':
     sfc_pres = None  # dataset_sfc.pres_sfc
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
-
-    # load earth topography and surface pressure
-    dataset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
-    sfc_hgt = dataset_sfc.topography_c
 
     # Create energy budget object
     budget = EnergyBudget(dataset_dyn, ps=sfc_pres, jobs=1)
