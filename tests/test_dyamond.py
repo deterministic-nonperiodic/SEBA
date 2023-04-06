@@ -23,8 +23,8 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
 
     # Load dyamond dataset
-    model = 'IFS'
-    resolution = 'n1024'
+    model = 'ICON'
+    resolution = 'n512'
     data_path = 'data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 

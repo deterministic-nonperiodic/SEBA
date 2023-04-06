@@ -5,8 +5,7 @@ from scipy.integrate import simpson
 
 import constants as cn
 from fortran_libs import numeric_tools
-from io_tools import get_coordinate_names, reindex_coordinate, get_surface_elevation
-from io_tools import parse_dataset, _find_coordinate, interpolate_pressure_levels
+from io_tools import parse_dataset, get_surface_elevation
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
@@ -15,7 +14,7 @@ from thermodynamics import geopotential_to_height, stability_parameter
 from tools import inspect_gridtype, cumulative_flux
 from tools import prepare_data, recover_data, recover_spectra
 from tools import rotate_vector, broadcast_1dto, gradient_1d
-from tools import terrain_mask, transform_io, get_num_cores
+from tools import transform_io, get_num_cores
 
 # declare global read-only variables
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
@@ -88,7 +87,7 @@ class EnergyBudget:
             v: Horizontal wind component in the meridional direction
             w: Height/pressure vertical velocity depending on leveltype (inferred from dataset)
             t: air temperature
-            p: Atmospheric pressure. A 1D array for isobaric levels or a 3-4D array for arbitrary
+            p: Atmospheric pressure. A 1D array for isobaric levels or a ND array for arbitrary
                vertical coordinate. Data is interpolated to pressure levels before the analysis.
 
         :param variables: dict, optional,
@@ -130,87 +129,68 @@ class EnergyBudget:
             raise TypeError("Input parameter 'dataset' must be xarray.Dataset instance"
                             "or a string containing the path to a netcdf file.")
 
-        # Initialize analysis variables
-        dataset = parse_dataset(dataset, variables=variables)
+        # Initialize analysis fields and perform interpolation to constant pressure levels as
+        # needed. Resulting dataset is an instance of 'SebaDataset' which adds some convenient
+        # methods to xr.Dataset class.
+        dataset = parse_dataset(dataset, variables=variables).interpolate_levels(p_levels=p_levels)
 
-        # Perform interpolation to constant pressure levels if needed
-        dataset = interpolate_pressure_levels(dataset, p_levels=p_levels)
+        # Reverse latitude and vertical dimensions of all variables in dataset.
+        # Ensures latitude dimension is ordered north-to-south and starting from the surface.
+        dataset = dataset.sortby(["level", 'latitude'], ascending=False)
 
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as xarray objects
-        self.coords = {dataset.coords[d].axis.lower(): dataset.coords[d]
-                       for d in get_coordinate_names(dataset)}
+        self.coords = dataset.coordinates_by_axes()
         self.info_coords = ''.join(self.coords)  # string used for data reshaping and handling.
 
         # find dataset coordinates
-        self.latitude, self.nlat = _find_coordinate(dataset, "latitude")
-        self.longitude, self.nlon = _find_coordinate(dataset, "longitude")
+        self.latitude = dataset.latitude.values
+        self.longitude = dataset.longitude.values
+
+        self.nlat = self.latitude.size
+        self.nlon = self.longitude.size
 
         # Get dynamic fields as masked arrays... loading the entire data on memory at this step!
-        omega = dataset['omega'].to_masked_array()
-        u_wind = dataset['u_wind'].to_masked_array()
-        v_wind = dataset['v_wind'].to_masked_array()
-        pressure = dataset['pressure'].to_masked_array()
-        temperature = dataset['temperature'].to_masked_array()
+        self.pressure = dataset.pressure.values
 
         # Get surface fields if given in dataset
-        self.ps = dataset.get('ps')
         self.ts = dataset.get('ts')
-
-        dataset.close()
 
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.grid_shape = (self.nlat, self.nlon)
 
         # Get the size of the non-spatial dimensions (time, others ...). The analysis if performed
         # over 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
-        self.nlevels = pressure.size
-        self.samples = np.prod(u_wind.shape) // (self.nlat * self.nlon * self.nlevels)
+        self.nlevels = self.pressure.size
+        self.samples = np.prod(dataset.data_shape()) // (self.nlat * self.nlon * self.nlevels)
 
-        # resulting shape after collapsing all non-spatial dimension into samples.
-        self.data_shape = self.grid_shape + (self.samples, self.nlevels)
-
-        # Inferring the direction of the vertical axis and reordering
-        # from the surface to the model top if needed.
-        if not (np.all(pressure[1:] >= pressure[:-1]) or np.all(pressure[1:] <= pressure[:-1])):
-            raise ValueError("The vertical coordinate is not monotonic.")
-
-        self.reverse_levels = pressure[0] < pressure[-1]
-        self.pressure = np.asarray(sorted(pressure, reverse=True))
-
-        if self.reverse_levels:
-            self.coords['z'] = reindex_coordinate(self.coords['z'], self.pressure)
-            self.coords['z'].attrs['positive'] = 'up'
-
-        if self.ps is None:
+        # process surface pressure
+        if 'ps' in dataset:
+            dataset['ps'] = dataset.ps.mean(dim='time')
+        else:
             if ps is None:
                 # If surface pressure not found set first pressure level as surface pressure
-                self.ps = np.broadcast_to(np.max(pressure) + 1e2, self.grid_shape)
+                ps = np.broadcast_to(self.pressure[0] + 1e2, self.grid_shape)
             else:
                 if isinstance(ps, xr.DataArray):
-                    self.ps = np.squeeze(ps.values)
+                    ps = ps.mean(dim='time').values
                 else:
-                    self.ps = ps.squeeze()
+                    ps = ps.squeeze()
 
-            if np.shape(self.ps) != self.grid_shape:
+            if np.shape(ps) != self.grid_shape:
                 raise ValueError('If given, the surface pressure must be a scalar or a '
                                  '2D array with shape (nlat, nlon). Expected shape {}, '
                                  'but got {}!'.format(self.grid_shape, np.shape(ps)))
-        else:
-            self.ps = np.nanmean(self.ps, axis=self.info_coords.find('t'))
 
+            # include surface pressure in dataset
+            dataset['ps'] = xr.DataArray(ps, dims=("latitude", "longitude"))
+
+        self.ps = dataset.ps.values
         # -----------------------------------------------------------------------------
         # Create sphere object to perform the spectral transformations.
         # -----------------------------------------------------------------------------
         # Inspect grid type based on the latitude sampling
         self.gridtype, self.latitude, self.weights = inspect_gridtype(self.latitude)
-
-        if rsphere is None:
-            self.rsphere = cn.earth_radius
-        elif type(rsphere) == int or type(rsphere) == float:
-            self.rsphere = abs(rsphere)
-        else:
-            raise ValueError("Incorrect value for 'rsphere'.")
 
         # define the triangular truncation
         if truncation is None:
@@ -219,22 +199,12 @@ class EnergyBudget:
             self.truncation = int(truncation)
 
             if self.truncation < 0 or self.truncation > self.nlat - 1:
-                raise ValueError('Truncation must be between 0 and {:d}'.format(self.nlat - 1, ))
+                raise ValueError(f'Truncation must be between 0 and {self.nlat - 1}')
 
         # Create sphere object for spectral transforms
         self.sphere = Spharmt(self.nlon, self.nlat,
-                              gridtype=self.gridtype, rsphere=self.rsphere,
+                              gridtype=self.gridtype, rsphere=rsphere,
                               ntrunc=self.truncation, jobs=self.jobs)
-
-        # reverse latitude array (weights are symmetric around the equator)
-        self.reverse_latitude = self.latitude[0] < self.latitude[-1]
-
-        if self.reverse_latitude:
-            self.latitude = self.latitude[::-1]
-
-            # reorder latitude coordinates from north to south.
-            # self.coords['y'] = self.coords['y'].reindex({self.coords['y'].name: self.latitude})
-            self.coords['y'] = reindex_coordinate(self.coords['y'], self.latitude)
 
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
         self.nlm = self.sphere.nlm
@@ -251,34 +221,16 @@ class EnergyBudget:
                                                    'long_name': 'horizontal wavenumber',
                                                    'axis': 'X', 'units': 'm**-1'}))
 
-        # normalization factor for vector analysis:
-        # vector_norm = n * (n + 1) / re ** 2 =  kh ** -2
-        spectrum_shape = (self.truncation + 1, self.samples, self.nlevels)
-
-        self.vector_norm = broadcast_1dto(self.kappa_h ** 2, spectrum_shape)
-        self.vector_norm[0] = 1.0
-
-        # --------------------------------------------------------------------------------
-        # Preprocessing data:
-        #  - Exclude extrapolated data below the surface (p >= ps).
-        #  - Ensure latitude axis is oriented north-to-south.
-        #  - Reverse vertical axis from the surface to the model top.
-        # --------------------------------------------------------------------------------
-        self.beta = terrain_mask(self.pressure, self.ps, smooth=False)  # mask is calculated once
-
-        # Reshape and reorder data dimensions for computations
-        # self.data_info stores information to recover the original shape.
-        self.omega, self.data_info = self._transform_data(omega)
-        del omega
+        # ------------------------------------------------------------------------------------------
+        # Initialize dynamic fields
+        # ------------------------------------------------------------------------------------------
+        self.omega, self.data_info = dataset.get_field('omega')
 
         # create wind array from unfiltered wind components
-        self.wind = np.stack((self._transform_data(u_wind)[0],
-                              self._transform_data(v_wind)[0]))
-        del u_wind, v_wind
+        self.wind = np.stack((dataset.get_field('u_wind')[0], dataset.get_field('v_wind')[0]))
 
         # compute thermodynamic quantities with unfiltered temperature
-        self.temperature = self._transform_data(temperature)[0]
-        del temperature
+        self.temperature = dataset.get_field('temperature')[0]
 
         # Compute vorticity and divergence of the wind field
         self.vrt_spc, self.div_spc = self.vorticity_divergence()
@@ -296,9 +248,9 @@ class EnergyBudget:
         # Coriolis parameter
         self.fc = coriolis_parameter(self.latitude)
 
-        # -----------------------------------------------------------------------------
-        # Thermodynamic diagnostics:
-        # -----------------------------------------------------------------------------
+        # ------------------------------------------------------------------------------------------
+        # Thermodynamic diagnostics
+        # ------------------------------------------------------------------------------------------
         # Compute potential temperature
         self.exner = exner_function(self.pressure)
         self.theta = potential_temperature(self.pressure, self.temperature)
@@ -318,9 +270,9 @@ class EnergyBudget:
         # Parameter ganma to convert from temperature variance to APE
         self.ganma = stability_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
 
-    # -------------------------------------------------------------------------------
+    # ------------------------------------------------------------------------------------------
     # Methods for computing thermodynamic quantities
-    # -------------------------------------------------------------------------------
+    # ------------------------------------------------------------------------------------------
     def add_metadata(self, data, name, gridtype, **attributes):
         """
             Add metadata and export variables as xr.DataArray
@@ -341,9 +293,9 @@ class EnergyBudget:
 
         return array
 
-    # -------------------------------------------------------------------------------
+    # ------------------------------------------------------------------------------------------
     # Methods for thermodynamic diagnostics
-    # -------------------------------------------------------------------------------
+    # ------------------------------------------------------------------------------------------
     def geopotential(self):
         """
         Computes geopotential at pressure surfaces assuming a hydrostatic atmosphere.
@@ -398,21 +350,15 @@ class EnergyBudget:
         """
         return self.wind - self.geostrophic_wind()
 
-    # -------------------------------------------------------------------------------
+    # ------------------------------------------------------------------------------------------
     # Methods for computing diagnostics: kinetic and available potential energies
-    # -------------------------------------------------------------------------------
+    # ------------------------------------------------------------------------------------------
     def horizontal_kinetic_energy(self):
         """
         Horizontal kinetic energy after Augier and Lindborg (2013), Eq.13
         :return:
         """
-        if hasattr(self, 'vrt_spc') and hasattr(self, 'div_spc'):
-            vrt_spc = self.cross_spectrum(self.vrt_spc)
-            div_spc = self.cross_spectrum(self.div_spc)
-
-            kinetic_energy = (vrt_spc + div_spc) / (2.0 * self.vector_norm)
-        else:
-            kinetic_energy = self._vector_spectra(self.wind) / 2.0
+        kinetic_energy = self._vector_spectra(self.wind) / 2.0
 
         #  create dataset
         kinetic_energy = self.add_metadata(kinetic_energy, 'hke',
@@ -424,8 +370,7 @@ class EnergyBudget:
 
     def vertical_kinetic_energy(self):
         """
-        Vertical kinetic energy calculated from pressure vertical velocity
-        :return:
+        Horizontal wavenumber spectra of vertical kinetic energy
         """
         w = vertical_velocity(self.pressure, self.omega, self.temperature)
 
@@ -433,8 +378,7 @@ class EnergyBudget:
 
         #  create dataset
         kinetic_energy = self.add_metadata(kinetic_energy, 'vke',
-                                           gridtype='spectral',
-                                           units='m**2 s**-2',
+                                           gridtype='spectral', units='m**2 s**-2',
                                            standard_name='vertical_kinetic_energy',
                                            long_name='vertical kinetic energy per unit mass')
         return kinetic_energy
@@ -442,20 +386,17 @@ class EnergyBudget:
     def available_potential_energy(self):
         """
         Total available potential energy after Augier and Lindborg (2013), Eq.10
-        :return:
         """
         potential_energy = self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
 
         potential_energy = self.add_metadata(potential_energy, 'ape',
-                                             gridtype='spectral',
-                                             units='m**2 s**-2',
+                                             gridtype='spectral', units='m**2 s**-2',
                                              standard_name='available_potential_energy',
                                              long_name='available potential energy per unit mass')
         return potential_energy
 
     def vorticity_divergence(self):
-        # computes the spectral coefficients of vertical
-        # vorticity and horizontal wind divergence
+        # Spectral coefficients of vertical vorticity and horizontal wind divergence.
         return self._compute_rotdiv(self.wind)
 
     # -------------------------------------------------------------------------------
@@ -841,9 +782,6 @@ class EnergyBudget:
         # convert temperature tendency to potential temperature tendency
         theta_tendency = tendency / self.exner / cn.cp  # rate of production of internal energy
 
-        # filtering terrain
-        theta_tendency = self.filter_topography(theta_tendency)
-
         ape_tendency = self.ganma * self._scalar_spectra(self.theta_pbn, theta_tendency)
 
         if cumulative:
@@ -1007,7 +945,10 @@ class EnergyBudget:
 
             spectrum = self.cross_spectrum(rot_1, rot_2) + self.cross_spectrum(div_1, div_2)
 
-        return spectrum / self.vector_norm
+        # normalization factor for vector analysis n * (n + 1) / re ** 2
+        norm = broadcast_1dto(self.kappa_h ** 2, spectrum.shape).clip(cn.epsilon, None)
+
+        return spectrum / norm
 
     def vertical_gradient(self, scalar, vertical_axis=-1):
         """
@@ -1080,10 +1021,8 @@ class EnergyBudget:
         :param weights: 1D-array containing latitudinal weights
         :return: Global mean of a scalar function
         """
-        if lat_axis is None:
-            lat_axis = 0
-        else:
-            lat_axis = normalize_axis_index(lat_axis, scalar.ndim)
+
+        lat_axis = normalize_axis_index(lat_axis or 0, scalar.ndim)
 
         # check array dimensions
         if scalar.shape[lat_axis] != self.nlat:
@@ -1245,60 +1184,12 @@ class EnergyBudget:
         else:
             return data
 
-    def filter_topography(self, scalar):
-        # masks scalar values pierced by the topography
-        return self.beta[..., np.newaxis, :] * scalar
-
-    def _transform_data(self, scalar):
-        # Helper function for preparing data for the analysis
-
-        # Move dimensions (nlat, nlon) forward and vertical axis last
-        # (Useful for cleaner vectorized operations)
-        data, data_info = prepare_data(scalar, self.info_coords)
-
-        # Ensure the latitude dimension is ordered north-to-south
-        if self.reverse_latitude:
-            # Reverse latitude dimension
-            data = np.flip(data, axis=0)
-
-        # Ensure that the vertical dimension is ordered from the surface to the model top
-        if self.reverse_levels:
-            # Reverse data along vertical axis
-            data = np.flip(data, axis=-1)
-
-        # Mask data pierced by the topography, if not already masked during the vertical
-        # interpolation. This is required to avoid calculating vertical gradients between
-        # masked and unmasked neighbours grid points in the vertical.
-        if not np.ma.is_masked(data):
-            mask = ~self.beta.astype(bool)
-
-            mask = np.broadcast_to(mask[..., np.newaxis, :], self.data_shape)
-            data = np.ma.masked_array(data, mask=mask)
-        else:
-            # Filter out interpolated subterranean data using smoothed Heaviside function
-            # convert data to masked array according to not smoothed mask. It only affects
-            # the data if the mask 'beta' has a smooth transition at the edges (0 - 1).
-            data = self.filter_topography(data)
-
-        # masked elements are filled with zeros before the spectral analysis
-        data.set_fill_value(0.0)
-
-        return data, data_info
-
     def _representative_mean(self, scalar):
         # Computes representative mean of a scalar function:
         # Mean over a constant pressure level for regions above the surface.
 
-        if np.ma.is_masked(scalar):
-            # If the scalar is masked the average is performed only over unmasked data
-            reduced_points = 1.0
-        else:
-            # The globally averaged beta as used as a scaling factor to account for zeros in data.
-            # Gives the percentage of valid points above the surface at every level.
-            reduced_points = self.global_mean(self.beta, lat_axis=0).clip(cn.epsilon, 1.0)
-
-        # Compute weighted average on gaussian grid and scale by the number of reduced points
-        return self.global_mean(scalar, lat_axis=0) / reduced_points
+        # Compute weighted average on gaussian grid excluding masked values
+        return self.global_mean(scalar, lat_axis=0)
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean and perturbations.

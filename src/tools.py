@@ -524,6 +524,11 @@ def interpolate_nn_2d(x, y, data, xi, yi, axes=None):
 
 
 def indices_to_3d(mask, size):
+    """
+    Converts a 2D array mask[i, j] containing indices into a 3D mask with a new dimension of
+    length 'size' where all indices k < mask[i, j] along the new dimension are 0
+    """
+
     shape = tuple(mask.shape) + (size,)
 
     mask_bc, result_bc = np.broadcast_arrays(mask[..., np.newaxis], np.zeros(shape))
@@ -532,7 +537,7 @@ def indices_to_3d(mask, size):
     return result_bc
 
 
-def terrain_mask(p, ps, smooth=True, jobs=None):
+def surface_mask(p, ps, smooth=True, jobs=None):
     """
     Creates a terrain mask based on surface pressure and pressure profile
     :param: smoothed, optional

@@ -1,7 +1,7 @@
 import numpy as np
 import shtns
-# from joblib import Parallel, delayed
 
+from constants import earth_radius
 from tools import broadcast_1dto, cpu_count
 
 # private variables for class Spharmt
@@ -33,7 +33,8 @@ class Spharmt(object):
         else:
             del self.__dict__[key]
 
-    def __init__(self, nlon, nlat, rsphere=6.3712e6, gridtype='gaussian', ntrunc=None, jobs=None):
+    def __init__(self, nlon, nlat, rsphere=earth_radius, gridtype='gaussian', ntrunc=None,
+                 jobs=None):
         """initialize
            nlon:  number of longitudes
            nlat:  number of latitudes
@@ -51,8 +52,10 @@ class Spharmt(object):
             ntrunc = nlat - 1
 
         # checking parameters
-        if rsphere > 0.0:
-            self.rsphere = rsphere
+        if rsphere is None:
+            self.rsphere = earth_radius
+        elif type(rsphere) == int or type(rsphere) == float:
+            self.rsphere = abs(rsphere)
         else:
             raise ValueError('Illegal value of rsphere {} - must be positive'.format(rsphere))
 

@@ -799,7 +799,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
         y_label = r'Kinetic energy $[m^2/s^2]$'
 
     # get coordinates
-    level = 1e-2 * dataset['plev']
+    level = 1e-2 * dataset['level']
     kappa = 1e3 * dataset['kappa']
 
     if 'time' in dataset.dims:
