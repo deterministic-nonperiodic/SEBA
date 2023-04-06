@@ -21,6 +21,7 @@ plt.rcParams['legend.title_fontsize'] = 15
 warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
+
     # Load dyamond dataset
     model = 'IFS'
     resolution = 'n1024'
@@ -31,8 +32,8 @@ if __name__ == '__main__':
     file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
 
     # # load earth topography and surface pressure
-    # dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    sfc_pres = None  # dataset_sfc.pres_sfc
+    dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
+    sfc_pres = dataset_sfc.pres_sfc
 
     dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
 
@@ -65,7 +66,7 @@ if __name__ == '__main__':
         x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
         xticks = np.array([1, 10, 100, 1000])
     else:
-        x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
+        x_limits = 1e3 * kappa_from_deg(np.array([0, 2128]))
         xticks = np.array([2, 20, 200, 2000])
 
     y_limits = [1e-4, 5e7]
@@ -163,7 +164,7 @@ if __name__ == '__main__':
 
         pik_l = fluxes_level.pi_dke.values + fluxes_level.pi_rke.values
         pia_l = fluxes_level.pi_ape.values
-        cka_l = fluxes_level.cka.values
+        cka_l = fluxes_level.cad.values
         lct_l = fluxes_level.lc.values
         vfk_l = fluxes_level.vf_dke.values
         vfa_l = fluxes_level.vf_ape.values
@@ -321,7 +322,7 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
-    figure_name = '../figures/{}_fluxes_section_{}.pdf'.format(model, resolution)
+    figure_name = './figures/{}_fluxes_section_{}.pdf'.format(model, resolution)
 
     fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vf_dke'],
                             resolution='n1024', y_limits=[1000., 100.],

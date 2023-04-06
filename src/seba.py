@@ -185,7 +185,7 @@ class EnergyBudget:
         if self.ps is None:
             if ps is None:
                 # If surface pressure not found set first pressure level as surface pressure
-                self.ps = np.broadcast_to(np.max(pressure), self.grid_shape)
+                self.ps = np.broadcast_to(np.max(pressure) + 1e2, self.grid_shape)
             else:
                 if isinstance(ps, xr.DataArray):
                     self.ps = np.squeeze(ps.values)
