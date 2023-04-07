@@ -5,10 +5,8 @@ import numpy as np
 import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
-from src.io_tools import map_func
 from src.seba import EnergyBudget
 from src.spectral_analysis import kappa_from_deg, kappa_from_lambda
-from src.tools import cumulative_flux
 from src.visualization import AnchoredText, fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
@@ -41,26 +39,17 @@ if __name__ == '__main__':
     budget = EnergyBudget(dataset_dyn, ps=sfc_pres, jobs=1)
 
     # Compute diagnostics
-    Ek = budget.horizontal_kinetic_energy()
-    Ea = budget.available_potential_energy()
-    Ew = budget.vertical_kinetic_energy()
+    dataset_energy = budget.energy_diagnostics()
 
-    prange_trp = [250e2, 500e2]
-    prange_stp = [50e2, 250e2]
-
-    # Kinetic energy in vector form accumulate and integrate vertically and average over samples:
-    Ek_trp = map_func(budget.vertical_integration, Ek, pressure_range=prange_trp).mean(dim='time')
-    Ew_trp = map_func(budget.vertical_integration, Ew, pressure_range=prange_trp).mean(dim='time')
-    Ea_trp = map_func(budget.vertical_integration, Ea, pressure_range=prange_trp).mean(dim='time')
-
-    Ek_stp = map_func(budget.vertical_integration, Ek, pressure_range=prange_stp).mean(dim='time')
-    Ew_stp = map_func(budget.vertical_integration, Ew, pressure_range=prange_stp).mean(dim='time')
-    Ea_stp = map_func(budget.vertical_integration, Ea, pressure_range=prange_stp).mean(dim='time')
+    layers = {
+        'Troposphere': [250e2, 500e2],
+        'Stratosphere': [50e2, 250e2]
+    }
 
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    kappa = 1e3 * Ek_trp.kappa.values  # km^-1
+    kappa = 1e3 * dataset_energy.kappa.values  # km^-1
 
     if kappa.size < 1000:
         x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
@@ -88,13 +77,13 @@ if __name__ == '__main__':
 
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7., 5.8), constrained_layout=True)
 
-    ax.loglog(kappa, Ek_trp, label=r'$E_K$', linewidth=1.5, linestyle='-', color='red', alpha=0.85)
-    ax.loglog(kappa, Ea_trp, label=r'$E_A$', linewidth=1.5, linestyle='-', color='navy')
-    ax.loglog(kappa, Ew_trp, label=r'$E_w$', linewidth=1., linestyle='-', color='black')
+    ls = ['-', '--']
+    for i, (layer, prange) in enumerate(layers.items()):
+        data = dataset_energy.integrate_levels(coord_range=prange).mean(dim='time')
 
-    ax.loglog(kappa, Ek_stp, label=r'    ', linewidth=1.5, linestyle='--', color='red', alpha=0.85)
-    ax.loglog(kappa, Ea_stp, label=r'    ', linewidth=1.5, linestyle='--', color='navy')
-    ax.loglog(kappa, Ew_stp, label=r'    ', linewidth=1., linestyle='--', color='black')
+        ax.loglog(kappa, data.hke, label=r'$E_K$', linewidth=1.2, linestyle=ls[i], color='red')
+        ax.loglog(kappa, data.ape, label=r'$E_A$', linewidth=1.2, linestyle=ls[i], color='navy')
+        ax.loglog(kappa, data.vke, label=r'$E_w$', linewidth=1.2, linestyle=ls[i], color='black')
 
     # Plot reference slopes
     ax.loglog(x_sscale, y_sscale, lw=1.2, ls='dashed', color='gray')
@@ -142,12 +131,8 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     kappa = 1e3 * budget.kappa_h
 
-    # Cumulative fluxes:
-    # - Nonlinear energy fluxes
-    # - linear spectral transfer due to coriolis
-    # - Energy conversion from APE to KE
-    # - Vertical energy fluxes
-    dataset_fluxes = budget.cumulative_energy_fluxes().mean(dim='time')
+    # get cumulative energy fluxes
+    dataset_fluxes = budget.cumulative_energy_fluxes()
 
     # Perform vertical integration along last axis
     layers = {
@@ -160,23 +145,24 @@ if __name__ == '__main__':
     }
 
     for i, (level, prange) in enumerate(layers.items()):
-        fluxes_level = map_func(budget.vertical_integration, dataset_fluxes, pressure_range=prange)
 
-        pik_l = fluxes_level.pi_dke.values + fluxes_level.pi_rke.values
-        pia_l = fluxes_level.pi_ape.values
-        cka_l = fluxes_level.cad.values
-        lct_l = fluxes_level.lc.values
-        vfk_l = fluxes_level.vf_dke.values
-        vfa_l = fluxes_level.vf_ape.values
-        cdr_l = fluxes_level.cdr.values
+        data = dataset_fluxes.integrate_levels(coord_range=prange).mean(dim='time')
+
+        pik = data.pi_dke.values + data.pi_rke.values
+        pia = data.pi_ape.values
+        cka = data.cad.values
+        lct = data.lc.values
+        vfk = data.vf_dke.values
+        vfa = data.vf_ape.values
+        cdr = data.cdr.values
 
         # Create figure
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
 
-        pit_l = pik_l + pia_l
+        pit = pik + pia
 
-        y_min = 1.5 * np.nanmin([pik_l, cdr_l])
-        y_max = 1.5 * np.nanmax([pit_l, vfk_l + vfa_l, cka_l])
+        y_min = 1.5 * np.nanmin([pik, cdr])
+        y_max = 1.5 * np.nanmax([pit, vfk + vfa, cka])
 
         y_limits = limits[level]
 
@@ -184,18 +170,18 @@ if __name__ == '__main__':
         at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
         ax.add_artist(at)
 
-        ax.semilogx(kappa, pit_l, label=r'$\Pi = \Pi_K + \Pi_A$',
+        ax.semilogx(kappa, pit, label=r'$\Pi = \Pi_K + \Pi_A$',
                     linewidth=2.5, linestyle='-', color='k')
-        ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=1.6, linestyle='-', color='red')
-        ax.semilogx(kappa, pia_l, label=r'$\Pi_A$', linewidth=1.6, linestyle='-', color='navy')
+        ax.semilogx(kappa, pik, label=r'$\Pi_K$', linewidth=1.6, linestyle='-', color='red')
+        ax.semilogx(kappa, pia, label=r'$\Pi_A$', linewidth=1.6, linestyle='-', color='navy')
 
-        ax.semilogx(kappa, cka_l, label=r'$C_{A\rightarrow D}$',
+        ax.semilogx(kappa, cka, label=r'$C_{A\rightarrow D}$',
                     linewidth=1.6, linestyle='--', color='green')
-        ax.semilogx(kappa, cdr_l, label=r'$C_{D\rightarrow R}$',
+        ax.semilogx(kappa, cdr, label=r'$C_{D\rightarrow R}$',
                     linewidth=1.6, linestyle='-.', color='cyan')
 
         # ax.semilogx(kappa, lct_l, label=r'$L_c$', linewidth=1.6, linestyle='--', color='orange')
-        ax.semilogx(kappa, vfk_l + vfa_l, label=r'$F_{\uparrow}(p_b) - F_{\uparrow}(p_t)$',
+        ax.semilogx(kappa, vfk + vfa, label=r'$F_{\uparrow}(p_b) - F_{\uparrow}(p_t)$',
                     linewidth=1.6, linestyle='-.', color='magenta')
 
         ax.set_ylabel(r'Cumulative energy flux ($W~m^{-2}$)', fontsize=15)
@@ -227,13 +213,6 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     kappa = 1e3 * budget.kappa_h
 
-    # conversion of divergent to rotational kinetic energy
-    cdr_w = cumulative_flux(budget.conversion_dke_rke_vertical()).mean(-2)
-    cdr_v = cumulative_flux(budget.conversion_dke_rke_vorticity()).mean(-2)
-    cdr_c = cumulative_flux(budget.conversion_dke_rke_coriolis()).mean(-2)
-
-    cdr = cdr_w + cdr_v + cdr_c
-
     # ----------------------------------------------------------------------------------------------
     # Load computed fluxes
     # ----------------------------------------------------------------------------------------------
@@ -244,26 +223,27 @@ if __name__ == '__main__':
 
     ke_limits = {'Free troposphere': [-0.6, 0.6],
                  'Lower troposphere': [-0.6, 0.6]}
-
     # perform vertical integration
-    fluxes_layers = {}
-    for i, (level, prange) in enumerate(layers.items()):
-        fluxes_layers[level] = map_func(budget.vertical_integration,
-                                        dataset_fluxes, pressure_range=prange)
+    colors = ['green', 'magenta']
+    if kappa.size < 1000:
+        x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
+        xticks = np.array([1, 10, 100, 1000])
+    else:
+        x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
+        xticks = np.array([2, 20, 200, 2000])
 
     for i, (level, prange) in enumerate(layers.items()):
         # Integrate fluxes in layers
-        pid_l = fluxes_layers[level].pi_dke.values
-        pir_l = fluxes_layers[level].pi_rke.values
-        pik_l = pid_l + pir_l
+        data = dataset_fluxes.integrate_levels(coord_range=prange).mean(dim='time')
 
-        cak_l = fluxes_layers[level].cad.values
-        lct_l = fluxes_layers[level].lc.values
+        cad = data.cad.values
+        pid = data.pi_dke.values
+        pir = data.pi_rke.values
 
-        cdr_wl = budget.vertical_integration(cdr_w, pressure_range=prange)
-        cdr_vl = budget.vertical_integration(cdr_v, pressure_range=prange)
-        cdr_cl = budget.vertical_integration(cdr_c, pressure_range=prange)
-        cdr_l = budget.vertical_integration(cdr, pressure_range=prange) - cdr_cl
+        cdr_w = data.cdr_w.values
+        cdr_v = data.cdr_v.values
+        cdr_c = data.cdr_c.values
+        cdr = data.cdr.values
 
         # ------------------------------------------------------------------------------------------
         # Visualization of Kinetic energy budget
@@ -274,19 +254,21 @@ if __name__ == '__main__':
         at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
         ax.add_artist(at)
 
-        ax.semilogx(kappa, pik_l, label=r'$\Pi_K$', linewidth=2., linestyle='-', color='k')
+        # ax.semilogx(kappa, cad, label=r'$C_{A\rightarrow D}$',
+        #             linewidth=1.6, linestyle='-', color='green')
 
-        # if model == 'ICON':
-        ax.semilogx(kappa, pid_l, label=r'$\Pi_D$', linewidth=1.6, linestyle='-', color='green')
-        ax.semilogx(kappa, pir_l, label=r'$\Pi_R$', linewidth=1.6, linestyle='-', color='red')
+        ax.semilogx(kappa, pid + pir, label=r'$\Pi_K$', linewidth=2., linestyle='-', color='k')
 
-        ax.semilogx(kappa, cdr_l, label=r'$C_{D \rightarrow R}$',
+        ax.semilogx(kappa, pid, label=r'$\Pi_D$', linewidth=1.6, linestyle='-', color='green')
+        ax.semilogx(kappa, pir, label=r'$\Pi_R$', linewidth=1.6, linestyle='-', color='red')
+
+        ax.semilogx(kappa, cdr, label=r'$C_{D \rightarrow R}$',
                     linewidth=2., linestyle='-', color='blue')
 
-        ax.semilogx(kappa, cdr_wl, label=r'Vertical motion', linewidth=1.6,
+        ax.semilogx(kappa, cdr_w, label=r'Vertical motion', linewidth=1.6,
                     linestyle='-.', color='black')
 
-        ax.semilogx(kappa, cdr_vl, label=r'Relative vorticity', linewidth=1.6,
+        ax.semilogx(kappa, cdr_v, label=r'Relative vorticity', linewidth=1.6,
                     linestyle='-.', color='red')
 
         # ax.semilogx(kappa, cdr_cl, label=r'Coriolis', linewidth=1.6,

@@ -5,7 +5,7 @@ from scipy.integrate import simpson
 
 import constants as cn
 from fortran_libs import numeric_tools
-from io_tools import parse_dataset, get_surface_elevation
+from io_tools import parse_dataset, get_surface_elevation, SebaDataset
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
@@ -132,29 +132,29 @@ class EnergyBudget:
         # Initialize analysis fields and perform interpolation to constant pressure levels as
         # needed. Resulting dataset is an instance of 'SebaDataset' which adds some convenient
         # methods to xr.Dataset class.
-        dataset = parse_dataset(dataset, variables=variables).interpolate_levels(p_levels=p_levels)
+        data = parse_dataset(dataset, variables=variables).interpolate_levels(p_levels=p_levels)
 
         # Reverse latitude and vertical dimensions of all variables in dataset.
         # Ensures latitude dimension is ordered north-to-south and starting from the surface.
-        dataset = dataset.sortby(["level", 'latitude'], ascending=False)
+        data = data.sortby(["level", 'latitude'], ascending=False)
 
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as xarray objects
-        self.coords = dataset.coordinates_by_axes()
+        self.coords = data.coordinates_by_axes()
         self.info_coords = ''.join(self.coords)  # string used for data reshaping and handling.
 
         # find dataset coordinates
-        self.latitude = dataset.latitude.values
-        self.longitude = dataset.longitude.values
+        self.latitude = data.latitude.values
+        self.longitude = data.longitude.values
 
         self.nlat = self.latitude.size
         self.nlon = self.longitude.size
 
         # Get dynamic fields as masked arrays... loading the entire data on memory at this step!
-        self.pressure = dataset.pressure.values
+        self.pressure = data.pressure.values
 
         # Get surface fields if given in dataset
-        self.ts = dataset.get('ts')
+        self.ts = data.get('ts')
 
         # Get the dimensions for levels, latitude and longitudes in the input arrays.
         self.grid_shape = (self.nlat, self.nlon)
@@ -162,11 +162,11 @@ class EnergyBudget:
         # Get the size of the non-spatial dimensions (time, others ...). The analysis if performed
         # over 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
         self.nlevels = self.pressure.size
-        self.samples = np.prod(dataset.data_shape()) // (self.nlat * self.nlon * self.nlevels)
+        self.samples = np.prod(data.data_shape()) // (self.nlat * self.nlon * self.nlevels)
 
         # process surface pressure
-        if 'ps' in dataset:
-            dataset['ps'] = dataset.ps.mean(dim='time')
+        if 'ps' in data:
+            data['ps'] = data.ps.mean(dim='time')
         else:
             if ps is None:
                 # If surface pressure not found set first pressure level as surface pressure
@@ -183,9 +183,9 @@ class EnergyBudget:
                                  'but got {}!'.format(self.grid_shape, np.shape(ps)))
 
             # include surface pressure in dataset
-            dataset['ps'] = xr.DataArray(ps, dims=("latitude", "longitude"))
+            data['ps'] = xr.DataArray(ps, dims=("latitude", "longitude"))
 
-        self.ps = dataset.ps.values
+        self.ps = data.ps.values
         # -----------------------------------------------------------------------------
         # Create sphere object to perform the spectral transformations.
         # -----------------------------------------------------------------------------
@@ -224,20 +224,19 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Initialize dynamic fields
         # ------------------------------------------------------------------------------------------
-        self.omega, self.data_info = dataset.get_field('omega')
+        self.omega, self.data_info = data.get_field('omega')
 
-        # create wind array from unfiltered wind components
-        self.wind = np.stack((dataset.get_field('u_wind')[0], dataset.get_field('v_wind')[0]))
+        # define data mask once for consistency
+        self.data_mask = self.omega.mask
 
-        # compute thermodynamic quantities with unfiltered temperature
-        self.temperature = dataset.get_field('temperature')[0]
+        # create wind array from masked wind components (using np.ma.stack to preserve mask)
+        self.wind = np.ma.stack((data.get_field('u_wind')[0], data.get_field('v_wind')[0]))
 
-        # Compute vorticity and divergence of the wind field
-        self.vrt_spc, self.div_spc = self.vorticity_divergence()
+        # compute thermodynamic quantities from masked temperature
+        self.temperature = data.get_field('temperature')[0]
 
-        # Transform of divergence and vorticity to the gaussian/regular grid
-        self.div = self._inverse_transform(self.div_spc)
-        self.vrt = self._inverse_transform(self.vrt_spc)
+        # Compute vorticity and divergence of the wind field. TODO: check if already exists
+        self.vrt, self.div = self.vorticity_divergence()
 
         # compute the vertical wind shear before filtering to avoid sharp gradients.
         self.wind_shear = self.vertical_gradient(self.wind)
@@ -251,11 +250,10 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Thermodynamic diagnostics
         # ------------------------------------------------------------------------------------------
-        # Compute potential temperature
         self.exner = exner_function(self.pressure)
         self.theta = potential_temperature(self.pressure, self.temperature)
 
-        # Compute geopotential (Compute before applying mask!)
+        # Compute geopotential. TODO: check if already exits in dataset
         self.phi = self.geopotential()
         self.height = geopotential_to_height(self.phi)
 
@@ -332,7 +330,10 @@ class EnergyBudget:
         phi = numeric_tools.geopotential(self.pressure, temperature, sfch, sfcp, sfct=sfct)
 
         # back to the original shape (same as temperature)
-        return np.moveaxis(phi, 0, 1).reshape(data_shape)
+        phi = np.moveaxis(phi, 0, 1).reshape(data_shape)
+
+        # Create surface masked array with geopotential field
+        return np.ma.masked_array(phi, mask=self.data_mask)
 
     def geostrophic_wind(self):
         """
@@ -396,8 +397,20 @@ class EnergyBudget:
         return potential_energy
 
     def vorticity_divergence(self):
+        """
+        Computes the vertical vorticity and horizontal divergence
+        """
         # Spectral coefficients of vertical vorticity and horizontal wind divergence.
-        return self._compute_rotdiv(self.wind)
+        vrt_spc, div_spc = self._compute_rotdiv(self.wind)
+
+        # transform back to grid-point space preserving mask
+        vrt = self._inverse_transform(vrt_spc)
+        div = self._inverse_transform(div_spc)
+
+        vrt = np.ma.masked_array(vrt, mask=self.data_mask, fill_value=0.0)
+        div = np.ma.masked_array(div, mask=self.data_mask, fill_value=0.0)
+
+        return vrt, div
 
     # -------------------------------------------------------------------------------
     # Methods for computing spectral fluxes
@@ -611,6 +624,17 @@ class EnergyBudget:
 
         return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
 
+    def energy_diagnostics(self):
+        """
+        Computes spectral energy budget and return as dataset objects.
+        """
+        # Compute diagnostics
+        hke = self.horizontal_kinetic_energy()
+        ape = self.available_potential_energy()
+        vke = self.vertical_kinetic_energy()
+
+        return SebaDataset(xr.merge([hke, ape, vke], compat="no_conflicts"))
+
     def cumulative_energy_fluxes(self):
         """
         Computes each term in spectral energy budget and return as xr.DataArray objects.
@@ -621,7 +645,13 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         c_ad = cumulative_flux(self.conversion_ape_dke())
 
-        c_dr = cumulative_flux(self.conversion_dke_rke())
+        cdr_w = cumulative_flux(self.conversion_dke_rke_vertical())
+        cdr_v = cumulative_flux(self.conversion_dke_rke_vorticity())
+        cdr_c = cumulative_flux(self.conversion_dke_rke_coriolis())
+
+        # Total conversion from divergent to rotational kinetic energy.
+        # c_dr = cumulative_flux(self.conversion_dke_rke())
+        c_dr = cdr_w + cdr_v + cdr_c
 
         # Compute cumulative nonlinear spectral energy fluxes
         pi_r = cumulative_flux(self.rke_nonlinear_transfer())
@@ -638,21 +668,34 @@ class EnergyBudget:
                                  long_name='conversion from available potential energy '
                                            'to divergent kinetic energy', **attrs)
 
+        cdr_w = self.add_metadata(cdr_w, 'cdr_w',
+                                  standard_name='conversion_dke_rke_vertical_velocity',
+                                  long_name='conversion from divergent to rotational kinetic '
+                                            'energy due to vertical velocity', **attrs)
+
+        cdr_v = self.add_metadata(cdr_v, 'cdr_v', standard_name='conversion_dke_rke_vorticity',
+                                  long_name='conversion from divergent to rotational kinetic '
+                                            'energy due to relative vorticity', **attrs)
+
+        cdr_c = self.add_metadata(cdr_c, 'cdr_c', standard_name='conversion_dke_rke_coriolis',
+                                  long_name='conversion from divergent to rotational kinetic '
+                                            'energy due to coriolis effect', **attrs)
+
         c_dr = self.add_metadata(c_dr, 'cdr', standard_name='conversion_dke_rke',
-                                 long_name='conversion from divergent to rotational kinetic energy',
-                                 **attrs)
+                                 long_name='conversion from divergent to '
+                                           'rotational kinetic energy', **attrs)
 
         pi_r = self.add_metadata(pi_r, 'pi_rke', standard_name='nonlinear_rke_flux',
-                                 long_name='cumulative spectral flux of rotational kinetic energy',
-                                 **attrs)
+                                 long_name='cumulative spectral flux of '
+                                           'rotational kinetic energy', **attrs)
 
         pi_d = self.add_metadata(pi_d, 'pi_dke', standard_name='nonlinear_dke_flux',
-                                 long_name='cumulative spectral flux of divergent kinetic energy',
-                                 **attrs)
+                                 long_name='cumulative spectral flux of '
+                                           'divergent kinetic energy', **attrs)
 
         pi_a = self.add_metadata(pi_a, 'pi_ape', standard_name='nonlinear_ape_flux',
-                                 long_name='cumulative spectral flux of available potential energy',
-                                 **attrs)
+                                 long_name='cumulative spectral flux of '
+                                           'available potential energy', **attrs)
 
         lc_k = self.add_metadata(lc_k, 'lc', standard_name='coriolis_transfer',
                                  long_name='coriolis linear transfer', **attrs)
@@ -667,25 +710,24 @@ class EnergyBudget:
         vf_a = cumulative_flux(self.vertical_gradient(self.ape_vertical_flux()))
 
         # add metadata
-        vf_p = self.add_metadata(vf_p, 'pf_dke', gridtype='spectral',
-                                 units='W m**-2', standard_name='pressure_dke_flux',
-                                 long_name='vertical pressure flux')
+        vf_p = self.add_metadata(vf_p, 'pf_dke', standard_name='pressure_dke_flux',
+                                 long_name='vertical pressure flux', **attrs)
 
-        vf_m = self.add_metadata(vf_m, 'mf_dke', gridtype='spectral',
-                                 units='W m**-2', standard_name='turbulent_dke_flux',
-                                 long_name='vertical turbulent flux of kinetic energy')
+        vf_m = self.add_metadata(vf_m, 'mf_dke', standard_name='turbulent_dke_flux',
+                                 long_name='vertical turbulent flux of kinetic energy', **attrs)
 
-        vf_k = self.add_metadata(vf_k, 'vf_dke', gridtype='spectral',
-                                 units='W m**-2', standard_name='vertical_dke_flux',
-                                 long_name='cumulative vertical flux of kinetic energy')
+        vf_k = self.add_metadata(vf_k, 'vf_dke', standard_name='vertical_dke_flux',
+                                 long_name='cumulative vertical flux of kinetic energy', **attrs)
 
-        vf_a = self.add_metadata(vf_a, 'vf_ape', gridtype='spectral',
-                                 units='W m**-2', standard_name='vertical_ape_flux',
+        vf_a = self.add_metadata(vf_a, 'vf_ape', standard_name='vertical_ape_flux',
                                  long_name='cumulative vertical flux of '
-                                           'available potential energy')
+                                           'available potential energy', **attrs)
 
-        return xr.merge([pi_d, pi_r, lc_k, pi_a, c_ad, c_dr,
-                         vf_p, vf_m, vf_k, vf_a], compat="no_conflicts")
+        # create SebaDataset object
+        dataset_fluxes = xr.merge([pi_d, pi_r, lc_k, pi_a, c_ad, cdr_w, cdr_v, cdr_c, c_dr,
+                                   vf_p, vf_m, vf_k, vf_a], compat="no_conflicts")
+
+        return SebaDataset(dataset_fluxes)
 
     def get_ke_tendency(self, tendency, name=None, cumulative=False):
         r"""
@@ -815,6 +857,12 @@ class EnergyBudget:
         # Compute non-divergent components from velocity potential
         psi_grad = self.horizontal_gradient(psi_grid)
 
+        # apply mask to computed gradients
+        mask = self.wind.mask
+
+        chi_grad = np.ma.masked_array(chi_grad, mask=mask, fill_value=0.0)
+        psi_grad = np.ma.masked_array(psi_grad, mask=mask, fill_value=0.0)
+
         return chi_grad, rotate_vector(psi_grad)
 
     # --------------------------------------------------------------------
@@ -907,7 +955,7 @@ class EnergyBudget:
         """
 
         # Horizontal kinetic energy per unit mass in grid-point space
-        kinetic_energy = np.sum(wind * wind, axis=0) / 2.0
+        kinetic_energy = np.ma.sum(wind * wind, axis=0) / 2.0
 
         # Horizontal gradient of horizontal kinetic energy
         # (components stored along the first dimension)
@@ -954,7 +1002,13 @@ class EnergyBudget:
         """
             Computes vertical gradient of a scalar function in pressure coordinates: d(scalar)/dp
         """
-        return gradient_1d(scalar, self.pressure, axis=vertical_axis)
+        scalar_grad = gradient_1d(scalar, self.pressure, axis=vertical_axis)
+
+        # preserve the mask of scalar if masked
+        if np.ma.is_masked(scalar):
+            scalar_grad = np.ma.masked_array(scalar_grad, mask=scalar.mask, fill_value=0.0)
+
+        return scalar_grad
 
     def vertical_integration(self, scalar, pressure_range=None, vertical_axis=-1):
         r"""Computes mass-weighted vertical integral of a scalar function.
@@ -1047,7 +1101,7 @@ class EnergyBudget:
         scalar_average = np.ma.average(scalar, weights=weights, axis=lat_axis)
 
         # mean along the longitude dimension (same as lat_axis after array reduction)
-        return np.nanmean(scalar_average, axis=lat_axis)
+        return np.ma.mean(scalar_average, axis=lat_axis)
 
     def integrate_order(self, cs_lm, degrees=None):
         """Accumulates the cross-spectrum as a function of spherical harmonic degree.
@@ -1185,10 +1239,9 @@ class EnergyBudget:
             return data
 
     def _representative_mean(self, scalar):
-        # Computes representative mean of a scalar function:
-        # Mean over a constant pressure level for regions above the surface.
-
-        # Compute weighted average on gaussian grid excluding masked values
+        # Computes representative mean of a scalar function: weighted average
+        # on gaussian or regular grid excluding masked values over a constant
+        # pressure level for regions above the surface.
         return self.global_mean(scalar, lat_axis=0)
 
     def _split_mean_perturbation(self, scalar):

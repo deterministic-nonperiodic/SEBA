@@ -175,14 +175,10 @@ def broadcast_1dto(arr, shape):
 
 
 def rotate_vector(vector, axis=0):
-    if axis != 0:
-        vector = np.moveaxis(vector, axis, 0)
-
-    rotated = np.stack([-vector[1], vector[0]])
-
-    if axis != 0:
-        rotated = np.moveaxis(rotated, 0, axis)
-    return rotated
+    # take vector components along axis
+    vector = np.take(vector, [0, 1], axis=axis)
+    # return vector rotated 90 degrees counterclockwise
+    return np.ma.stack([-vector[1], vector[0]])
 
 
 def getspecindx(ntrunc):
@@ -205,7 +201,7 @@ def getspecindx(ntrunc):
 
 def transform_io(func, order='C'):
     """
-    Decorator for handling arrays' IO dimensions for calling spharm's spectral functions.
+    Decorator for handling arrays' IO dimensions for calling SHTns' spectral functions.
     The dimensions of the input arrays with shapes (nlat, nlon, nlev, ntime, ...)
     or (ncoeffs, nlev, ntime, ...) are packed to (nlat, nlon, samples) and (ncoeffs, samples)
     respectively, where ncoeffs = (ntrunc+1)*(ntrunc+2)/2. Finally, the outputs are transformed
@@ -263,7 +259,7 @@ def regular_longitudes(nlon):
     """
     assert nlon > 3, f"Wrong value for 'nlon' {nlon} - must be at least 4."
 
-    return np.arange(0., 360, 360.0 / nlon)
+    return np.arange(0., 360.0, 360.0 / nlon)
 
 
 def regular_lats_wts(nlat):
@@ -377,7 +373,7 @@ def inspect_gridtype(latitudes):
         reference, weights = regular_lats_wts(nlat)
 
         if not np.allclose(latitudes, reference, atol=tolerance):
-            raise ValueError('Invalid equally-spaced latitudes (they may be non-global)')
+            raise ValueError('Invalid equally-spaced latitudes (may be non-global)')
         gridtype = 'regular'
     else:
         # The latitudes are not equally-spaced, which suggests they might be gaussian.
@@ -468,6 +464,13 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     result = result[:, window_size:-window_size, window_size:-window_size]
 
     return np.moveaxis(result, 0, axis)
+
+
+def is_sorted(arr, ascending=True):
+    if ascending:
+        return np.all(arr[:-1] <= arr[1:])
+    else:
+        return np.all(arr[:-1] >= arr[1:])
 
 
 def search_nn_index(points, target_points):
@@ -632,7 +635,7 @@ def broadcast_indices(indices, shape, axis):
     """Calculate index values to properly broadcast index array within data array.
     The purpose of this function is work around the challenges trying to work with arrays of
     indices that need to be "broadcast" against full slices for other dimensions.
-    [Taken from Metpy v.1.4]
+    [From Metpy v.1.4]
 
     """
     ret = []
@@ -650,7 +653,9 @@ def broadcast_indices(indices, shape, axis):
 
 def gradient_1d(scalar, x, axis=-1, order=6):
     """
-    Computes gradient of a scalar function d(scalar)/dx along a given axis.
+    Computes the gradient of a scalar function d(scalar)/dx along a given axis. Uses high-order
+    compact finite differences schemes if the input grid is regularly spaced, otherwise uses the
+    second-order accurate scheme implemented in 'numpy.gradient'.
 
     Parameters
     ----------
@@ -662,8 +667,9 @@ def gradient_1d(scalar, x, axis=-1, order=6):
     axis: int, optional, default axis=-1
         Gradient is calculated only along the given axis.
 
-    order: int, default order=6 (higher combined accuracy)
-        Determines the order of the formal truncation error. Available options are 2-8.
+    order: int, default order=6 (recommended higher combined accuracy)
+        Determines the order of the formal truncation error.
+        Available options are 2 <= order <= 8.
 
     Returns
     -------

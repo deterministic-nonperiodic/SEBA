@@ -4,12 +4,13 @@ from typing import Optional
 
 import numpy as np
 import pint
+import constants as cn
 from xarray import apply_ufunc, Dataset, DataArray, open_dataset
 
 from thermodynamics import pressure_vertical_velocity
-from tools import interpolate_1d, inspect_gridtype, prepare_data, surface_mask
+from tools import interpolate_1d, inspect_gridtype, prepare_data, surface_mask, is_sorted
 
-path_global_topo = "data/topo_global_n1250m.nc"
+path_global_topo = "./data/topo_global_n1250m.nc"
 
 CF_variable_conventions = {
     "temperature": {
@@ -65,11 +66,18 @@ CF_coordinate_conventions = {
         'axis': ('X',)
     },
     "level": {
-        "standard_name": ('level', 'lev', 'pressure', 'air_pressure',
-                          'altitude', 'depth', 'height', 'geopotential_height',
+        "standard_name": ('level', 'lev', 'zlev', 'eta', 'plev',
+                          'pressure', 'air_pressure', 'altitude',
+                          'depth', 'height', 'geopotential_height',
                           'height_above_geopotential_datum',
                           'height_above_mean_sea_level',
-                          'height_above_reference_ellipsoid'),
+                          'height_above_reference_ellipsoid',
+                          'atmosphere_hybrid_height_coordinate',
+                          'atmosphere_hybrid_height_coordinate',
+                          'atmosphere_ln_pressure_coordinate',
+                          'atmosphere_sigma_coordinate',
+                          'atmosphere_sleve_coordinate',
+                          ''),
         "units": ('meter', 'm', 'gpm', 'Pa', 'hPa', 'mb', 'millibar'),
         "axis": ('Z', 'vertical')
     }
@@ -138,8 +146,8 @@ class SebaDataset(Dataset):
         return get_coordinate_names(self)
 
     def coordinates_by_axes(self):
-        coords = self.coords
-        return {coords[name].axis.lower(): coords[name] for name in self.coordinate_names()}
+        cds = self.coords
+        return {cds[name].axis.lower(): cds[name] for name in self.coordinate_names()}
 
     def data_shape(self):
         return tuple(self.dims[name] for name in self.coordinate_names())
@@ -165,7 +173,6 @@ class SebaDataset(Dataset):
         # Calculate mask to exclude extrapolated data below the surface (p >= ps).
         # beta should be computed just once
         if hasattr(self, 'pressure') and hasattr(self, 'ps'):
-
             beta = surface_mask(self.pressure.values, self.ps.values, smooth=False)
             beta = DataArray(beta, dims=["latitude", "longitude", "level"])
 
@@ -180,6 +187,46 @@ class SebaDataset(Dataset):
         # Move dimensions (nlat, nlon) forward and vertical axis last
         # (Useful for cleaner vectorized operations)
         return prepare_data(data, info_coords)
+
+    def integrate_levels(self, variable=None, coord_name="level", coord_range=None):
+
+        if variable is None:
+            # create a copy and integrate the entire dataset.
+            data = self.copy()
+        elif variable in self:
+            data = self[variable]
+        else:
+            raise ValueError(f"Variable {variable} not found in dataset!")
+
+        # Find vertical coordinate and sort 'coord_range' accordingly
+        coord = self.find_coordinate(coord_name=coord_name)
+
+        _range = (coord.values.min(), coord.values.max())
+        if coord_range is None:
+            coord_range = _range
+        elif isinstance(coord_range, (list, tuple)):
+            # Replaces None in 'coord_range' and sort the values. If None appears in the first
+            # position, e.g. [None, b], the integration is done from the [coord.min, b].
+            # Similarly for [a, None] , the integration is done from the [a, coord.max].
+            coord_range = [r if c is None else c for c, r in zip(coord_range, _range)]
+            coord_range = np.sort(coord_range)
+        else:
+            raise ValueError("Illegal type of parameter 'coord_range'. Expecting a scalar, "
+                             "a list or tuple of length two defining the integration limits.")
+
+        # Sorting dataset in ascending order along coordinate before selection. This ensures
+        # that the selection of integration limits is inclusive (behaves like method='nearest')
+        if is_sorted(coord.values, ascending=False):
+            data = data.sortby(coord.name)
+
+        # Integrate over coordinate 'coord_name' using the trapezoidal rule
+        data = data.sel({coord.name: slice(*coord_range)}).integrate(coord.name)
+
+        # convert to height coordinate if data is pressure levels (hydrostatic approximation)
+        if is_standard_variable(coord, "pressure"):
+            data /= cn.g
+
+        return data
 
 
 def check_and_convert_units(ds):
@@ -294,6 +341,10 @@ def reindex_coordinate(coord, data):
 
 
 def is_standard_variable(data, standard_name):
+
+    if not isinstance(data, (DataArray, Dataset)):
+        return False
+
     var_attrs = data.attrs
 
     cf_attrs = CF_variable_conventions[standard_name]
@@ -575,47 +626,41 @@ def get_surface_elevation(latitude, longitude):
     # convert longitudes to range (-180, 180) if needed
     longitude = np.where(longitude > 180, longitude - 360, longitude)
 
-    # infer grid type
+    # infer the grid type from latitude points (raises error if grid is not regular or gaussian)
     grid_type, _, _ = inspect_gridtype(latitude)
     grid_prefix = "n" if grid_type == 'gaussian' else "r"
 
     grid_id = grid_prefix + str(latitude.size // 2)
 
-    file_name = f"topo_global_{grid_id}.nc"
-
     expected_path, _ = os.path.split(path_global_topo)
-    expected_path = os.path.join(expected_path, file_name)
+    expected_file = os.path.join(expected_path, f"topo_global_{grid_id}.nc")
 
-    if os.path.exists(expected_path):
-        # opening existing dataset
-        ds = open_dataset(expected_path)
+    remap = True  # assume remap is needed
+    if os.path.exists(expected_file):
 
-        # sorting according to required longitudes. Latitudes are sorted (north-to-south)
-        if np.allclose(longitude, np.sort(longitude)):
+        # load global elevation dataset
+        ds = open_dataset(expected_file)
+
+        # Sort according to required longitudes (west-to-east)
+        # Latitudes are always sorted from north to south.
+        if is_sorted(longitude, ascending=True):
             ds = ds.sortby('lon').sortby('lat', ascending=False)
 
-        if np.allclose(ds.lon.values, longitude):
-            # return DataArray with surface elevation
-            return ds.elevation
-        else:
-            print("Warning: could not determine the ordering of coordinate 'longitude'.")
-            remap = True
-    else:
-        print(f"Warning: Surface elevation data with required resolution "
-              f"not found! Interpolating global data to grid {grid_id}.")
-        remap = True
+        # Check if the longitudes in the file match the required longitudes.
+        remap = not np.allclose(ds.lon.values, longitude)
 
     if remap:
-        # Dataset with required resolution does not exist! We need to interpolate...
-        # This step could take a while since it is a large dataset containing global
-        # topography data with ~1.25 km resolution.
-        ds = open_dataset(path_global_topo)
+        print(f"Warning: Surface elevation data with required resolution "
+              f"not found! Interpolating global data to grid {grid_id}.")
 
-        ds = ds.interp(lat=latitude, lon=longitude,
-                       method="nearest", kwargs={"fill_value": 0.0})
+        # Interpolate the global topography dataset to the required latitudes and longitudes
+        # using the nearest neighbor method.
+        ds = open_dataset(path_global_topo).interp(lat=latitude, lon=longitude,
+                                                   method="nearest", kwargs={"fill_value": 0})
 
-        # export interpolated dataset to netcdf for future use...
-        ds.to_netcdf(expected_path)
+        # Export the interpolated dataset to a netcdf file for future use.
+        ds.to_netcdf(expected_file)
 
-        # return DataArray with surface elevation
-        return ds.elevation
+    # Return the DataArray with the surface elevation.
+    # noinspection PyUnboundLocalVariable
+    return ds.elevation
