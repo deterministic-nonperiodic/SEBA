@@ -1,10 +1,10 @@
 import os.path
 import warnings
+from datetime import date
 
 import numpy as np
 import xarray as xr
 from tqdm import tqdm
-from datetime import date
 
 from src.seba import EnergyBudget
 
@@ -103,8 +103,8 @@ def _process_model(model, resolution, date_time):
 
             ke_tendency = budget.get_ke_tendency(tend_grid, cumulative=True)
 
-            ke_tendency = budget.add_metadata(ke_tendency, "ddt_ke_" + pname,
-                                              gridtype='spectral', units='W m**-2')
+            ke_tendency = budget.add_field(ke_tendency, "ddt_ke_" + pname,
+                                           gridtype='spectral', units='W m**-2')
 
             ke_tendencies.append(ke_tendency)
 

@@ -243,7 +243,7 @@ if __name__ == '__main__':
         cdr_w = data.cdr_w.values
         cdr_v = data.cdr_v.values
         cdr_c = data.cdr_c.values
-        cdr = data.cdr.values
+        cdr = data.cdr.values - cdr_c
 
         # ------------------------------------------------------------------------------------------
         # Visualization of Kinetic energy budget

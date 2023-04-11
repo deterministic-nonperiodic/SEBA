@@ -1,11 +1,9 @@
 import numpy as np
 import xarray as xr
 from numpy.core.numeric import normalize_axis_index
-from scipy.integrate import simpson
 
 import constants as cn
-from fortran_libs import numeric_tools
-from io_tools import parse_dataset, get_surface_elevation, SebaDataset
+from io_tools import parse_dataset, SebaDataset
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
@@ -13,8 +11,7 @@ from thermodynamics import exner_function, potential_temperature, vertical_veloc
 from thermodynamics import geopotential_to_height, stability_parameter
 from tools import inspect_gridtype, cumulative_flux
 from tools import prepare_data, recover_data, recover_spectra
-from tools import rotate_vector, broadcast_1dto, gradient_1d
-from tools import transform_io, get_num_cores
+from tools import rotate_vector, broadcast_1dto, gradient_1d, transform_io
 
 # declare global read-only variables
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
@@ -115,82 +112,28 @@ class EnergyBudget:
             Recommended jobs=1 since spectral transforms are already efficiently parallelized.
         """
 
-        # check number of workers
-        if jobs is None:
-            self.jobs = get_num_cores()
-        else:
-            self.jobs = int(jobs)
-
-        # check if input dataset is a path to file
-        if isinstance(dataset, str):
-            dataset = xr.open_mfdataset(dataset, combine='by_coords', parallel=False)
-
-        if not isinstance(dataset, xr.Dataset):
-            raise TypeError("Input parameter 'dataset' must be xarray.Dataset instance"
-                            "or a string containing the path to a netcdf file.")
-
-        # Initialize analysis fields and perform interpolation to constant pressure levels as
-        # needed. Resulting dataset is an instance of 'SebaDataset' which adds some convenient
-        # methods to xr.Dataset class.
-        data = parse_dataset(dataset, variables=variables).interpolate_levels(p_levels=p_levels)
-
-        # Reverse latitude and vertical dimensions of all variables in dataset.
-        # Ensures latitude dimension is ordered north-to-south and starting from the surface.
-        data = data.sortby(["level", 'latitude'], ascending=False)
+        # Parsing input dataset to search for required analysis fields.
+        data = parse_dataset(dataset, variables=variables,
+                             surface_data={'ps': ps, 'ts': None},
+                             p_levels=p_levels)
 
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as xarray objects
         self.coords = data.coordinates_by_axes()
-        self.info_coords = ''.join(self.coords)  # string used for data reshaping and handling.
 
-        # find dataset coordinates
-        self.latitude = data.latitude.values
-        self.longitude = data.longitude.values
+        # Get the size of every dimension. The analysis is performed over 3D slices of data
+        # (lat, lon, pressure) by simply iterating over the sample axis.
+        self.nlat = data.latitude.size
+        self.nlon = data.longitude.size
+        self.nlevels = data.pressure.size
+        self.samples = data.time.size
 
-        self.nlat = self.latitude.size
-        self.nlon = self.longitude.size
-
-        # Get dynamic fields as masked arrays... loading the entire data on memory at this step!
-        self.pressure = data.pressure.values
-
-        # Get surface fields if given in dataset
-        self.ts = data.get('ts')
-
-        # Get the dimensions for levels, latitude and longitudes in the input arrays.
-        self.grid_shape = (self.nlat, self.nlon)
-
-        # Get the size of the non-spatial dimensions (time, others ...). The analysis if performed
-        # over 3D slices of data (lat, lon, pressure) by simply iterating over the sample axis.
-        self.nlevels = self.pressure.size
-        self.samples = np.prod(data.data_shape()) // (self.nlat * self.nlon * self.nlevels)
-
-        # process surface pressure
-        if 'ps' in data:
-            data['ps'] = data.ps.mean(dim='time')
-        else:
-            if ps is None:
-                # If surface pressure not found set first pressure level as surface pressure
-                ps = np.broadcast_to(self.pressure[0] + 1e2, self.grid_shape)
-            else:
-                if isinstance(ps, xr.DataArray):
-                    ps = ps.mean(dim='time').values
-                else:
-                    ps = ps.squeeze()
-
-            if np.shape(ps) != self.grid_shape:
-                raise ValueError('If given, the surface pressure must be a scalar or a '
-                                 '2D array with shape (nlat, nlon). Expected shape {}, '
-                                 'but got {}!'.format(self.grid_shape, np.shape(ps)))
-
-            # include surface pressure in dataset
-            data['ps'] = xr.DataArray(ps, dims=("latitude", "longitude"))
-
-        self.ps = data.ps.values
         # -----------------------------------------------------------------------------
-        # Create sphere object to perform the spectral transformations.
+        # Initialize a sphere object to perform the spectral transformations.
         # -----------------------------------------------------------------------------
+
         # Inspect grid type based on the latitude sampling
-        self.gridtype, self.latitude, self.weights = inspect_gridtype(self.latitude)
+        self.gridtype, self.latitude, self.weights = inspect_gridtype(data.latitude)
 
         # define the triangular truncation
         if truncation is None:
@@ -204,7 +147,7 @@ class EnergyBudget:
         # Create sphere object for spectral transforms
         self.sphere = Spharmt(self.nlon, self.nlat,
                               gridtype=self.gridtype, rsphere=rsphere,
-                              ntrunc=self.truncation, jobs=self.jobs)
+                              ntrunc=self.truncation, jobs=jobs)
 
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
         self.nlm = self.sphere.nlm
@@ -235,7 +178,7 @@ class EnergyBudget:
         # compute thermodynamic quantities from masked temperature
         self.temperature = data.get_field('temperature')[0]
 
-        # Compute vorticity and divergence of the wind field. TODO: check if already exists
+        # Compute vorticity and divergence of the wind field.
         self.vrt, self.div = self.vorticity_divergence()
 
         # compute the vertical wind shear before filtering to avoid sharp gradients.
@@ -250,11 +193,12 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Thermodynamic diagnostics
         # ------------------------------------------------------------------------------------------
+        self.pressure = data.pressure.values
         self.exner = exner_function(self.pressure)
         self.theta = potential_temperature(self.pressure, self.temperature)
 
-        # Compute geopotential. TODO: check if already exits in dataset
-        self.phi = self.geopotential()
+        # Get geopotential field and compute geopotential height
+        self.phi = data.get_field('geopotential')[0]  # self.geopotential()
         self.height = geopotential_to_height(self.phi)
 
         # Compute global average of potential temperature on pressure surfaces
@@ -271,7 +215,7 @@ class EnergyBudget:
     # ------------------------------------------------------------------------------------------
     # Methods for computing thermodynamic quantities
     # ------------------------------------------------------------------------------------------
-    def add_metadata(self, data, name, gridtype, **attributes):
+    def add_field(self, data, name=None, gridtype='spectral', **attributes):
         """
             Add metadata and export variables as xr.DataArray
         """
@@ -294,46 +238,40 @@ class EnergyBudget:
     # ------------------------------------------------------------------------------------------
     # Methods for thermodynamic diagnostics
     # ------------------------------------------------------------------------------------------
-    def geopotential(self):
-        """
-        Computes geopotential at pressure surfaces assuming a hydrostatic atmosphere.
-        The geopotential is obtained by integrating the hydrostatic balance equation from the
-        surface to the top of the atmosphere. Uses terrain height and surface pressure as lower
-        boundary conditions. Uses compiled fortran libraries for higher performance.
-
-        :return: `np.ndarray`
-            geopotential (J/kg)
-        """
-
-        # Compact horizontal coordinates into one dimension ...
-        data_shape = self.temperature.shape
-        proc_shape = (-1,) + data_shape[2:]
-
-        temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
-        temperature = np.ma.filled(temperature, fill_value=0.0)
-
-        sfcp = self.ps.ravel()
-
-        # get surface elevation for the given grid.
-        sfch = get_surface_elevation(self.latitude, self.longitude)
-        sfch = sfch.values.ravel()
-
-        # Get the surface temperature
-        if self.ts is not None:
-            sfct = np.moveaxis(self.ts.values.reshape((-1, self.ts.shape[-1])), 1, 0)
-        else:
-            # compute surface temperature by linear interpolation
-            sfct = numeric_tools.surface_temperature(sfcp, temperature, self.pressure)
-
-        # Compute geopotential from the temperature field
-        # signature 'geopotential(surface_geopotential, temperature, pressure)'
-        phi = numeric_tools.geopotential(self.pressure, temperature, sfch, sfcp, sfct=sfct)
-
-        # back to the original shape (same as temperature)
-        phi = np.moveaxis(phi, 0, 1).reshape(data_shape)
-
-        # Create surface masked array with geopotential field
-        return np.ma.masked_array(phi, mask=self.data_mask)
+    # def geopotential(self):
+    #     """
+    #     Computes geopotential at pressure surfaces assuming a hydrostatic atmosphere.
+    #     The geopotential is obtained by integrating the hydrostatic balance equation from the
+    #     surface to the top of the atmosphere. Uses terrain height and surface pressure as lower
+    #     boundary conditions. Uses compiled fortran libraries for higher performance.
+    #
+    #     :return: `np.ndarray`
+    #         geopotential (J/kg)
+    #     """
+    #
+    #     # Compact horizontal coordinates into one dimension ...
+    #     data_shape = self.temperature.shape
+    #     proc_shape = (-1,) + data_shape[2:]
+    #
+    #     temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
+    #     temperature = np.ma.filled(temperature, fill_value=0.0)
+    #
+    #     sfcp = self.ps.ravel()
+    #     sfct = self.ts.reshape(self.samples, -1)
+    #
+    #     # get surface elevation for the given grid.
+    #     sfch = get_surface_elevation(self.latitude, self.longitude)
+    #     sfch = sfch.values.ravel()
+    #
+    #     # Compute geopotential from the temperature field
+    #     # signature 'geopotential(surface_geopotential, temperature, pressure)'
+    #     phi = numeric_tools.geopotential(self.pressure, temperature, sfch, sfcp, sfct=sfct)
+    #
+    #     # back to the original shape (same as temperature)
+    #     phi = np.moveaxis(phi, 0, 1).reshape(data_shape)
+    #
+    #     # Create surface masked array with geopotential field
+    #     return np.ma.masked_array(phi, mask=self.data_mask)
 
     def geostrophic_wind(self):
         """
@@ -362,26 +300,29 @@ class EnergyBudget:
         kinetic_energy = self._vector_spectra(self.wind) / 2.0
 
         #  create dataset
-        kinetic_energy = self.add_metadata(kinetic_energy, 'hke',
-                                           gridtype='spectral',
-                                           units='m**2 s**-2',
-                                           standard_name='horizontal_kinetic_energy',
-                                           long_name='horizontal kinetic energy per unit mass')
+        kinetic_energy = self.add_field(kinetic_energy, 'hke',
+                                        gridtype='spectral',
+                                        units='m**2 s**-2',
+                                        standard_name='horizontal_kinetic_energy',
+                                        long_name='horizontal kinetic energy per unit mass')
         return kinetic_energy
 
     def vertical_kinetic_energy(self):
         """
         Horizontal wavenumber spectra of vertical kinetic energy
         """
-        w = vertical_velocity(self.pressure, self.omega, self.temperature)
+        if hasattr(self, 'w_wind'):
+            w_wind = self.w_wind
+        else:
+            w_wind = vertical_velocity(self.omega, self.temperature, self.pressure)
 
-        kinetic_energy = self._scalar_spectra(w) / 2.0
+        kinetic_energy = self._scalar_spectra(w_wind) / 2.0
 
         #  create dataset
-        kinetic_energy = self.add_metadata(kinetic_energy, 'vke',
-                                           gridtype='spectral', units='m**2 s**-2',
-                                           standard_name='vertical_kinetic_energy',
-                                           long_name='vertical kinetic energy per unit mass')
+        kinetic_energy = self.add_field(kinetic_energy, 'vke',
+                                        gridtype='spectral', units='m**2 s**-2',
+                                        standard_name='vertical_kinetic_energy',
+                                        long_name='vertical kinetic energy per unit mass')
         return kinetic_energy
 
     def available_potential_energy(self):
@@ -390,10 +331,10 @@ class EnergyBudget:
         """
         potential_energy = self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
 
-        potential_energy = self.add_metadata(potential_energy, 'ape',
-                                             gridtype='spectral', units='m**2 s**-2',
-                                             standard_name='available_potential_energy',
-                                             long_name='available potential energy per unit mass')
+        potential_energy = self.add_field(potential_energy, 'ape',
+                                          gridtype='spectral', units='m**2 s**-2',
+                                          standard_name='available_potential_energy',
+                                          long_name='available potential energy per unit mass')
         return potential_energy
 
     def vorticity_divergence(self):
@@ -661,44 +602,53 @@ class EnergyBudget:
         # Linear transfer due to Coriolis
         lc_k = cumulative_flux(self.coriolis_linear_transfer())
 
-        # add metadata
-        attrs = dict(gridtype='spectral', units='W m**-2')
+        # Create dataset
+        data_fluxes = SebaDataset()
 
-        c_ad = self.add_metadata(c_ad, 'cad', standard_name='conversion_ape_dke',
-                                 long_name='conversion from available potential energy '
-                                           'to divergent kinetic energy', **attrs)
+        # add data and metadata
+        data_fluxes['cad'] = self.add_field(c_ad, gridtype='spectral', units='W m**-2',
+                                            standard_name='conversion_ape_dke',
+                                            long_name='conversion from available potential '
+                                                      'energy to divergent kinetic energy')
 
-        cdr_w = self.add_metadata(cdr_w, 'cdr_w',
-                                  standard_name='conversion_dke_rke_vertical_velocity',
-                                  long_name='conversion from divergent to rotational kinetic '
-                                            'energy due to vertical velocity', **attrs)
+        data_fluxes['cdr_w'] = self.add_field(cdr_w, gridtype='spectral', units='W m**-2',
+                                              standard_name='conversion_dke_rke_vertical_velocity',
+                                              long_name='conversion from divergent to rotational '
+                                                        'kinetic energy due to vertical velocity')
 
-        cdr_v = self.add_metadata(cdr_v, 'cdr_v', standard_name='conversion_dke_rke_vorticity',
-                                  long_name='conversion from divergent to rotational kinetic '
-                                            'energy due to relative vorticity', **attrs)
+        data_fluxes['cdr_v'] = self.add_field(cdr_v, gridtype='spectral', units='W m**-2',
+                                              standard_name='conversion_dke_rke_vorticity',
+                                              long_name='conversion from divergent to rotational '
+                                                        'kinetic energy due to relative vorticity')
 
-        cdr_c = self.add_metadata(cdr_c, 'cdr_c', standard_name='conversion_dke_rke_coriolis',
-                                  long_name='conversion from divergent to rotational kinetic '
-                                            'energy due to coriolis effect', **attrs)
+        data_fluxes['cdr_c'] = self.add_field(cdr_c, gridtype='spectral', units='W m**-2',
+                                              standard_name='conversion_dke_rke_coriolis',
+                                              long_name='conversion from divergent to rotational '
+                                                        'kinetic energy due to coriolis effect')
 
-        c_dr = self.add_metadata(c_dr, 'cdr', standard_name='conversion_dke_rke',
-                                 long_name='conversion from divergent to '
-                                           'rotational kinetic energy', **attrs)
+        data_fluxes['cdr'] = self.add_field(c_dr, gridtype='spectral', units='W m**-2',
+                                            standard_name='conversion_dke_rke',
+                                            long_name='conversion from divergent to '
+                                                      'rotational kinetic energy')
 
-        pi_r = self.add_metadata(pi_r, 'pi_rke', standard_name='nonlinear_rke_flux',
-                                 long_name='cumulative spectral flux of '
-                                           'rotational kinetic energy', **attrs)
+        data_fluxes['pi_rke'] = self.add_field(pi_r, gridtype='spectral', units='W m**-2',
+                                               standard_name='nonlinear_rke_flux',
+                                               long_name='cumulative spectral flux of '
+                                                         'rotational kinetic energy')
 
-        pi_d = self.add_metadata(pi_d, 'pi_dke', standard_name='nonlinear_dke_flux',
-                                 long_name='cumulative spectral flux of '
-                                           'divergent kinetic energy', **attrs)
+        data_fluxes['pi_dke'] = self.add_field(pi_d, gridtype='spectral', units='W m**-2',
+                                               standard_name='nonlinear_dke_flux',
+                                               long_name='cumulative spectral flux of '
+                                                         'divergent kinetic energy')
 
-        pi_a = self.add_metadata(pi_a, 'pi_ape', standard_name='nonlinear_ape_flux',
-                                 long_name='cumulative spectral flux of '
-                                           'available potential energy', **attrs)
+        data_fluxes['pi_ape'] = self.add_field(pi_a, gridtype='spectral', units='W m**-2',
+                                               standard_name='nonlinear_ape_flux',
+                                               long_name='cumulative spectral flux of '
+                                                         'available potential energy')
 
-        lc_k = self.add_metadata(lc_k, 'lc', standard_name='coriolis_transfer',
-                                 long_name='coriolis linear transfer', **attrs)
+        data_fluxes['lc'] = self.add_field(lc_k, gridtype='spectral', units='W m**-2',
+                                           standard_name='coriolis_transfer',
+                                           long_name='coriolis linear transfer')
 
         # ------------------------------------------------------------------------------------------
         # Cumulative vertical fluxes of divergent kinetic energy
@@ -709,25 +659,27 @@ class EnergyBudget:
         vf_k = cumulative_flux(self.vertical_gradient(vf_p + vf_m))
         vf_a = cumulative_flux(self.vertical_gradient(self.ape_vertical_flux()))
 
-        # add metadata
-        vf_p = self.add_metadata(vf_p, 'pf_dke', standard_name='pressure_dke_flux',
-                                 long_name='vertical pressure flux', **attrs)
+        # add data and metadata
+        data_fluxes['pf_dke'] = self.add_field(vf_p, gridtype='spectral', units='W m**-2',
+                                               standard_name='pressure_dke_flux',
+                                               long_name='vertical pressure flux')
 
-        vf_m = self.add_metadata(vf_m, 'mf_dke', standard_name='turbulent_dke_flux',
-                                 long_name='vertical turbulent flux of kinetic energy', **attrs)
+        data_fluxes['mf_dke'] = self.add_field(vf_m, gridtype='spectral', units='W m**-2',
+                                               standard_name='turbulent_dke_flux',
+                                               long_name='vertical turbulent flux '
+                                                         'of kinetic energy')
 
-        vf_k = self.add_metadata(vf_k, 'vf_dke', standard_name='vertical_dke_flux',
-                                 long_name='cumulative vertical flux of kinetic energy', **attrs)
+        data_fluxes['vf_dke'] = self.add_field(vf_k, gridtype='spectral', units='W m**-2',
+                                               standard_name='vertical_dke_flux',
+                                               long_name='cumulative vertical flux '
+                                                         'of kinetic energy')
 
-        vf_a = self.add_metadata(vf_a, 'vf_ape', standard_name='vertical_ape_flux',
-                                 long_name='cumulative vertical flux of '
-                                           'available potential energy', **attrs)
+        data_fluxes['vf_ape'] = self.add_field(vf_a, gridtype='spectral', units='W m**-2',
+                                               standard_name='vertical_ape_flux',
+                                               long_name='cumulative vertical flux of '
+                                                         'available potential energy')
 
-        # create SebaDataset object
-        dataset_fluxes = xr.merge([pi_d, pi_r, lc_k, pi_a, c_ad, cdr_w, cdr_v, cdr_c, c_dr,
-                                   vf_p, vf_m, vf_k, vf_a], compat="no_conflicts")
-
-        return SebaDataset(dataset_fluxes)
+        return data_fluxes
 
     def get_ke_tendency(self, tendency, name=None, cumulative=False):
         r"""
@@ -775,9 +727,9 @@ class EnergyBudget:
             ke_tendency = cumulative_flux(ke_tendency)
 
         if da_flag:
-            ke_tendency = self.add_metadata(ke_tendency, tendency_name,
-                                            gridtype='spectral', units='W m**-2',
-                                            standard_name=tendency_name)
+            ke_tendency = self.add_field(ke_tendency, tendency_name,
+                                         gridtype='spectral', units='W m**-2',
+                                         standard_name=tendency_name)
         return ke_tendency
 
     def get_ape_tendency(self, tendency, name=None, cumulative=True):
@@ -830,9 +782,9 @@ class EnergyBudget:
             ape_tendency = cumulative_flux(ape_tendency)
 
         if da_flag:
-            ape_tendency = self.add_metadata(ape_tendency, tendency_name,
-                                             gridtype='spectral', units='W m**-2',
-                                             standard_name=tendency_name)
+            ape_tendency = self.add_field(ape_tendency, tendency_name,
+                                          gridtype='spectral', units='W m**-2',
+                                          standard_name=tendency_name)
 
         return ape_tendency
 
@@ -1009,58 +961,6 @@ class EnergyBudget:
             scalar_grad = np.ma.masked_array(scalar_grad, mask=scalar.mask, fill_value=0.0)
 
         return scalar_grad
-
-    def vertical_integration(self, scalar, pressure_range=None, vertical_axis=-1):
-        r"""Computes mass-weighted vertical integral of a scalar function.
-
-            .. math:: \Phi = \int_{z_b}^{z_t}\rho(z)\phi(z)~dz
-            where :math:`\phi` is any scalar and :math:`\rho` is density.
-            In pressure coordinates, assuming a hydrostatic atmosphere, the above can be written as:
-
-            .. math:: \Phi = \int_{p_t}^{p_b}\phi(p)/g~dp
-            where :math:`p_{t,b}` is pressure at the top/bottom of the integration interval,
-            and :math:`g` is gravity acceleration.
-
-        Parameters
-        ----------
-        scalar : `np.ndarray`
-            Scalar function
-
-        pressure_range: list,
-            pressure interval limits: :math:`(p_t, p_b)`
-        vertical_axis: `int`
-            axis of integration
-
-        Returns
-        -------
-        `np.ndarray`
-            The vertically integrated scalar
-        """
-        if pressure_range is None:
-            pressure_range = [self.pressure[0], self.pressure[-1]]
-        else:
-            assert pressure_range[0] != pressure_range[1], "Inconsistent pressure levels" \
-                                                           " for vertical integration."
-
-        pressure_range = np.sort(pressure_range)
-
-        # find pressure surfaces where integration takes place
-        pressure = self.pressure
-
-        level_mask = (pressure >= pressure_range[0]) & (pressure <= pressure_range[1])
-        # Excluding boundary points in vertical integration.
-        level_mask &= (pressure != pressure[0]) & (pressure != pressure[-1])
-
-        # convert binary mask to array index
-        level_mask = np.where(level_mask)[0]
-
-        # Get data inside integration interval along the vertical axis
-        scalar = np.take(scalar, level_mask, axis=vertical_axis)
-
-        # Integrate scalar at pressure levels
-        scalar_int = - simpson(scalar, x=pressure[level_mask], axis=vertical_axis, even='avg')
-
-        return scalar_int / cn.g
 
     def global_mean(self, scalar, weights=None, lat_axis=None):
         """

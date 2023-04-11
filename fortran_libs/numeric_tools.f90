@@ -687,31 +687,31 @@ end subroutine lagrange_intp
 !===================================================================================================
 
 !===================================================================================================
-  subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, sp, ns, np)
+  subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, nt, ns, np)
 !===================================================================================================
 
- implicit none
+      implicit none
 
- integer         , intent(in ) :: sp, ns, np
+      integer, intent(in) :: nt, ns, np
 
- double precision, intent(in ) :: pres (np)
- double precision, intent(in ) :: sfch (ns)
- double precision, intent(in ) :: sfcp (ns)
- ! surface temperatue is optional. If not given,
- ! it is approximated by linear interpolation.
- double precision, optional, intent(in) :: sfct (sp, ns)
- double precision,           intent(in) :: temp (sp, ns, np)
+      double precision, intent(in) :: pres (np)
+      double precision, intent(in) :: sfch (ns)
+      double precision, intent(in) :: sfcp (ns)
+      ! surface temperatue is optional. If not given,
+      ! it is approximated by linear interpolation.
+      double precision, optional, intent(in) :: sfct (nt, ns)
+      double precision, intent(in) :: temp (nt, ns, np)
 
- double precision              :: sfc_temp (sp, ns)
- double precision              :: lnp  (np)
- double precision              :: lnps (ns)
+      double precision :: sfc_temp (nt, ns)
+      double precision :: lnp  (np)
+      double precision :: lnps (ns)
 
- double precision              :: Rd, g
- double precision              :: phi_bc, tbar
+      double precision :: Rd, g
+      double precision :: phi_bc, tbar
 
- integer                       :: i, j, nc, kn
+      integer :: i, j, nc, kn
 
- double precision, intent(out) :: phi (sp, ns, np)
+      double precision, intent(out) :: phi (nt, ns, np)
 
  Rd = 287.058 ! gas constant for dry air (J / kg / K)
  g = 9.806650 ! acceleration of gravity  (m / s**2)
@@ -728,21 +728,21 @@ end subroutine lagrange_intp
      sfc_temp = sfct
  else
      ! Approximate surface temperature by linear interpolation
-     call surface_temperature(sfc_temp, sfcp, temp, pres, sp, ns, np)
+     call surface_temperature(sfc_temp, sfcp, temp, pres, nt, ns, np)
  end if
 
  ! Start vertical integration of the hydrostatic equation: d(phi)/d(log p) = - Rd * T(p)
- do i = 1, sp ! loop over samples
-   do j = 1, ns ! loop over spatial dimension
+      do i = 1, nt ! loop over samples
+          do j = 1, ns ! loop over spatial dimension
 
-     ! find the first level above the surface (p <= sfcp)
-     kn = minloc(abs(pres - sfcp(j)), mask=pres <= sfcp(j), dim=1)
+              ! find the first level above the surface (p <= sfcp)
+              kn = minloc(abs(pres - sfcp(j)), mask = pres <= sfcp(j), dim = 1)
 
-     ! number of levels above the surface
-     nc = np + 1 - kn
+              ! number of levels above the surface
+              nc = np + 1 - kn
 
-     ! Using second order accurate mid-point method in log-pressure for the
-     ! first integration step. Average temperature in the first two levels:
+              ! Using second order accurate mid-point method in log-pressure for the
+              ! first integration step. Average temperature in the first two levels:
      tbar = (lnp(kn) * temp(i, j, kn) + lnps(j) * sfc_temp(i, j)) / (lnp(kn) + lnps(j))
 
      ! Lower boundary condition for the geopotential (first level above the surface)

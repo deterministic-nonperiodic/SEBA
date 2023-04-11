@@ -4,15 +4,20 @@ from typing import Optional
 
 import numpy as np
 import pint
-import constants as cn
-from xarray import apply_ufunc, Dataset, DataArray, open_dataset
+from xarray import Dataset, DataArray, open_dataset, open_mfdataset
 
+import constants as cn
+from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
 from tools import interpolate_1d, inspect_gridtype, prepare_data, surface_mask, is_sorted
 
 path_global_topo = "./data/topo_global_n1250m.nc"
 
 CF_variable_conventions = {
+    "geopotential": {
+        "standard_name": ("geop", "geopotential", "air_geopotential",),
+        "units": ('joule / kilogram',)
+    },
     "temperature": {
         "standard_name": ("t", "ta", "temp", "air_temperature", 'temperature'),
         "units": ('K', 'kelvin', 'Kelvin', 'degree_C')
@@ -53,6 +58,12 @@ CF_variable_conventions = {
 }
 
 CF_coordinate_conventions = {
+    "time": {
+        "standard_name": ("time", "date", "t"),
+        "units": (),
+        "calendar": ('proleptic_gregorian', 'julian', 'gregorian', 'standard'),
+        'axis': ('T',)
+    },
     "latitude": {
         "standard_name": ("latitude", "lat", "lats"),
         "units": ("degree_north", "degree_N", "degreeN",
@@ -84,12 +95,13 @@ CF_coordinate_conventions = {
 }
 
 expected_units = {
-    "u_wind": "m s**-1",
-    "v_wind": "m s**-1",
-    "w_wind": "m s**-1",
+    "u_wind": "m/s",
+    "v_wind": "m/s",
+    "w_wind": "m/s",
     "temperature": "K",
     "pressure": "Pa",
-    "omega": "Pa s**-1"
+    "omega": "Pa/s",
+    "geopotential": "m**2 s**-2",
 }
 
 expected_range = {
@@ -98,27 +110,39 @@ expected_range = {
     "w_wind": [-100., 100.],
     "temperature": [120, 350.],
     "pressure": [0.0, 2000e2],
-    "omega": [-100, 100]
+    "omega": [-100, 100],
+    "geopotential": [0., ],
 }
 
 # from Metpy
 cmd = re.compile(r'(?<=[A-Za-z)])(?![A-Za-z)])(?<![0-9\-][eE])(?<![0-9\-])(?=[0-9\-])')
+
+# Create a pint UnitRegistry object
+reg = pint.UnitRegistry()
 
 
 def _parse_power_units(unit_str):
     return cmd.sub('**', unit_str)
 
 
-def map_func(func, data, dim="level", **kwargs):
-    # map function to all variables in dataset along axis
-    res = apply_ufunc(func, data, input_core_dims=[[dim]],
-                      kwargs=kwargs, dask='allowed',
-                      vectorize=True)
+def _parse_units():
+    return
 
-    if 'pressure_range' in kwargs.keys() and isinstance(data, Dataset):
-        res = res.assign_coords({'layer': kwargs['pressure_range']})
 
-    return res
+def equivalent_units(unit_1, unit_2):
+    unit_1 = reg.Unit(_parse_power_units(unit_1))
+    unit_2 = reg.Unit(_parse_power_units(unit_2))
+
+    ratio = (1 * unit_1 / (1 * unit_2)).to_base_units()
+
+    return ratio.dimensionless and np.isclose(ratio.magnitude, 1.0)
+
+
+def compatible_units(unit_1, unit_2):
+    unit_1 = reg.Unit(_parse_power_units(unit_1))
+    unit_2 = reg.Unit(_parse_power_units(unit_2))
+
+    return unit_1.is_compatible_with(unit_2)
 
 
 class SebaDataset(Dataset):
@@ -138,9 +162,58 @@ class SebaDataset(Dataset):
     def find_variable(self, name=None, raise_notfound=True):
         return _find_variable(self, name, raise_notfound=raise_notfound)
 
-    def check_and_convert_units(self):
-        check_and_convert_units(self)
-        return self
+    def check_convert_units(self, other=None):
+
+        is_array = False
+        if other is None:
+            ds = self.copy()
+        elif isinstance(other, Dataset):
+            ds = other.copy()
+        elif isinstance(other, DataArray):
+            is_array = True
+            ds = other.to_dataset()
+        else:
+            raise ValueError("Illegal type for parameter 'other'")
+
+        # Check and convert the units of each variable
+        for varname in ds.data_vars:
+            var = ds[varname]
+            if varname not in expected_units:
+                continue
+
+            expected_unit = expected_units[varname]
+
+            var_units = var.attrs.get("units")
+            if var_units is None:
+                print(f"Warning: Units not found for variable {varname}")
+
+                if np.nanmax(var) <= expected_range[varname][1] and \
+                        np.nanmin(var) >= expected_range[varname][0]:
+
+                    var_units = expected_unit
+                else:
+                    raise ValueError(f"Variable '{varname}' has no units and values are outside "
+                                     f"admitted range: {expected_range[varname]}")
+
+            if var_units != expected_unit:
+                if compatible_units(var_units, expected_unit):
+                    # Convert the values to the expected units
+                    fixed_units = reg(_parse_power_units(var_units))
+                    var.values = (var.values * fixed_units).to(
+                        _parse_power_units(expected_unit)).magnitude
+
+                else:
+                    raise ValueError(f"Cannot convert {varname} units"
+                                     f"{var_units} to {expected_unit}.")
+
+            # Update the units attribute of the variable
+            var.attrs["units"] = var_units
+
+        if is_array:
+            # get rid of extra coordinates and return original DataArray object
+            ds = ds.to_array().squeeze('variable').drop_vars('variable')
+
+        return ds
 
     def coordinate_names(self):
         return get_coordinate_names(self)
@@ -165,18 +238,17 @@ class SebaDataset(Dataset):
         if name not in self.data_vars:
             return None
 
-        # Mask data pierced by the topography, if not already masked during the vertical
-        # interpolation. This is required to avoid calculating vertical gradients between
-        # masked and unmasked neighbours grid points in the vertical.
-        data = self[name]
-
         # Calculate mask to exclude extrapolated data below the surface (p >= ps).
         # beta should be computed just once
         if hasattr(self, 'pressure') and hasattr(self, 'ps'):
-            beta = surface_mask(self.pressure.values, self.ps.values, smooth=False)
-            beta = DataArray(beta, dims=["latitude", "longitude", "level"])
+            mask = surface_mask(self.pressure.values, self.ps.values, smooth=False)
+            mask = DataArray(mask, dims=["latitude", "longitude", "level"])
+        else:
+            # mask all values as valid
+            mask = True
 
-            data = data.where(beta != 0, np.nan)
+        # Mask data pierced by the topography, if not already masked during interpolation.
+        data = self[name].where(mask, np.nan)
 
         info_coords = "".join(data.coords[name].axis.lower() for name in data.dims)
         data = data.to_masked_array()
@@ -223,49 +295,10 @@ class SebaDataset(Dataset):
         data = data.sel({coord.name: slice(*coord_range)}).integrate(coord.name)
 
         # convert to height coordinate if data is pressure levels (hydrostatic approximation)
-        if is_standard_variable(coord, "pressure"):
+        if is_standard(coord, "pressure"):
             data /= cn.g
 
         return data
-
-
-def check_and_convert_units(ds):
-    # Define the expected units for each variable
-
-    # Create a pint UnitRegistry object
-    reg = pint.UnitRegistry()
-
-    # Check and convert the units of each variable
-    for varname in ds.variables:
-        var = ds[varname]
-        if varname not in expected_units:
-            continue
-
-        expected_unit = expected_units[varname]
-
-        var_units = var.attrs.get("units")
-        if var_units is None:
-            print(f"Warning: Units not found for variable {varname}")
-
-            if np.nanmax(var) <= expected_range[varname][1] and \
-                    np.nanmin(var) >= expected_range[varname][0]:
-
-                var_units = expected_unit
-            else:
-                raise ValueError(f"Variable '{varname}' has no units and values are outside "
-                                 f"admitted range: {expected_range[varname]}")
-
-        if var_units != expected_unit:
-            try:
-                # Convert the values to the expected units
-                fixed_units = reg(_parse_power_units(var_units))
-                var.values = (var.values * fixed_units).to(expected_unit).magnitude
-
-            except pint.errors.DimensionalityError:
-                raise ValueError(f"Cannot convert {varname} units to {expected_unit}.")
-
-        # Update the units attribute of the variable
-        var.attrs["units"] = var_units
 
 
 def get_coordinate_names(dataset):
@@ -326,11 +359,12 @@ def _find_coordinate(ds, name):
 
     candidates = [coord for coord in [ds.coords[n] for n in ds.dims] if predicate(coord)]
 
-    if not candidates:
-        raise ValueError('Cannot find a {!s} coordinate'.format(name))
     if len(candidates) > 1:
         msg = 'Multiple {!s} coordinates are not allowed.'
         raise ValueError(msg.format(name))
+
+    if not candidates:
+        raise ValueError('Cannot find a {!s} coordinate'.format(name))
 
     return candidates[0]
 
@@ -340,8 +374,7 @@ def reindex_coordinate(coord, data):
     return coord.reindex({coord.name: data})
 
 
-def is_standard_variable(data, standard_name):
-
+def is_standard(data, standard_name):
     if not isinstance(data, (DataArray, Dataset)):
         return False
 
@@ -353,10 +386,10 @@ def is_standard_variable(data, standard_name):
                        for name in ["name", "standard_name", "long_name"]]) or \
                data.name in cf_attrs["standard_name"]
 
-    units = var_attrs.get("units")
+    var_units = var_attrs.get("units")
 
-    if units is not None:
-        return has_name and (units in cf_attrs["units"])
+    if var_units is not None:
+        return has_name and var_units in cf_attrs["units"]
     else:
         return has_name
 
@@ -403,7 +436,7 @@ def _find_variable(dataset, variable_name, raise_notfound=True) -> Optional[Data
 
     for var_name in dataset.variables:
         # Check if the variable is in the dataset and consistent with the CF conventions
-        if is_standard_variable(dataset[var_name], standard_name):
+        if is_standard(dataset[var_name], standard_name):
             candidates.append(dataset[var_name])
 
     if not candidates:
@@ -418,16 +451,55 @@ def _find_variable(dataset, variable_name, raise_notfound=True) -> Optional[Data
     return candidates[0]
 
 
-def parse_dataset(dataset, variables=None):
+def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
     """
         Parse input xarray dataset
 
+        Parameters
+        ----------
+        :param dataset: xarray.Dataset or str indicating the path to a dataset.
+
+            The dataset must contain the following analysis fields:
+            - The horizontal wind component in the zonal direction      (u)
+            - The horizontal wind component in the meridional direction (v)
+            - Height/pressure vertical velocity depending on leveltype (inferred from dataset)
+            - Temperature
+            - Atmospheric pressure: A 1D array for isobaric levels or a ND array for arbitrary
+               vertical coordinate. Data is interpolated to pressure levels before the analysis.
+
+        :param variables: dict, optional,
+            A dictionary mapping of the field names in the dataset to the internal variable names.
+            The default names are: ['u_wind', 'v_wind', 'omega', 'temperature', 'pressure'].
+            Ensures all variables needed for the analysis are found. If not given, variables are
+            looked up based on standard CF conventions of variable names, units and typical value
+            ranges. Example: variables = {'u_wind': 'U', 'temperature': 'temp'}. Note that often
+            used names 'U' and 'temp' are not conventional names.
+
+        :param surface_data: a dictionary or xr.Dataset containing surface variables
+
+        :param p_levels: iterable, optional
+            Contains the pressure levels in (Pa) for vertical interpolation.
+            Ignored if the data is already in pressure coordinates.
+
         Returns
         _______
-        arrays: a list of requested DataArray objects
+        SebaDataset object containing the required analysis fields
 
     """
-    default_variables = ['u_wind', 'v_wind', 'omega', 'temperature', 'pressure']
+    # check if input dataset is a path to file
+    if isinstance(dataset, str):
+        dataset = open_mfdataset(dataset, combine='by_coords', parallel=False)
+
+    if not isinstance(dataset, Dataset):
+        raise TypeError("Input parameter 'dataset' must be xarray.Dataset instance"
+                        "or a string containing the path to a netcdf file.")
+
+    if surface_data is None:
+        surface_data = {'': None}
+
+    # Define list of mandatory variables in dataset. Raise error if missing. Pressure vertical
+    # velocity 'omega' is estimated from height-based vertical velocity if not present.
+    default_variables = ['u_wind', 'v_wind', 'temperature', 'pressure']
 
     if variables is None:
         variables = {name: name for name in default_variables}
@@ -446,12 +518,15 @@ def parse_dataset(dataset, variables=None):
             merged_variables[var_name] = var_name
     variables = merged_variables
 
-    # Create dataset
+    # Create a SebaDataset instance for convenience
     dataset = SebaDataset(dataset)
 
-    # rename spatial coordinates to (level, lat, lon) standard
-    dataset = dataset.rename({dataset.find_coordinate(name).name: name
-                              for name in ("level", "longitude", "latitude")})
+    # rename spatial coordinates to standard names: (level, latitude, longitude)
+    map_dims = {dataset.find_coordinate(name).name: name
+                for name in ("level", "longitude", "latitude")}
+    dataset = dataset.rename(map_dims)
+
+    dataset.swap_dims({dataset.find_coordinate('time').name: 'time'})
 
     # find variables by name or candidates variables based on CF conventions
     arrays = {name_map[0]: dataset.find_variable(name_map, raise_notfound=True)
@@ -460,45 +535,146 @@ def parse_dataset(dataset, variables=None):
     if len(arrays) != len(variables):
         raise ValueError("Missing variables!")
 
-    # check sanity of 3D fields
+    # check dimensionality of variables
     for name, values in arrays.items():
-
-        if np.isnan(values).any():
-            raise ValueError('Array {} contain missing values'.format(name))
 
         # Make sure the shapes of the two components match.
         if (name != 'pressure') and values.ndim < 3:
             raise ValueError('Fields must be at least 3D.'
                              'Variable {} has {} dimensions'.format(name, values.ndim))
 
-    # find surface data arrays
+    grid_shape = (dataset.latitude.size, dataset.longitude.size)
+
+    # Find surface data arrays and assign to dataset if given externally
     for name in ['ts', 'ps']:
 
-        # silence error for flexible variables.
-        sfc_var = dataset.find_variable(name, raise_notfound=False)
+        # silence error: these variables are flexible.
+        surface_var = dataset.find_variable(name, raise_notfound=False)
 
-        if sfc_var is None:
+        if surface_var is None and surface_data is not None:
             print("Warning: surface variable {} not found!".format(name))
-            continue
-        # Surface data must be exactly one dimension less than the total number of dimensions
-        # in dataset (Not sure if this is a good enough condition!?)
-        if np.ndim(sfc_var) == len(dataset.dims) - 1:
-            arrays[name] = sfc_var
 
-    # Check units and convert to standard if needed before computing vertical velocity
-    dataset = dataset.check_and_convert_units()
+            if name in surface_data and is_standard(surface_data[name], name):
 
-    # Check for pressure velocity in dataset. If not present, it is estimated from
-    # height based vertical velocity. If neither is found raises ValueError.
-    if arrays.get('omega') is None:
-        pressure = arrays.get('pressure').values
-        temperature = arrays.get('temperature').values
-        w_wind = dataset.find_variable('w_wind', raise_notfound=True).values
+                surface_var = surface_data[name]
 
-        arrays['omega'] = pressure_vertical_velocity(pressure, w_wind, temperature)
+                if isinstance(surface_var, DataArray):
+                    # inputs are DataArray
+                    if 'time' in surface_var.dims:
+                        surface_var = surface_var.mean('time')
 
-    # create custom dataset
-    return SebaDataset(arrays, coords=dataset.coords)
+                    # Renaming spatial coordinates. Raise error if no coordinate
+                    # is consistent with latitude and longitude standards.
+                    surface_var = surface_var.rename(
+                        {_find_coordinate(surface_var, c).name: c
+                         for c in ("latitude", "longitude")})
+
+                elif isinstance(surface_var, np.ndarray):
+
+                    if surface_var.shape != grid_shape:
+                        raise ValueError(f'Given surface variable {name} must be a '
+                                         f'scalar or a 2D array with shape (nlat, nlon).'
+                                         f'Expected shape {grid_shape}, '
+                                         f'but got {np.shape(surface_var)}')
+                    surface_var = DataArray(surface_var, dims=("latitude", "longitude"))
+
+                else:
+                    raise ValueError(f'Illegal type for surface variable {name}!')
+
+                arrays[name] = surface_var
+        else:
+            if 'time' in surface_var.dims:
+                surface_var = surface_var.mean('time')
+
+            # Surface data must be exactly one dimension less than the total number of dimensions
+            # in dataset (Not sure if this is a good enough condition!?)
+            if not np.all([dim in surface_var.dims for dim in ("latitude", "longitude")]):
+                raise ValueError(f"Variable {name} must have at least latitude "
+                                 f"and longitude dimensions.")
+
+            arrays[name] = surface_var
+
+    # Create output dataset with required fields.
+    data = SebaDataset(arrays).check_convert_units()
+
+    # Check for pressure velocity: If not present in dataset, it is estimated from
+    # height-based vertical velocity using the hydrostatic approximation.
+    data['omega'] = dataset.find_variable('omega', raise_notfound=False)
+
+    if not data['omega'].all():
+        # Searching for vertical velocity. Raise error if 'w_wind' cannot be found!
+        w_wind = dataset.find_variable('w_wind', raise_notfound=True)
+
+        # Checking 'w_wind' units and converting to standard before computing omega.
+        w_wind = data.check_convert_units(w_wind)
+
+        # compute omega from pressure [Pa], temperature [K] and vertical velocity [m/s]
+        data['omega'] = pressure_vertical_velocity(w_wind, data.temperature, data.pressure)
+
+        # add standard units [Ps/s]
+        data.omega.attrs["units"] = expected_units['omega']
+
+    # Perform interpolation to constant pressure levels as needed (after all dynamic fields added)
+    # Ensures latitude dimension is ordered north-to-south and starting from the surface.
+    data = data.interpolate_levels(p_levels=p_levels).sortby(["level", 'latitude'], ascending=False)
+
+    # Compute geopotential if not present in dataset
+    data['geopotential'] = dataset.find_variable('geopotential', raise_notfound=False)
+
+    if not data['geopotential'].all():
+
+        print("Computing geopotential ...")
+
+        # reshape temperature to pass it to fortran subroutine
+        target_dims = ('time', 'latitude', 'longitude', 'level')
+        coord_order = [data.temperature.dims.index(dim) for dim in target_dims]
+
+        data_shape = tuple(data.temperature.shape[dim] for dim in coord_order)
+        proc_shape = (data_shape[0], -1, data_shape[-1])
+
+        # get temperature field
+        temperature = data.temperature.to_masked_array()
+        temperature = np.transpose(temperature, axes=coord_order).reshape(proc_shape)
+        temperature = np.ma.filled(temperature, fill_value=0.0)
+
+        # If surface pressure is not given it is approximated by the pressure level
+        # closest to the surface.
+        if 'ps' not in data:
+            sfcp = np.broadcast_to(np.max(data.pressure) + 1e2, grid_shape)
+            data['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
+            data['ps'].attrs['units'] = 'Pa'
+
+        sfcp = data.ps.values.ravel()
+
+        if 'ts' not in data:
+            print("Computing surface temperature ...")
+
+            # compute surface temperature by linear interpolation
+            sfct = numeric_tools.surface_temperature(sfcp, temperature, data.pressure.values)
+
+            # assign surface variables to dataset
+            data['ts'] = DataArray(sfct.reshape(data_shape[:-1]), dims=target_dims[:-1])
+            data['ts'].attrs['units'] = 'K'
+        else:
+            coord_order = [data.ts.dims.index(dim) for dim in ("time", "latitude", "longitude")]
+            # noinspection PyTypeChecker
+            sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
+
+        # get surface elevation for the given grid.
+        sfch = get_surface_elevation(data.latitude, data.longitude)
+        sfch = sfch.values.ravel()
+
+        # Compute geopotential from the temperature field: d(phi)/d(log p) = - Rd * T(p)
+        phi = numeric_tools.geopotential(data.pressure.values, temperature, sfch, sfcp, sfct=sfct)
+        phi = DataArray(phi.reshape(data_shape), dims=target_dims)
+
+        data['geopotential'] = phi.transpose("time", "level", "latitude", "longitude")
+        data['geopotential'].attrs['units'] = 'joule / kg'
+
+    print("Data processing completed successfully!")
+
+    # return dataset with proper variables and units (remove dask arrays)
+    return data.compute()
 
 
 def interpolate_pressure_levels(dataset, p_levels=None):
@@ -542,7 +718,7 @@ def interpolate_pressure_levels(dataset, p_levels=None):
 
     # If the vertical coordinate is consistent with pressure standards, then no interpolation is
     # needed: Data is already in pressure coordinates.
-    if is_standard_variable(levels, "pressure"):
+    if is_standard(levels, "pressure"):
         # If pressure was not found create a new variable 'pressure' from levels.
         if pressure is None:
             dataset["pressure"] = levels

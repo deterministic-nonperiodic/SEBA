@@ -2,7 +2,7 @@ import numpy as np
 import shtns
 
 from constants import earth_radius
-from tools import broadcast_1dto, cpu_count
+from tools import broadcast_1dto, get_num_cores
 
 # private variables for class Spharmt
 _private_vars = ['nlon', 'nlat', 'gridtype', 'rsphere']
@@ -33,8 +33,8 @@ class Spharmt(object):
         else:
             del self.__dict__[key]
 
-    def __init__(self, nlon, nlat, rsphere=earth_radius, gridtype='gaussian', ntrunc=None,
-                 jobs=None):
+    def __init__(self, nlon, nlat, rsphere=earth_radius,
+                 gridtype='gaussian', ntrunc=None, jobs=None):
         """initialize
            nlon:  number of longitudes
            nlat:  number of latitudes
@@ -44,7 +44,7 @@ class Spharmt(object):
         if jobs is None:
             self.jobs = 1
         elif jobs == -1:
-            self.jobs = cpu_count()
+            self.jobs = get_num_cores()
         else:
             self.jobs = int(jobs)
 

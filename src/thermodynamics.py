@@ -1,7 +1,8 @@
 import numpy as np
+from scipy.integrate import cumulative_trapezoid
+
 import constants as cn
 from tools import broadcast_1dto, gradient_1d
-from scipy.integrate import cumulative_trapezoid
 
 
 def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
@@ -215,7 +216,7 @@ def specific_volume(pressure, temperature):
     return 1.0 / density(pressure, temperature)
 
 
-def vertical_velocity(pressure, omega, temperature):
+def vertical_velocity(omega, temperature, pressure):
     r"""Calculate omega from w assuming hydrostatic conditions.
 
     This function converts from vertical velocity in pressure coordinates
@@ -241,18 +242,13 @@ def vertical_velocity(pressure, omega, temperature):
         Vertical velocity in terms of height (in meters / second)
     """
     if pressure.ndim == 1:
-        msg = "All variables should have the same shape"
-        assert omega.shape == temperature.shape, msg
-
+        assert omega.shape == temperature.shape, "All variables should have the same shape"
         pressure = broadcast_1dto(pressure, omega.shape)
-    else:
-        msg = "All variables should have the same shape as 'pressure'"
-        assert pressure.shape == omega.shape == temperature.shape, msg
 
     return - omega / (cn.g * density(pressure, temperature))  # (m/s)
 
 
-def pressure_vertical_velocity(pressure, w, temperature):
+def pressure_vertical_velocity(w, temperature, pressure):
     r"""Calculate omega from w assuming hydrostatic conditions.
 
     This function converts vertical velocity with respect to height
@@ -268,11 +264,11 @@ def pressure_vertical_velocity(pressure, w, temperature):
 
     Parameters
     ----------
-    w: `np.ndarray`
+    w: `np.ndarray`, `xr.DataArray`
         Vertical velocity in terms of height
-    pressure: `np.ndarray`
+    pressure: `np.ndarray`, `xr.DataArray`
         Total atmospheric pressure
-    temperature: `np.array`
+    temperature: `np.array`, `xr.DataArray`
         Air temperature
     Returns
     -------
@@ -280,13 +276,8 @@ def pressure_vertical_velocity(pressure, w, temperature):
         Vertical velocity in terms of pressure (in Pascals / second)
     """
     if pressure.ndim == 1:
-        msg = "All variables should have the same shape"
-        assert w.shape == temperature.shape, msg
-
+        assert w.shape == temperature.shape, "All variables should have the same shape"
         pressure = broadcast_1dto(pressure, w.shape)
-    else:
-        msg = "All variables should have the same shape as 'pressure'"
-        assert pressure.shape == w.shape == temperature.shape, msg
 
     return - cn.g * density(pressure, temperature) * w  # (Pa/s)
 
