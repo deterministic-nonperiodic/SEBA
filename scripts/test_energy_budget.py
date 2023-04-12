@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from AtmosphericEnergyBudget import EnergyBudget
 from _spherepack import onedtotwod
 from sklearn import preprocessing
 
-from AtmosphericEnergyBudget import EnergyBudget
 from src.spectral_analysis import spectrum
 from src.tools import kappa_from_deg
 
