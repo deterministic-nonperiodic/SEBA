@@ -111,9 +111,6 @@ if __name__ == '__main__':
 
     secax.xaxis.set_major_formatter(ScalarFormatter())
 
-    # secax.set_xticks(1e-3 * lambda_from_deg(xticks))
-    # secax.set_xticklabels((np.sqrt(2.) * 1e-3 * lambda_from_deg(xticks)).astype(int))
-
     ax.set_xlabel(r'Spherical harmonic degree', fontsize=14, labelpad=4)
     secax.set_xlabel(r'Spherical wavelength $(km)$', fontsize=14, labelpad=5)
 
@@ -131,8 +128,8 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     kappa = 1e3 * budget.kappa_h
 
-    # get cumulative energy fluxes
-    dataset_fluxes = budget.cumulative_energy_fluxes()
+    # get nonlinear energy fluxes. Compute time-averaged cumulative fluxes
+    dataset_fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa').mean(dim='time')
 
     # Perform vertical integration along last axis
     layers = {
@@ -145,8 +142,7 @@ if __name__ == '__main__':
     }
 
     for i, (level, prange) in enumerate(layers.items()):
-
-        data = dataset_fluxes.integrate_levels(coord_range=prange).mean(dim='time')
+        data = dataset_fluxes.integrate_levels(coord_range=prange)
 
         pik = data.pi_dke.values + data.pi_rke.values
         pia = data.pi_ape.values
@@ -234,7 +230,7 @@ if __name__ == '__main__':
 
     for i, (level, prange) in enumerate(layers.items()):
         # Integrate fluxes in layers
-        data = dataset_fluxes.integrate_levels(coord_range=prange).mean(dim='time')
+        data = dataset_fluxes.integrate_levels(coord_range=prange)
 
         cad = data.cad.values
         pid = data.pi_dke.values

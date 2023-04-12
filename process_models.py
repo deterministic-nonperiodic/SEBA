@@ -45,7 +45,7 @@ def _process_model(model, resolution, date_time):
     # - Nonlinear energy transfers for DKE and RKE
     # - Energy conversion terms APE --> DKE and DKE --> RKE
     # - Vertical pressure and turbulent fluxes
-    fluxes = budget.cumulative_energy_fluxes()
+    fluxes = budget.nonlinear_energy_fluxes()
 
     # Compute spectral energy diagnostics
     fluxes['hke'] = budget.horizontal_kinetic_energy()
@@ -58,7 +58,7 @@ def _process_model(model, resolution, date_time):
     fluxes.attrs.clear()  # clear global attributes
 
     attrs = {'Conventions': 'CF-1.6',
-             'source': 'git@github.com:coffeintocode/SEBA.git',
+             'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
              'institution': 'Max Planck Institute for Meteorology',
              'title': '{}: Spectral Energy Budget of the Atmosphere.'.format(model.upper()),
              'history': date.today().strftime('Created on %c'),
@@ -115,7 +115,7 @@ def _process_model(model, resolution, date_time):
     dataset = xr.merge(ape_tendencies + ke_tendencies, compat="no_conflicts")
     dataset.attrs.clear()  # clear global attributes
     attrs = {'Conventions': 'CF-1.6',
-             'source': 'git@github.com:coffeintocode/SEBA.git',
+             'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
              'institution': 'Max Planck Institute for Meteorology',
              'title': '{}: Parameterized Spectral Energy Fluxes.'.format(model.upper()),
              'history': date.today().strftime('Created on %c'),

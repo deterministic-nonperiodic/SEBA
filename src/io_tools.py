@@ -300,6 +300,50 @@ class SebaDataset(Dataset):
 
         return data
 
+    def cumulative_sum(self, variable=None, dim=None):
+        """
+        Compute the cumulative sum of Dataset variables along the given dimension,
+        considering the sorting order of the dimension and starting from a given index.
+
+        Parameters
+        ----------
+        variable: str, optional
+            Name of the variable to accumulate. If None, operation is performed for all variable
+            in dataset
+
+        dim : str
+            Dimension name along which to compute the cumulative sum.
+
+        Returns
+        -------
+        xarray.Dataset
+            Dataset with the cumulative sum along the given dimension. The accumulation is done by
+            summing all variables in dataset along the sorted coordinate elements such that the
+            result starts with the total sum at the first position along the given dimension.
+        """
+        if variable is None:
+            # create a copy and integrate the entire dataset.
+            data = self.copy()
+        elif variable in self:
+            data = self[variable]
+        else:
+            raise ValueError(f"Variable {variable} not found in dataset!")
+
+        # Ensure the input dimension exists in the dataset
+        if dim not in data.dims:
+            raise ValueError(f"Dimension {dim} not found in dataset or selected DataArray.")
+
+        coordinate = data[dim]
+
+        # Compute the cumulative sum along the given dimension. The total sum is at the
+        # first position along the given dimension.
+        kwargs = dict(skipna=False, keep_attrs=True)
+
+        data = data.sortby(dim, ascending=False).cumsum(dim=dim, **kwargs)
+
+        # Assign dimension before sorting (cumsum drops coordinates for some reason!)
+        return data.assign_coords({dim: coordinate[::-1]}).sortby(dim)
+
 
 def get_coordinate_names(dataset):
     """
@@ -616,7 +660,7 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
 
     # Perform interpolation to constant pressure levels as needed (after all dynamic fields added)
     # Ensures latitude dimension is ordered north-to-south and starting from the surface.
-    data = data.interpolate_levels(p_levels=p_levels).sortby(["level", 'latitude'], ascending=False)
+    data = data.interpolate_levels(p_levels).sortby(["level", 'latitude'], ascending=False)
 
     # Compute geopotential if not present in dataset
     data['geopotential'] = dataset.find_variable('geopotential', raise_notfound=False)

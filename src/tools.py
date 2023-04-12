@@ -139,18 +139,6 @@ def get_number_chunks(sample_size, workers, factor=4):
     return np.ceil(n_chunks).astype(int)
 
 
-def number_chunks(sample_size, workers):
-    # finds the integer factor of 'sample_size' closest to 'workers'
-    # for parallel computations: ensures maximum cpu usage for chunk_size = 1
-    if sample_size < 2:
-        return 1
-
-    jobs = workers
-    while sample_size % jobs:
-        jobs -= 1
-    return jobs if jobs != 1 else workers
-
-
 def broadcast_1dto(arr, shape):
     """
     Broadcast a 1-dimensional array to a given shape using numpy rules

@@ -1,3 +1,5 @@
+from datetime import date
+
 import numpy as np
 import xarray as xr
 from numpy.core.numeric import normalize_axis_index
@@ -7,14 +9,19 @@ from io_tools import parse_dataset, SebaDataset
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
-from thermodynamics import exner_function, potential_temperature, vertical_velocity
-from thermodynamics import geopotential_to_height, stability_parameter
-from tools import inspect_gridtype, cumulative_flux
-from tools import prepare_data, recover_data, recover_spectra
+from thermodynamics import exner_function, potential_temperature
+from thermodynamics import stability_parameter, vertical_velocity
+from tools import inspect_gridtype, prepare_data, recover_data, recover_spectra
 from tools import rotate_vector, broadcast_1dto, gradient_1d, transform_io
 
 # declare global read-only variables
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
+
+_global_attrs = {'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
+                 'institution': 'Max Planck Institute for Meteorology',
+                 'title': 'Spectral Energy Budget of the Atmosphere',
+                 'history': date.today().strftime('Created on %c'),
+                 'references': ''}
 
 
 class EnergyBudget:
@@ -117,10 +124,6 @@ class EnergyBudget:
                              surface_data={'ps': ps, 'ts': None},
                              p_levels=p_levels)
 
-        # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
-        # These coordinates are used to export data as xarray objects
-        self.coords = data.coordinates_by_axes()
-
         # Get the size of every dimension. The analysis is performed over 3D slices of data
         # (lat, lon, pressure) by simply iterating over the sample axis.
         self.nlat = data.latitude.size
@@ -156,6 +159,10 @@ class EnergyBudget:
         self.degrees = np.arange(self.truncation + 1, dtype=int)
         self.kappa_h = kappa_from_deg(self.degrees)
 
+        # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
+        # These coordinates are used to export data as xarray objects
+        self.coords = data.coordinates_by_axes()
+
         # create horizontal wavenumber coordinates for spectral quantities.
         self.sp_coords = [c for ic, c in self.coords.items() if ic not in 'xy']
 
@@ -167,6 +174,8 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Initialize dynamic fields
         # ------------------------------------------------------------------------------------------
+        self.pressure = data.pressure.values
+
         self.omega, self.data_info = data.get_field('omega')
 
         # define data mask once for consistency
@@ -193,27 +202,24 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Thermodynamic diagnostics
         # ------------------------------------------------------------------------------------------
-        self.pressure = data.pressure.values
         self.exner = exner_function(self.pressure)
         self.theta = potential_temperature(self.pressure, self.temperature)
 
         # Get geopotential field and compute geopotential height
-        self.phi = data.get_field('geopotential')[0]  # self.geopotential()
-        self.height = geopotential_to_height(self.phi)
+        self.phi = data.get_field('geopotential')[0]
 
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
-        self.theta_avg, self.theta_pbn = self._split_mean_perturbation(self.theta)
+        self.theta_avg, self.theta_prime = self._split_mean_perturbation(self.theta)
 
         # Compute vertical gradient of potential temperature perturbations
-        # (done before filtering to avoid sharp gradients at interfaces)
-        self.ddp_theta_pbn = self.vertical_gradient(self.theta_pbn)
+        self.ddp_theta_prime = self.vertical_gradient(self.theta_prime)
 
         # Parameter ganma to convert from temperature variance to APE
         self.ganma = stability_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
 
     # ------------------------------------------------------------------------------------------
-    # Methods for computing thermodynamic quantities
+    # Helper function for adding metadata to fields and convert to DataArray
     # ------------------------------------------------------------------------------------------
     def add_field(self, data, name=None, gridtype='spectral', **attributes):
         """
@@ -234,60 +240,6 @@ class EnergyBudget:
             array.attrs[attr] = value
 
         return array
-
-    # ------------------------------------------------------------------------------------------
-    # Methods for thermodynamic diagnostics
-    # ------------------------------------------------------------------------------------------
-    # def geopotential(self):
-    #     """
-    #     Computes geopotential at pressure surfaces assuming a hydrostatic atmosphere.
-    #     The geopotential is obtained by integrating the hydrostatic balance equation from the
-    #     surface to the top of the atmosphere. Uses terrain height and surface pressure as lower
-    #     boundary conditions. Uses compiled fortran libraries for higher performance.
-    #
-    #     :return: `np.ndarray`
-    #         geopotential (J/kg)
-    #     """
-    #
-    #     # Compact horizontal coordinates into one dimension ...
-    #     data_shape = self.temperature.shape
-    #     proc_shape = (-1,) + data_shape[2:]
-    #
-    #     temperature = np.moveaxis(self.temperature.reshape(proc_shape), 1, 0)
-    #     temperature = np.ma.filled(temperature, fill_value=0.0)
-    #
-    #     sfcp = self.ps.ravel()
-    #     sfct = self.ts.reshape(self.samples, -1)
-    #
-    #     # get surface elevation for the given grid.
-    #     sfch = get_surface_elevation(self.latitude, self.longitude)
-    #     sfch = sfch.values.ravel()
-    #
-    #     # Compute geopotential from the temperature field
-    #     # signature 'geopotential(surface_geopotential, temperature, pressure)'
-    #     phi = numeric_tools.geopotential(self.pressure, temperature, sfch, sfcp, sfct=sfct)
-    #
-    #     # back to the original shape (same as temperature)
-    #     phi = np.moveaxis(phi, 0, 1).reshape(data_shape)
-    #
-    #     # Create surface masked array with geopotential field
-    #     return np.ma.masked_array(phi, mask=self.data_mask)
-
-    def geostrophic_wind(self):
-        """
-        Computes the geostrophically balanced wind
-        """
-        h_gradient = self.horizontal_gradient(self.height)
-
-        fc = broadcast_1dto(self.fc, h_gradient.shape)
-
-        return (cn.g / fc) * rotate_vector(h_gradient)
-
-    def ageostrophic_wind(self):
-        """
-        Computes the ageostrophic wind
-        """
-        return self.wind - self.geostrophic_wind()
 
     # ------------------------------------------------------------------------------------------
     # Methods for computing diagnostics: kinetic and available potential energies
@@ -329,7 +281,7 @@ class EnergyBudget:
         """
         Total available potential energy after Augier and Lindborg (2013), Eq.10
         """
-        potential_energy = self.ganma * self._scalar_spectra(self.theta_pbn) / 2.0
+        potential_energy = self.ganma * self._scalar_spectra(self.theta_prime) / 2.0
 
         potential_energy = self.add_field(potential_energy, 'ape',
                                           gridtype='spectral', units='m**2 s**-2',
@@ -451,20 +403,21 @@ class EnergyBudget:
         """
 
         # compute horizontal advection of potential temperature
-        theta_advection = self._scalar_advection(self.theta_pbn) + self.div * self.theta_pbn / 2.0
+        theta_advection = self._scalar_advection(self.theta_prime)
+        theta_advection += self.div * self.theta_prime / 2.0
 
         # compute nonlinear spectral transfer related to horizontal advection
-        advection_term = - self._scalar_spectra(self.theta_pbn, theta_advection)
+        advection_term = - self._scalar_spectra(self.theta_prime, theta_advection)
 
         # compute vertical transfer
-        vertical_trans = self._scalar_spectra(self.ddp_theta_pbn, self.omega * self.theta_pbn)
-        vertical_trans -= self._scalar_spectra(self.theta_pbn, self.omega * self.ddp_theta_pbn)
+        vertical_trans = self._scalar_spectra(self.ddp_theta_prime, self.omega * self.theta_prime)
+        vertical_trans -= self._scalar_spectra(self.theta_prime, self.omega * self.ddp_theta_prime)
 
         return self.ganma * (advection_term + vertical_trans / 2.0)
 
     def pressure_flux(self):
         # Pressure flux (Eq.22)
-        return - self._scalar_spectra(self.omega, self.height)
+        return - self._scalar_spectra(self.omega, self.phi)
 
     def dke_turbulent_flux(self):
         # Turbulent kinetic energy flux (Eq.22)
@@ -472,16 +425,15 @@ class EnergyBudget:
 
     def dke_vertical_flux(self):
         # Vertical flux of total kinetic energy (Eq. A9)
-        return self.pressure_flux() + self.dke_turbulent_flux()
+        dke_flux = self.pressure_flux() + self.dke_turbulent_flux()
+
+        return self.vertical_gradient(dke_flux)
 
     def ape_vertical_flux(self):
         # Total APE vertical flux (Eq. A10)
-        ape_flux = self._scalar_spectra(self.theta_pbn, self.omega * self.theta_pbn)
+        ape_flux = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
 
-        return - self.ganma * ape_flux / 2.0
-
-    def surface_fluxes(self):
-        return
+        return - self.vertical_gradient(self.ganma * ape_flux) / 2.0
 
     def conversion_ape_dke(self):
         # Conversion of Available Potential energy into kinetic energy
@@ -563,7 +515,9 @@ class EnergyBudget:
         # non-conservative term J(p) in Eq. A11
         dlog_gamma = self.vertical_gradient(np.log(self.ganma))
 
-        return - dlog_gamma.reshape(-1) * self.ape_vertical_flux()
+        nc = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
+
+        return dlog_gamma.reshape(-1) * nc
 
     def energy_diagnostics(self):
         """
@@ -576,7 +530,7 @@ class EnergyBudget:
 
         return SebaDataset(xr.merge([hke, ape, vke], compat="no_conflicts"))
 
-    def cumulative_energy_fluxes(self):
+    def nonlinear_energy_fluxes(self):
         """
         Computes each term in spectral energy budget and return as xr.DataArray objects.
         """
@@ -584,26 +538,29 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Energy conversions APE --> DKE and DKE --> RKE
         # ------------------------------------------------------------------------------------------
-        c_ad = cumulative_flux(self.conversion_ape_dke())
+        c_ad = self.conversion_ape_dke()
 
-        cdr_w = cumulative_flux(self.conversion_dke_rke_vertical())
-        cdr_v = cumulative_flux(self.conversion_dke_rke_vorticity())
-        cdr_c = cumulative_flux(self.conversion_dke_rke_coriolis())
+        # different contributions to DKE --> RKE
+        cdr_w = self.conversion_dke_rke_vertical()
+        cdr_v = self.conversion_dke_rke_vorticity()
+        cdr_c = self.conversion_dke_rke_coriolis()
 
         # Total conversion from divergent to rotational kinetic energy.
-        # c_dr = cumulative_flux(self.conversion_dke_rke())
         c_dr = cdr_w + cdr_v + cdr_c
 
         # Compute cumulative nonlinear spectral energy fluxes
-        pi_r = cumulative_flux(self.rke_nonlinear_transfer())
-        pi_d = cumulative_flux(self.dke_nonlinear_transfer())
-        pi_a = cumulative_flux(self.ape_nonlinear_transfer())
+        pi_r = self.rke_nonlinear_transfer()
+        pi_d = self.dke_nonlinear_transfer()
+        pi_a = self.ape_nonlinear_transfer()
 
         # Linear transfer due to Coriolis
-        lc_k = cumulative_flux(self.coriolis_linear_transfer())
+        lc_k = self.coriolis_linear_transfer()
 
         # Create dataset
         data_fluxes = SebaDataset()
+
+        # add some relevant info to dataset
+        data_fluxes.attrs.update(_global_attrs)
 
         # add data and metadata
         data_fluxes['cad'] = self.add_field(c_ad, gridtype='spectral', units='W m**-2',
@@ -624,7 +581,7 @@ class EnergyBudget:
         data_fluxes['cdr_c'] = self.add_field(cdr_c, gridtype='spectral', units='W m**-2',
                                               standard_name='conversion_dke_rke_coriolis',
                                               long_name='conversion from divergent to rotational '
-                                                        'kinetic energy due to coriolis effect')
+                                                        'kinetic energy due to the coriolis effect')
 
         data_fluxes['cdr'] = self.add_field(c_dr, gridtype='spectral', units='W m**-2',
                                             standard_name='conversion_dke_rke',
@@ -633,22 +590,22 @@ class EnergyBudget:
 
         data_fluxes['pi_rke'] = self.add_field(pi_r, gridtype='spectral', units='W m**-2',
                                                standard_name='nonlinear_rke_flux',
-                                               long_name='cumulative spectral flux of '
-                                                         'rotational kinetic energy')
+                                               long_name='spectral transfer of rotational'
+                                                         ' kinetic energy')
 
         data_fluxes['pi_dke'] = self.add_field(pi_d, gridtype='spectral', units='W m**-2',
                                                standard_name='nonlinear_dke_flux',
-                                               long_name='cumulative spectral flux of '
-                                                         'divergent kinetic energy')
+                                               long_name='spectral transfer of divergent'
+                                                         ' kinetic energy')
 
         data_fluxes['pi_ape'] = self.add_field(pi_a, gridtype='spectral', units='W m**-2',
                                                standard_name='nonlinear_ape_flux',
-                                               long_name='cumulative spectral flux of '
-                                                         'available potential energy')
+                                               long_name='spectral transfer of available'
+                                                         ' potential energy')
 
         data_fluxes['lc'] = self.add_field(lc_k, gridtype='spectral', units='W m**-2',
                                            standard_name='coriolis_transfer',
-                                           long_name='coriolis linear transfer')
+                                           long_name='coriolis transfer')
 
         # ------------------------------------------------------------------------------------------
         # Cumulative vertical fluxes of divergent kinetic energy
@@ -656,8 +613,8 @@ class EnergyBudget:
         vf_p = self.pressure_flux()
         vf_m = self.dke_turbulent_flux()
 
-        vf_k = cumulative_flux(self.vertical_gradient(vf_p + vf_m))
-        vf_a = cumulative_flux(self.vertical_gradient(self.ape_vertical_flux()))
+        vf_k = self.vertical_gradient(vf_p + vf_m)
+        vf_a = self.ape_vertical_flux()
 
         # add data and metadata
         data_fluxes['pf_dke'] = self.add_field(vf_p, gridtype='spectral', units='W m**-2',
@@ -671,17 +628,16 @@ class EnergyBudget:
 
         data_fluxes['vf_dke'] = self.add_field(vf_k, gridtype='spectral', units='W m**-2',
                                                standard_name='vertical_dke_flux',
-                                               long_name='cumulative vertical flux '
-                                                         'of kinetic energy')
+                                               long_name='vertical flux of kinetic energy')
 
         data_fluxes['vf_ape'] = self.add_field(vf_a, gridtype='spectral', units='W m**-2',
                                                standard_name='vertical_ape_flux',
-                                               long_name='cumulative vertical flux of '
-                                                         'available potential energy')
+                                               long_name='vertical flux of available'
+                                                         ' potential energy')
 
         return data_fluxes
 
-    def get_ke_tendency(self, tendency, name=None, cumulative=False):
+    def get_ke_tendency(self, tendency, name=None):
         r"""
             Compute kinetic energy spectral transfer from parametrized
             or explicit horizontal wind tendencies.
@@ -698,8 +654,6 @@ class EnergyBudget:
                     stacked along the first axis.
                 name: str,
                     name of the tendency
-                cumulative: bool,
-                    convert to cumulative flux
             Returns
             -------
                 Kinetic energy tendency due to any process given by 'tendency'.
@@ -723,16 +677,13 @@ class EnergyBudget:
 
         ke_tendency = self._vector_spectra(self.wind, tendency)
 
-        if cumulative:
-            ke_tendency = cumulative_flux(ke_tendency)
-
         if da_flag:
             ke_tendency = self.add_field(ke_tendency, tendency_name,
                                          gridtype='spectral', units='W m**-2',
                                          standard_name=tendency_name)
         return ke_tendency
 
-    def get_ape_tendency(self, tendency, name=None, cumulative=True):
+    def get_ape_tendency(self, tendency, name=None):
         r"""
             Compute Available potential energy tendency from
             parametrized or explicit temperature tendencies.
@@ -745,8 +696,6 @@ class EnergyBudget:
                     contains a diabatic temperature tendency.
                 name: str,
                     name of the tendency
-                cumulative: bool,
-                    convert to cumulative flux
             Returns
             -------
                 Available potential energy tendency due to diabatic processes.
@@ -765,7 +714,7 @@ class EnergyBudget:
             # check dimensions
             tendency = np.asarray(tendency)
 
-            if tendency.shape != self.theta_pbn.shape:
+            if tendency.shape != self.theta_prime.shape:
                 raise ValueError("The shape of 'tendency' array must be "
                                  "consistent with the initialized temperature. Expecting {}, "
                                  "but got {}".format(self.wind.shape, tendency.shape))
@@ -776,10 +725,7 @@ class EnergyBudget:
         # convert temperature tendency to potential temperature tendency
         theta_tendency = tendency / self.exner / cn.cp  # rate of production of internal energy
 
-        ape_tendency = self.ganma * self._scalar_spectra(self.theta_pbn, theta_tendency)
-
-        if cumulative:
-            ape_tendency = cumulative_flux(ape_tendency)
+        ape_tendency = self.ganma * self._scalar_spectra(self.theta_prime, theta_tendency)
 
         if da_flag:
             ape_tendency = self.add_field(ape_tendency, tendency_name,
@@ -1004,7 +950,8 @@ class EnergyBudget:
         return np.ma.mean(scalar_average, axis=lat_axis)
 
     def integrate_order(self, cs_lm, degrees=None):
-        """Accumulates the cross-spectrum as a function of spherical harmonic degree.
+        """Accumulates over spherical harmonic order and returns spectrum as a function of
+        spherical harmonic degree.
 
         Signature
         ---------
@@ -1061,8 +1008,7 @@ class EnergyBudget:
             degree_range = (ms <= degree) & (ls == degree)
             spectrum[ln] = np.nansum(cs_lm[degree_range], axis=0)
 
-        # Using the normalization in equation (7) of Lambert [1984].
-        # spectrum /= 2.0
+        # Normalize as in equation (7) of Lambert [1984]? i.e. spectrum /= 2.0
         return spectrum
 
     def cross_spectrum(self, clm1, clm2=None, degrees=None, convention='power', integrate=True):

@@ -126,7 +126,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Load computed fluxes
     # ----------------------------------------------------------------------------------------------
-    dataset_fluxes = budget.cumulative_energy_fluxes()
+    dataset_fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa').mean(dim='time')
 
     layers = {
         'Free troposphere': [250e2, 850e2],
@@ -147,7 +147,7 @@ if __name__ == '__main__':
 
     for i, (level, prange) in enumerate(layers.items()):
         # Integrate fluxes in layers
-        data = dataset_fluxes.integrate_levels(coord_range=prange).mean(dim='time')
+        data = dataset_fluxes.integrate_levels(coord_range=prange)
 
         cad = data.cad.values
         pid = data.pi_dke.values
