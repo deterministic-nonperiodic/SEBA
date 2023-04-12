@@ -260,13 +260,13 @@ class SebaDataset(Dataset):
         # (Useful for cleaner vectorized operations)
         return prepare_data(data, info_coords)
 
-    def integrate_levels(self, variable=None, coord_name="level", coord_range=None):
+    def integrate_range(self, variable=None, coord_name="level", coord_range=None):
 
         if variable is None:
             # create a copy and integrate the entire dataset.
             data = self.copy()
         elif variable in self:
-            data = self[variable]
+            data = self[variable].to_dataset(promote_attrs=True)
         else:
             raise ValueError(f"Variable {variable} not found in dataset!")
 
@@ -291,12 +291,24 @@ class SebaDataset(Dataset):
         if is_sorted(coord.values, ascending=False):
             data = data.sortby(coord.name)
 
+        # save data units before integration (integrate drops units... it's getting annoying)
+        var_units = {name: data[name].attrs.get("units") for name in data.data_vars}
+
         # Integrate over coordinate 'coord_name' using the trapezoidal rule
         data = data.sel({coord.name: slice(*coord_range)}).integrate(coord.name)
 
-        # convert to height coordinate if data is pressure levels (hydrostatic approximation)
+        # Convert to height coordinate if data is pressure levels (hydrostatic approximation)
+        convert_units = coord.attrs.get("units") or ''
+
         if is_standard(coord, "pressure"):
             data /= cn.g
+            convert_units = 'kg / m**2'
+
+        # units conversion
+        for name, units in var_units.items():
+            if units:
+                converted_units = reg(_parse_power_units(units)) * reg(convert_units)
+                data[name].attrs['units'] = str(converted_units.units)
 
         return data
 

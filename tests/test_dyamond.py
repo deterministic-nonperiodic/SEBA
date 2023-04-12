@@ -79,7 +79,7 @@ if __name__ == '__main__':
 
     ls = ['-', '--']
     for i, (layer, prange) in enumerate(layers.items()):
-        data = dataset_energy.integrate_levels(coord_range=prange).mean(dim='time')
+        data = dataset_energy.integrate_range(coord_range=prange).mean(dim='time')
 
         ax.loglog(kappa, data.hke, label=r'$E_K$', linewidth=1.2, linestyle=ls[i], color='red')
         ax.loglog(kappa, data.ape, label=r'$E_A$', linewidth=1.2, linestyle=ls[i], color='navy')
@@ -142,7 +142,7 @@ if __name__ == '__main__':
     }
 
     for i, (level, prange) in enumerate(layers.items()):
-        data = dataset_fluxes.integrate_levels(coord_range=prange)
+        data = dataset_fluxes.integrate_range(coord_range=prange)
 
         pik = data.pi_dke.values + data.pi_rke.values
         pia = data.pi_ape.values
@@ -230,7 +230,7 @@ if __name__ == '__main__':
 
     for i, (level, prange) in enumerate(layers.items()):
         # Integrate fluxes in layers
-        data = dataset_fluxes.integrate_levels(coord_range=prange)
+        data = dataset_fluxes.integrate_range(coord_range=prange)
 
         cad = data.cad.values
         pid = data.pi_dke.values
