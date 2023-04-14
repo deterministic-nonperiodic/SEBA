@@ -10,7 +10,7 @@ from src.seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
-DATA_PATH = "data/"  # '/mnt/levante/energy_budget/test_data/'
+DATA_PATH = "../data/"  # '/mnt/levante/energy_budget/test_data/'
 
 
 def _process_model(model, resolution, date_time):
@@ -22,9 +22,8 @@ def _process_model(model, resolution, date_time):
     file_names = DATA_PATH + '{}_atm_3d_inst_{}_gps_{}.nc'
     dataset_dyn = file_names.format(model, resolution, date_time)
 
-    dataset_tnd = xr.open_mfdataset(DATA_PATH + '{}_atm_3d_tend_{}_gps_{}.nc'.format(model,
-                                                                                     resolution,
-                                                                                     date_time))
+    file_name = '{}_atm_3d_tend_{}_gps_{}.nc'.format(model, resolution, date_time)
+    dataset_tnd = xr.open_mfdataset(DATA_PATH + file_name)
     # load earth topography and surface pressure
     dset_sfc = xr.open_dataset(DATA_PATH + 'DYAMOND2_topography_{}.nc'.format(resolution))
 
@@ -48,7 +47,8 @@ def _process_model(model, resolution, date_time):
     fluxes = budget.nonlinear_energy_fluxes()
 
     # Compute spectral energy diagnostics
-    fluxes['hke'] = budget.horizontal_kinetic_energy()
+    fluxes['rke'], fluxes['dke'], fluxes['hke'] = budget.horizontal_kinetic_energy()
+
     fluxes['ape'] = budget.available_potential_energy()
     fluxes['vke'] = budget.vertical_kinetic_energy()
 
@@ -65,7 +65,7 @@ def _process_model(model, resolution, date_time):
              'references': ''}
     fluxes.attrs.update(attrs)
 
-    fluxes.to_netcdf("data/energy_budget/{}_energy_fluxes_{}.nc".format(model, suffix))
+    fluxes.to_netcdf("../data/energy_budget/{}_energy_fluxes_{}.nc".format(model, suffix))
     fluxes.close()
 
     # ----------------------------------------------------------------------------------------------
@@ -81,8 +81,7 @@ def _process_model(model, resolution, date_time):
         pname = name.split('_')[-1].lower()
         tend_grid = dataset_tnd.get(name)
         if tend_grid is not None:
-            ape_tendencies.append(budget.get_ape_tendency(tend_grid, name="ddt_ape_" + pname,
-                                                          cumulative=True))
+            ape_tendencies.append(budget.get_ape_tendency(tend_grid, name="ddt_ape_" + pname))
 
     # ----------------------------------------------------------------------------------------------
     # Compute APE tendency from parameterized processes
@@ -101,7 +100,7 @@ def _process_model(model, resolution, date_time):
             tend_grid = np.moveaxis(np.array([tend_u_grid.values,
                                               tend_v_grid.values]), (1, 2), (-2, -1))
 
-            ke_tendency = budget.get_ke_tendency(tend_grid, cumulative=True)
+            ke_tendency = budget.get_ke_tendency(tend_grid)
 
             ke_tendency = budget.add_field(ke_tendency, "ddt_ke_" + pname,
                                            gridtype='spectral', units='W m**-2')

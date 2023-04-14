@@ -11,6 +11,7 @@ from matplotlib.colors import SymLogNorm
 from matplotlib.offsetbox import AnchoredText
 from matplotlib.ticker import ScalarFormatter
 from scipy.ndimage.filters import gaussian_filter
+from sklearn.preprocessing import MinMaxScaler
 
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
 
@@ -115,14 +116,19 @@ parula = LinearSegmentedColormap.from_list('parula', cm_data)
 BWG = LinearSegmentedColormap.from_list('BWG', colorcet.CET_D13)
 
 DATA_KEYMAP = {
-    'pi_ke': r'$\Pi_K$',
+    'pi_hke': r'$\Pi_K$',
     'pi_dke': r'$\Pi_D$',
     'pi_rke': r'$\Pi_R$',
     'pi_ape': r'$\Pi_A$',
     'cdr': r'$C_{D \rightarrow R}$',
-    'cka': r'$C_{A \rightarrow D}$',
-    'vf_dke': r'$\partial_{p}F_{D\uparrow}$',
-    'vf_ape': r'$\partial_{p}F_{A\uparrow}$',
+    'cdr_w': r'$C_{D \rightarrow R}^{w}$',
+    'cdr_v': r'$C_{D \rightarrow R}^{\zeta}$',
+    'cdr_c': r'$C_{D \rightarrow R}^{C}$',
+    'cad': r'$C_{A \rightarrow D}$',
+    'vf_dke': r'$F_{D\uparrow}$',
+    'vfd_dke': r'$\partial_{p}F_{D\uparrow}$',
+    'vf_ape': r'$F_{A\uparrow}$',
+    'vfd_ape': r'$\partial_{p}F_{A\uparrow}$',
     'uw_vf': r'$\rho\overline{u^{\prime}w^{\prime}}$',
     'vw_vf': r'$\rho\overline{v^{\prime}w^{\prime}}$',
     'gw_vf': r'$\overline{u^{\prime}w^{\prime}}$ + $\overline{v^{\prime}w^{\prime}}$',
@@ -131,37 +137,42 @@ DATA_KEYMAP = {
 }
 
 
-def intersections(coords, a, b, direction='all', return_y=False):
-    # Return intersections between arrays a and b with common coordinate 'coords'
-    coords = np.asarray(coords)
-    a = np.asarray(a)
-    b = np.asarray(b)
+def find_symlog_params(data):
+    """
+    Determines appropriate values of linscale and linthresh for use with a SymLogNorm color map.
 
-    if a.size == 1:
-        if b.size != 1:
-            a = np.repeat(a, b.size)
+    Parameters:
+        data (ndarray): The data to be plotted.
+
+    Returns:
+        tuple: A tuple of two floats representing the values of linscale and linthresh.
+    """
+
+    # Compute the range of the data
+    data_range = np.ptp(data)
+
+    # Scale the data to the range [0, 1] using MinMaxScaler
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
+
+    # Find the value of linthresh that separates the linear and logarithmic parts
+    # We want the linear part to be as large as possible while still excluding the
+    # top and bottom 5% of the data, which could skew the normalization
+    linthresh = np.nanpercentile(scaled_data, [5, 95])
+    linthresh = np.interp(0.5, [0, 1], linthresh)  # use the median value
+
+    # Compute the scale factor for the logarithmic part of the normalization
+    # We want the logarithmic part to span a decade or so
+    if 0.0 <= data_range <= 1.0:
+        linscale = 0.9 * data_range
     else:
-        if b.size == 1:
-            b = np.repeat(b, a.size)
-        else:
-            assert a.size == b.size, "Arrays 'a' and 'b' must be the same size"
+        # Find the value of linscale that stretches the linear part to cover most of the range
+        # We want the linear part to cover about half of the range
+        qr_5 = np.nanpercentile(data, [5, 95]).ptp()  # / 2.0
+        linscale = qr_5 / (linthresh * np.log10(data_range))
 
-    assert coords.size == a.size, "Array 'coords' must be the same size as 'a' and 'b'"
-
-    x, y = find_intersections(coords, a, b, direction=direction)
-
-    if len(x) == 0:
-        x = y = np.nan
-    elif len(x) == 1:
-        x = x[0]
-        y = y[0]
-    else:
-        pass
-
-    if return_y:
-        return x, y
-    else:
-        return x
+    abs_max = 0.75 * np.nanmax(abs(data))
+    return dict(linthresh=linthresh, linscale=linscale, vmin=-abs_max, vmax=abs_max)
 
 
 def find_intersections(x, a, b, direction='all'):
@@ -187,8 +198,17 @@ def find_intersections(x, a, b, direction='all'):
         A tuple (x, y) of array-like with the x and y coordinates of the
         intersections of the lines.
     """
+    if np.isscalar(a):
+        a = np.full_like(b, a)
+    elif np.isscalar(b):
+        b = np.full_like(a, b)
+    else:
+        assert a.size == b.size, "Arrays 'a' and 'b' must be the same size"
+
+    assert x.size == a.size, "Array 'coords' must be the same size as 'a' and 'b'"
+
     # Find the index of the points just before the intersection(s)
-    nearest_idx = nearest_intersection_idx(a, b)
+    nearest_idx = np.argwhere(np.diff(np.sign(a - b))).ravel()
     next_idx = nearest_idx + 1
 
     # Determine the sign of the change
@@ -222,30 +242,9 @@ def find_intersections(x, a, b, direction='all'):
     elif direction == 'all':
         return intersect_x, intersect_y
     else:
-        raise ValueError(
-            'Unknown option for direction: {0}'.format(str(direction)))
+        raise ValueError('Unknown option for direction: {0}'.format(str(direction)))
+
     return intersect_x[mask], intersect_y[mask]
-
-
-def nearest_intersection_idx(a, b):
-    """Determine the index of the point just before two lines with common x values.
-
-    Parameters
-    ----------
-    a : array-like
-        1-dimensional array of y-values for line 1
-    b : array-like
-        1-dimensional array of y-values for line 2
-
-    Returns
-    -------
-        An array of indexes representing the index of the values
-        just before the intersection(s) of the two lines.
-    """
-    # Determine the points just before the intersection of the lines
-    sign_change_idx, = np.nonzero(np.diff(np.sign(a - b)))
-
-    return sign_change_idx
 
 
 def _next_non_masked_element(x, idx):
@@ -285,17 +284,7 @@ def mean_confidence_interval(data, confidence=0.95, axis=0):
 
 
 def transform_spectra(s):
-    st = np.reshape(s, (-1, s.shape[-1]))
-
-    return mean_confidence_interval(st, confidence=0.95, axis=0)
-
-
-def string_fmt(x):
-    # $\lambda_z\sim$
-    s = f"{x:.1f}"
-    if s.endswith("0"):
-        s = f"{x:.0f}"
-    return rf" {s}~km" if plt.rcParams["text.usetex"] else rf" {s} km"
+    return mean_confidence_interval(np.reshape(s, (-1, s.shape[-1])), confidence=0.95, axis=0)
 
 
 def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_label=None,
@@ -690,8 +679,8 @@ def kinetic_energy_components(dataset, dataset_igws=None, dataset_rows=None, mod
                     label=r'$E_{d}$', linestyle='solid', alpha=1.0)
 
             # crossing scales: intersections between rotational and divergent kinetic energies
-            kappa_cross, spectra_cross = intersections(kappa, td_spectra, tr_spectra,
-                                                       direction='increasing', return_y=True)
+            kappa_cross, spectra_cross = find_intersections(kappa, td_spectra, tr_spectra,
+                                                            direction='increasing')
             # plot IGW components
             ig_spectra = None
             ro_spectra = None
@@ -741,8 +730,8 @@ def kinetic_energy_components(dataset, dataset_igws=None, dataset_rows=None, mod
 
             if kappa_cross is None:
                 # crossing scales: intersections between rotational and divergent kinetic energies
-                kappa_cross, spectra_cross = intersections(kappa_ig, ig_spectra, ro_spectra,
-                                                           direction='increasing', return_y=True)
+                kappa_cross, spectra_cross = find_intersections(kappa_ig, ig_spectra, ro_spectra,
+                                                                direction='increasing')
             # take first of multiple crossings
             if not np.isscalar(kappa_cross):
                 kappa_cross = kappa_cross[0]
@@ -822,15 +811,13 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
     cs_levels = 50
 
     for m, (ax, varname) in enumerate(zip(axes, variables)):
-
         spectra = 1e3 * dataset[varname].values
-        cs_limit = 0.65 * abs(spectra).max()
 
         # Create plots:
         cs = ax.contourf(kappa, level, spectra,
                          cmap=cmap, levels=cs_levels,
-                         norm=SymLogNorm(linthresh=0.15, linscale=0.65,
-                                         vmin=-cs_limit, vmax=cs_limit))
+                         norm=SymLogNorm(**find_symlog_params(spectra))
+                         )
 
         ax.contour(kappa, level, gaussian_filter(spectra, 1.2),
                    color='black', linewidths=0.8, levels=[0, ])
@@ -838,9 +825,9 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
         ax.set_ylim(y_limits)
         ax.set_ylabel(r'Pressure (hPa)')
 
-        if m == cols - 1:
-            cb = plt.colorbar(cs, ax=ax, orientation='vertical', pad=0.001, format="%.2f")
-            cb.ax.set_title(r"[$W / m^{2}$]", fontsize=14, loc='left', pad=15)
+        # add a colorbar to all axes
+        cb = plt.colorbar(cs, ax=ax, orientation='vertical', pad=0.001, format="%.2f")
+        cb.ax.set_title(r"[$W / m^{2}$]", fontsize=14, loc='left', pad=15)
 
     if model is not None:
         at = AnchoredText(model.upper(), prop=dict(size=15), frameon=True, loc='upper left')

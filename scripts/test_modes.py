@@ -2,13 +2,11 @@ import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
-import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
 from src.seba import EnergyBudget
 from src.spectral_analysis import kappa_from_deg, kappa_from_lambda
-from src.visualization import AnchoredText
-from src.visualization import fluxes_slices_by_models
+from src.visualization import AnchoredText, fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -21,19 +19,18 @@ warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
 
+    mode = "IG"
     model = 'ICON'
     resolution = 'n256'
     data_path = '/media/yanm/Data/DYAMOND/data/'
 
     date_time = '20200202'
-    file_names = data_path + '{}_IG_inst_{}_{}.nc'
-
-    dataset_dyn = xr.open_mfdataset(file_names.format(model, date_time, resolution))
+    file_names = data_path + f"{model}_{mode}_inst_{date_time}_{resolution}.nc"
 
     p_levels = np.linspace(1000e2, 10e2, 21)
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, p_levels=p_levels, jobs=1)
+    budget = EnergyBudget(file_names, p_levels=p_levels, jobs=1)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
@@ -133,11 +130,11 @@ if __name__ == '__main__':
         # 'Lower troposphere': [500e2, 950e2]
     }
 
-    ke_limits = {'Free troposphere': [-0.08, 0.08],
-                 'Lower troposphere': [-0.6, 0.6]}
+    ke_limits = {
+        "IG": {'Free troposphere': [-0.08, 0.08], 'Lower troposphere': [-0.6, 0.6]},
+        "RO": {'Free troposphere': [-0.60, 0.60], 'Lower troposphere': [-0.6, 0.6]},
+    }
 
-    # perform vertical integration
-    colors = ['green', 'magenta']
     if kappa.size < 1000:
         x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
         xticks = np.array([1, 10, 100, 1000])
@@ -202,8 +199,10 @@ if __name__ == '__main__':
         ax.set_xlabel(r'wavenumber', fontsize=16, labelpad=4)
         secax.set_xlabel(r'wavelength $(km)$', fontsize=16, labelpad=5)
 
+        y_limits = ke_limits[mode][level]
+
         ax.set_xlim(*x_limits)
-        ax.set_ylim(*ke_limits[level])
+        ax.set_ylim(*y_limits)
 
         prange_str = [int(1e-2 * p) for p in sorted(prange)]
 
@@ -222,5 +221,5 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     figure_name = '../figures/{}_wave_fluxes_section_{}.pdf'.format(model, resolution)
 
-    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vf_dke'],
+    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vfd_dke'],
                             resolution='n1024', y_limits=[1000., 10.], fig_name=figure_name)

@@ -159,6 +159,10 @@ class EnergyBudget:
         self.degrees = np.arange(self.truncation + 1, dtype=int)
         self.kappa_h = kappa_from_deg(self.degrees)
 
+        # normalization factor for vector analysis n * (n + 1) / re ** 2
+        sp_shape = (self.truncation + 1, self.samples, self.nlevels)
+        self.norm = broadcast_1dto(self.kappa_h ** 2, sp_shape).clip(cn.epsilon, None)
+
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as xarray objects
         self.coords = data.coordinates_by_axes()
@@ -247,18 +251,32 @@ class EnergyBudget:
     # ------------------------------------------------------------------------------------------
     def horizontal_kinetic_energy(self):
         """
-        Horizontal kinetic energy after Augier and Lindborg (2013), Eq.13
+        Horizontal kinetic energy Augier and Lindborg (2013), Eq.13
         :return:
         """
-        kinetic_energy = self._vector_spectra(self.wind) / 2.0
+
+        # Same as: kinetic_energy = self._vector_spectra(self.wind) / 2.0
+        rke = self._scalar_spectra(self.vrt) / (2.0 * self.norm)
+        dke = self._scalar_spectra(self.div) / (2.0 * self.norm)
+
+        hke = rke + dke
 
         #  create dataset
-        kinetic_energy = self.add_field(kinetic_energy, 'hke',
-                                        gridtype='spectral',
-                                        units='m**2 s**-2',
-                                        standard_name='horizontal_kinetic_energy',
-                                        long_name='horizontal kinetic energy per unit mass')
-        return kinetic_energy
+        rke = self.add_field(rke, 'rke', gridtype='spectral', units='m**2 s**-2',
+                             standard_name='rotational_kinetic_energy',
+                             long_name='horizontal kinetic energy'
+                                       ' of the non-divergent wind')
+
+        dke = self.add_field(dke, 'dke', gridtype='spectral', units='m**2 s**-2',
+                             standard_name='divergent_kinetic_energy',
+                             long_name='horizontal kinetic energy'
+                                       ' of the non-rotational wind')
+
+        hke = self.add_field(hke, 'hke', gridtype='spectral', units='m**2 s**-2',
+                             standard_name='horizontal_kinetic_energy',
+                             long_name='horizontal kinetic energy')
+
+        return rke, dke, hke
 
     def vertical_kinetic_energy(self):
         """
@@ -290,235 +308,6 @@ class EnergyBudget:
                                           long_name='available potential energy per unit mass')
         return potential_energy
 
-    def vorticity_divergence(self):
-        """
-        Computes the vertical vorticity and horizontal divergence
-        """
-        # Spectral coefficients of vertical vorticity and horizontal wind divergence.
-        vrt_spc, div_spc = self._compute_rotdiv(self.wind)
-
-        # transform back to grid-point space preserving mask
-        vrt = self._inverse_transform(vrt_spc)
-        div = self._inverse_transform(div_spc)
-
-        vrt = np.ma.masked_array(vrt, mask=self.data_mask, fill_value=0.0)
-        div = np.ma.masked_array(div, mask=self.data_mask, fill_value=0.0)
-
-        return vrt, div
-
-    # -------------------------------------------------------------------------------
-    # Methods for computing spectral fluxes
-    # -------------------------------------------------------------------------------
-    def ke_nonlinear_transfer(self):
-        """
-        Kinetic energy spectral transfer due to nonlinear interactions after
-        Augier and Lindborg (2013), Eq.A2
-        :return:
-            Spectrum of KE transfer across scales
-        """
-
-        # compute advection of the horizontal wind (using the rotational form)
-        advection_term = self._wind_advection() + self.div * self.wind / 2.0
-
-        # compute nonlinear spectral transfer related to horizontal advection
-        advective_flux = - self._vector_spectra(self.wind, advection_term)
-
-        # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transport = self._vector_spectra(self.wind_shear, self.omega * self.wind)
-        vertical_transport -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
-
-        return advective_flux + vertical_transport / 2.0
-
-    def rke_nonlinear_transfer(self):
-        """
-        Spectral transfer of rotational kinetic energy due to nonlinear interactions
-        after Li et. al. (2023), Eq. 28
-        :return:
-            Spectrum of RKE transfer across scales
-        """
-
-        # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
-        vertical_transfer -= self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
-
-        # Rotational effect due to Coriolis
-        deformation = - self._vector_spectra(self.wind_rot, self.fc * rotate_vector(self.wind))
-        deformation -= self._vector_spectra(self.wind, self.fc * rotate_vector(self.wind_rot))
-
-        # Relative vorticity term
-        deformation -= self._vector_spectra(self.wind_rot, self.vrt * rotate_vector(self.wind))
-        deformation -= self._vector_spectra(self.wind, self.vrt * rotate_vector(self.wind_rot))
-
-        return (vertical_transfer + deformation) / 2.0
-
-    def dke_nonlinear_transfer(self):
-        """
-        Spectral transfer of divergent kinetic energy due to nonlinear interactions
-        after Li et. al. (2023), Eq. 27. The linear Coriolis effect is included in the
-        formulations so that:
-
-        .. math:: T_{D}(l,m) + T_{R}(l,m) = T_{K}(l,m) + L(l,m)
-
-        :return:
-            Spectrum of DKE transfer across scales
-        """
-
-        # Horizontal kinetic energy per unit mass in grid-point space
-        kinetic_energy = np.sum(self.wind * self.wind, axis=0)
-
-        # Horizontal gradient of horizontal kinetic energy
-        kinetic_energy_gradient = self.horizontal_gradient(kinetic_energy)
-
-        # compute nonlinear spectral transfer related to horizontal advection
-        advective_flux = - self._vector_spectra(self.wind_div, kinetic_energy_gradient)
-        advective_flux -= self._vector_spectra(self.wind, self.div * self.wind)
-
-        # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_div)
-        vertical_transfer -= self._vector_spectra(self.wind_div, self.omega * self.wind_shear)
-
-        # cross product of vertical unit vector and horizontal winds
-        cross_wind = rotate_vector(self.wind)
-        cross_wdiv = rotate_vector(self.wind_div)
-
-        # Coriolis effect
-        deformation = - self._vector_spectra(self.wind_div, self.fc * cross_wind)
-        deformation -= self._vector_spectra(self.wind, self.fc * cross_wdiv)
-
-        # Relative vorticity effect
-        deformation -= self._vector_spectra(self.wind_div, self.vrt * cross_wind)
-        deformation -= self._vector_spectra(self.wind, self.vrt * cross_wdiv)
-
-        return (advective_flux + vertical_transfer + deformation) / 2.0
-
-    def ape_nonlinear_transfer(self):
-        """
-        Available potential energy spectral transfer due to nonlinear interactions
-        after Augier and Lindborg (2013), Eq.A3
-        :return:
-            Spherical harmonic coefficients of APE transfer across scales
-        """
-
-        # compute horizontal advection of potential temperature
-        theta_advection = self._scalar_advection(self.theta_prime)
-        theta_advection += self.div * self.theta_prime / 2.0
-
-        # compute nonlinear spectral transfer related to horizontal advection
-        advection_term = - self._scalar_spectra(self.theta_prime, theta_advection)
-
-        # compute vertical transfer
-        vertical_trans = self._scalar_spectra(self.ddp_theta_prime, self.omega * self.theta_prime)
-        vertical_trans -= self._scalar_spectra(self.theta_prime, self.omega * self.ddp_theta_prime)
-
-        return self.ganma * (advection_term + vertical_trans / 2.0)
-
-    def pressure_flux(self):
-        # Pressure flux (Eq.22)
-        return - self._scalar_spectra(self.omega, self.phi)
-
-    def dke_turbulent_flux(self):
-        # Turbulent kinetic energy flux (Eq.22)
-        return - self._vector_spectra(self.wind, self.omega * self.wind) / 2.0
-
-    def dke_vertical_flux(self):
-        # Vertical flux of total kinetic energy (Eq. A9)
-        return self.pressure_flux() + self.dke_turbulent_flux()
-
-    def ape_vertical_flux(self):
-        # Total APE vertical flux (Eq. A10)
-        ape_flux = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
-
-        return - self.ganma * ape_flux / 2.0
-
-    def dke_vertical_flux_divergence(self):
-        # Vertical flux divergence of Divergent kinetic energy.
-        # This term enters directly the energy budget formulation.
-        return self.vertical_gradient(self.dke_vertical_flux())
-
-    def ape_vertical_flux_divergence(self):
-        # Vertical flux divergence of Available potential energy.
-        # This term enters directly the energy budget formulation.
-        return self.vertical_gradient(self.ape_vertical_flux())
-
-    def conversion_ape_dke(self):
-        # Conversion of Available Potential energy into kinetic energy
-        # Equivalent to Eq. 19 of A&L, but using potential temperature.
-        ape_dke = - self._scalar_spectra(self.omega, self.theta)
-
-        return cn.Rd * self.exner * ape_dke / self.pressure
-
-    def conversion_dke_rke(self):
-        """Conversion from divergent to rotational kinetic energy
-        """
-
-        # Nonlinear interaction term due to relative vorticity
-        vorticity_advection = self.conversion_dke_rke_vorticity()
-
-        # Rotational effect due to the Coriolis force on the spectral
-        linear_conversion = self.conversion_dke_rke_coriolis()
-
-        # Vertical transfer
-        vertical_transfer = self.conversion_dke_rke_vertical()
-
-        return vorticity_advection + linear_conversion + vertical_transfer
-
-    def conversion_dke_rke_vertical(self):
-        """Conversion from divergent to rotational energy due to vertical transfer
-        """
-        # vertical transfer
-        dke_rke_omega = -self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
-        dke_rke_omega -= self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
-
-        return dke_rke_omega / 2.0
-
-    def conversion_dke_rke_coriolis(self):
-        """Conversion from divergent to rotational energy
-        """
-
-        # Rotational effect due to the Coriolis force on the spectral
-        # transfer of divergent kinetic energy
-        div_term = self._vector_spectra(self.wind_div, self.fc * rotate_vector(self.wind_rot))
-        rot_term = self._vector_spectra(self.wind_rot, self.fc * rotate_vector(self.wind_div))
-
-        return (div_term - rot_term) / 2.0
-
-    def conversion_dke_rke_vorticity(self):
-        """Conversion from divergent to rotational energy
-        """
-
-        # nonlinear interaction terms
-        div_term = self._vector_spectra(self.wind_div, self.vrt * rotate_vector(self.wind_rot))
-        rot_term = self._vector_spectra(self.wind_rot, self.vrt * rotate_vector(self.wind_div))
-
-        return (div_term - rot_term) / 2.0
-
-    def diabatic_conversion(self):
-        # need to estimate Latent heat release*
-        return
-
-    def coriolis_linear_transfer(self):
-        # Coriolis linear transfer
-        return - self._vector_spectra(self.wind, self.fc * rotate_vector(self.wind))
-
-    def non_conservative_term(self):
-        # non-conservative term J(p) in Eq. A11
-        dlog_gamma = self.vertical_gradient(np.log(self.ganma))
-
-        heat_trans = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
-
-        return dlog_gamma.reshape(-1) * heat_trans
-
-    def energy_diagnostics(self):
-        """
-        Computes spectral energy budget and return as dataset objects.
-        """
-        # Compute diagnostics
-        hke = self.horizontal_kinetic_energy()
-        ape = self.available_potential_energy()
-        vke = self.vertical_kinetic_energy()
-
-        return SebaDataset(xr.merge([hke, ape, vke], compat="no_conflicts"))
-
     def nonlinear_energy_fluxes(self):
         """
         Computes each term in spectral energy budget and return as xr.DataArray objects.
@@ -546,57 +335,55 @@ class EnergyBudget:
         lc_ke = self.coriolis_linear_transfer()
 
         # Create dataset to export nonlinear fluxes
-        data_fluxes = SebaDataset()
+        fluxes = SebaDataset()
 
         # add some relevant info to dataset
-        data_fluxes.attrs.update(_global_attrs)
+        fluxes.attrs.update(_global_attrs)
 
         # add data and metadata
         units = 'watt / kilogram'
 
-        data_fluxes['cad'] = self.add_field(c_ape_dke, units=units,
-                                            standard_name='conversion_ape_dke',
-                                            long_name='conversion from available potential '
-                                                      'energy to divergent kinetic energy')
+        fluxes['cad'] = self.add_field(c_ape_dke, units=units, standard_name='conversion_ape_dke',
+                                       long_name='conversion from available potential '
+                                                 'energy to divergent kinetic energy')
 
-        data_fluxes['cdr_w'] = self.add_field(cdr_w, units=units,
-                                              standard_name='conversion_dke_rke_vertical_velocity',
-                                              long_name='conversion from divergent to rotational '
-                                                        'kinetic energy due to vertical velocity')
+        fluxes['cdr_w'] = self.add_field(cdr_w, units=units,
+                                         standard_name='conversion_dke_rke_vertical_velocity',
+                                         long_name='conversion from divergent to rotational '
+                                                   'kinetic energy due to vertical velocity')
 
-        data_fluxes['cdr_v'] = self.add_field(cdr_v, units=units,
-                                              standard_name='conversion_dke_rke_vorticity',
-                                              long_name='conversion from divergent to rotational '
-                                                        'kinetic energy due to relative vorticity')
+        fluxes['cdr_v'] = self.add_field(cdr_v, units=units,
+                                         standard_name='conversion_dke_rke_vorticity',
+                                         long_name='conversion from divergent to rotational '
+                                                   'kinetic energy due to relative vorticity')
 
-        data_fluxes['cdr_c'] = self.add_field(cdr_c, units=units,
-                                              standard_name='conversion_dke_rke_coriolis',
-                                              long_name='conversion from divergent to rotational '
-                                                        'kinetic energy due to the coriolis effect')
+        fluxes['cdr_c'] = self.add_field(cdr_c, units=units,
+                                         standard_name='conversion_dke_rke_coriolis',
+                                         long_name='conversion from divergent to rotational '
+                                                   'kinetic energy due to the coriolis effect')
 
-        data_fluxes['cdr'] = self.add_field(c_dr, units=units,
-                                            standard_name='conversion_dke_rke',
-                                            long_name='conversion from divergent to '
-                                                      'rotational kinetic energy')
+        fluxes['cdr'] = self.add_field(c_dr, units=units, standard_name='conversion_dke_rke',
+                                       long_name='conversion from divergent to '
+                                                 'rotational kinetic energy')
 
-        data_fluxes['pi_rke'] = self.add_field(pi_rke, units=units,
-                                               standard_name='nonlinear_rke_flux',
-                                               long_name='spectral transfer of rotational'
-                                                         ' kinetic energy')
+        fluxes['pi_rke'] = self.add_field(pi_rke, units=units, standard_name='nonlinear_rke_flux',
+                                          long_name='spectral transfer of rotational'
+                                                    ' kinetic energy')
 
-        data_fluxes['pi_dke'] = self.add_field(pi_dke, units=units,
-                                               standard_name='nonlinear_dke_flux',
-                                               long_name='spectral transfer of divergent'
-                                                         ' kinetic energy')
+        fluxes['pi_dke'] = self.add_field(pi_dke, units=units, standard_name='nonlinear_dke_flux',
+                                          long_name='spectral transfer of divergent'
+                                                    ' kinetic energy')
 
-        data_fluxes['pi_ape'] = self.add_field(pi_ape, units=units,
-                                               standard_name='nonlinear_ape_flux',
-                                               long_name='spectral transfer of available'
-                                                         ' potential energy')
+        fluxes['pi_hke'] = self.add_field(pi_rke + pi_dke, units=units,
+                                          standard_name='nonlinear_hke_flux',
+                                          long_name='spectral transfer of kinetic energy')
 
-        data_fluxes['lc'] = self.add_field(lc_ke, units=units,
-                                           standard_name='coriolis_transfer',
-                                           long_name='coriolis linear transfer')
+        fluxes['pi_ape'] = self.add_field(pi_ape, units=units, standard_name='nonlinear_ape_flux',
+                                          long_name='spectral transfer of available'
+                                                    ' potential energy')
+
+        fluxes['lc'] = self.add_field(lc_ke, units=units, standard_name='coriolis_transfer',
+                                      long_name='coriolis linear transfer')
 
         # ------------------------------------------------------------------------------------------
         # Cumulative vertical fluxes of divergent kinetic energy
@@ -604,29 +391,43 @@ class EnergyBudget:
         pf_dke = self.pressure_flux()
         tf_dke = self.dke_turbulent_flux()
 
-        vf_dke = self.vertical_gradient(pf_dke + tf_dke)  # same as 'dke_vertical_flux_divergence'
-        vf_ape = self.ape_vertical_flux_divergence()
+        vf_dke = pf_dke + tf_dke
+        vf_ape = self.ape_vertical_flux()
+
+        # same as 'dke_vertical_flux_divergence'
+        vfd_dke = self.vertical_gradient(vf_dke)
+
+        # same as 'ape_vertical_flux_divergence'
+        vfd_ape = self.vertical_gradient(vf_ape)
 
         # add data and metadata to vertical fluxes
-        data_fluxes['pf_dke'] = self.add_field(pf_dke, units='Pa * ' + units,
-                                               standard_name='pressure_dke_flux',
-                                               long_name='pressure flux')
+        fluxes['pf_dke'] = self.add_field(pf_dke, units='Pa * ' + units,
+                                          standard_name='pressure_dke_flux',
+                                          long_name='pressure flux')
 
-        data_fluxes['tf_dke'] = self.add_field(tf_dke, units='Pa * ' + units,
-                                               standard_name='turbulent_dke_flux',
-                                               long_name='vertical turbulent flux'
-                                                         ' of kinetic energy')
+        fluxes['tf_dke'] = self.add_field(tf_dke, units='Pa * ' + units,
+                                          standard_name='turbulent_dke_flux',
+                                          long_name='vertical turbulent flux'
+                                                    ' of kinetic energy')
 
-        data_fluxes['vf_dke'] = self.add_field(vf_dke, units=units,
-                                               standard_name='vertical_dke_flux',
-                                               long_name='vertical flux divergence'
-                                                         ' of horizontal kinetic energy')
+        fluxes['vf_dke'] = self.add_field(vf_dke, units='Pa * ' + units,
+                                          standard_name='vertical_dke_flux',
+                                          long_name='vertical flux of horizontal kinetic energy')
 
-        data_fluxes['vf_ape'] = self.add_field(vf_ape, units=units,
-                                               standard_name='vertical_ape_flux',
-                                               long_name='vertical flux divergence'
-                                                         ' of available potential energy')
-        return data_fluxes
+        fluxes['vf_ape'] = self.add_field(vf_ape, units='Pa * ' + units,
+                                          standard_name='vertical_ape_flux',
+                                          long_name='vertical flux of available potential energy')
+
+        fluxes['vfd_dke'] = self.add_field(vfd_dke, units=units,
+                                           standard_name='vertical_dke_flux_divergence',
+                                           long_name='vertical flux divergence'
+                                                     ' of horizontal kinetic energy')
+
+        fluxes['vfd_ape'] = self.add_field(vfd_ape, units=units,
+                                           standard_name='vertical_ape_flux_divergence',
+                                           long_name='vertical flux divergence'
+                                                     ' of available potential energy')
+        return fluxes
 
     def get_ke_tendency(self, tendency, name=None):
         r"""
@@ -754,6 +555,235 @@ class EnergyBudget:
 
         return chi_grad, rotate_vector(psi_grad)
 
+    def vorticity_divergence(self):
+        """
+        Computes the vertical vorticity and horizontal divergence
+        """
+        # Spectral coefficients of vertical vorticity and horizontal wind divergence.
+        vrt_spc, div_spc = self._compute_rotdiv(self.wind)
+
+        # transform back to grid-point space preserving mask
+        vrt = self._inverse_transform(vrt_spc)
+        div = self._inverse_transform(div_spc)
+
+        vrt = np.ma.masked_array(vrt, mask=self.data_mask, fill_value=0.0)
+        div = np.ma.masked_array(div, mask=self.data_mask, fill_value=0.0)
+
+        return vrt, div
+
+    # -------------------------------------------------------------------------------
+    # Methods for computing spectral fluxes
+    # -------------------------------------------------------------------------------
+    def ke_nonlinear_transfer(self):
+        """
+        Kinetic energy spectral transfer due to nonlinear interactions after
+        Augier and Lindborg (2013), Eq.A2
+        :return:
+            Spectrum of KE transfer across scales
+        """
+
+        # compute advection of the horizontal wind (using the rotational form)
+        advection_term = self._wind_advection() + self.div * self.wind / 2.0
+
+        # compute nonlinear spectral transfer related to horizontal advection
+        advective_flux = - self._vector_spectra(self.wind, advection_term)
+
+        # This term seems to effectively cancel out after summing over all zonal wavenumber.
+        vertical_transport = self._vector_spectra(self.wind_shear, self.omega * self.wind)
+        vertical_transport -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
+
+        return advective_flux + vertical_transport / 2.0
+
+    def rke_nonlinear_transfer(self):
+        """
+        Spectral transfer of rotational kinetic energy due to nonlinear interactions
+        after Li et. al. (2023), Eq. 28
+        :return:
+            Spectrum of RKE transfer across scales
+        """
+
+        # This term seems to effectively cancel out after summing over all zonal wavenumber.
+        vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
+        vertical_transfer -= self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
+
+        # Rotational effect due to Coriolis
+        deformation = - self._vector_spectra(self.wind_rot, self.fc * rotate_vector(self.wind))
+        deformation -= self._vector_spectra(self.wind, self.fc * rotate_vector(self.wind_rot))
+
+        # Relative vorticity term
+        deformation -= self._vector_spectra(self.wind_rot, self.vrt * rotate_vector(self.wind))
+        deformation -= self._vector_spectra(self.wind, self.vrt * rotate_vector(self.wind_rot))
+
+        return (vertical_transfer + deformation) / 2.0
+
+    def dke_nonlinear_transfer(self):
+        """
+        Spectral transfer of divergent kinetic energy due to nonlinear interactions
+        after Li et. al. (2023), Eq. 27. The linear Coriolis effect is included in the
+        formulations so that:
+
+        .. math:: T_{D}(l,m) + T_{R}(l,m) = T_{K}(l,m) + L(l,m)
+
+        :return:
+            Spectrum of DKE transfer across scales
+        """
+
+        # Horizontal kinetic energy per unit mass in grid-point space
+        kinetic_energy = np.sum(self.wind * self.wind, axis=0)
+
+        # Horizontal gradient of horizontal kinetic energy
+        kinetic_energy_gradient = self.horizontal_gradient(kinetic_energy)
+
+        # compute nonlinear spectral transfer related to horizontal advection
+        advective_flux = - self._vector_spectra(self.wind_div, kinetic_energy_gradient)
+        advective_flux -= self._vector_spectra(self.wind, self.div * self.wind)
+
+        # This term seems to effectively cancel out after summing over all zonal wavenumber.
+        vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_div)
+        vertical_transfer -= self._vector_spectra(self.wind_div, self.omega * self.wind_shear)
+
+        # cross product of vertical unit vector and horizontal winds
+        cross_wind = rotate_vector(self.wind)
+        cross_wdiv = rotate_vector(self.wind_div)
+
+        # Coriolis effect
+        deformation = - self._vector_spectra(self.wind_div, self.fc * cross_wind)
+        deformation -= self._vector_spectra(self.wind, self.fc * cross_wdiv)
+
+        # Relative vorticity effect
+        deformation -= self._vector_spectra(self.wind_div, self.vrt * cross_wind)
+        deformation -= self._vector_spectra(self.wind, self.vrt * cross_wdiv)
+
+        return (advective_flux + vertical_transfer + deformation) / 2.0
+
+    def ape_nonlinear_transfer(self):
+        """
+        Available potential energy spectral transfer due to nonlinear interactions
+        after Augier and Lindborg (2013), Eq.A3
+        :return:
+            Spherical harmonic coefficients of APE transfer across scales
+        """
+
+        # compute horizontal advection of potential temperature
+        theta_advection = self._scalar_advection(self.theta_prime)
+        theta_advection += self.div * self.theta_prime / 2.0
+
+        # compute nonlinear spectral transfer related to horizontal advection
+        advection_term = - self._scalar_spectra(self.theta_prime, theta_advection)
+
+        # compute vertical heat flux
+        vertical_term = self._scalar_spectra(self.ddp_theta_prime, self.omega * self.theta_prime)
+        vertical_term -= self._scalar_spectra(self.theta_prime, self.omega * self.ddp_theta_prime)
+
+        return self.ganma * (advection_term + vertical_term / 2.0)
+
+    def pressure_flux(self):
+        # Pressure flux (Eq.22)
+        return - self._scalar_spectra(self.omega, self.phi)
+
+    def dke_turbulent_flux(self):
+        # Turbulent kinetic energy flux (Eq.22)
+        return - self._vector_spectra(self.wind, self.omega * self.wind) / 2.0
+
+    def dke_vertical_flux(self):
+        # Vertical flux of total kinetic energy (Eq. A9)
+        return self.pressure_flux() + self.dke_turbulent_flux()
+
+    def ape_vertical_flux(self):
+        # Total APE vertical flux (Eq. A10)
+        ape_flux = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
+
+        return - self.ganma * ape_flux / 2.0
+
+    def dke_vertical_flux_divergence(self):
+        # Vertical flux divergence of Divergent kinetic energy.
+        # This term enters directly the energy budget formulation.
+        return self.vertical_gradient(self.dke_vertical_flux())
+
+    def ape_vertical_flux_divergence(self):
+        # Vertical flux divergence of Available potential energy.
+        # This term enters directly the energy budget formulation.
+        return self.vertical_gradient(self.ape_vertical_flux())
+
+    def conversion_ape_dke(self):
+        # Conversion of Available Potential energy into kinetic energy
+        # Equivalent to Eq. 19 of A&L, but using potential temperature.
+        alpha = cn.Rd * self.temperature / self.pressure
+
+        return - self._scalar_spectra(self.omega, alpha)
+
+    def conversion_dke_rke(self):
+        """Conversion from divergent to rotational kinetic energy
+        """
+
+        # Nonlinear interaction term due to relative vorticity
+        vorticity_advection = self.conversion_dke_rke_vorticity()
+
+        # Rotational effect due to the Coriolis force on the spectral
+        linear_conversion = self.conversion_dke_rke_coriolis()
+
+        # Vertical transfer
+        vertical_transfer = self.conversion_dke_rke_vertical()
+
+        return vorticity_advection + linear_conversion + vertical_transfer
+
+    def conversion_dke_rke_vertical(self):
+        """Conversion from divergent to rotational energy due to vertical transfer
+        """
+        # vertical transfer
+        dke_rke_omega = -self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
+        dke_rke_omega -= self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
+
+        return dke_rke_omega / 2.0
+
+    def conversion_dke_rke_coriolis(self):
+        """Conversion from divergent to rotational energy
+        """
+
+        # Rotational effect due to the Coriolis force on the spectral
+        # transfer of divergent kinetic energy
+        div_term = self._vector_spectra(self.wind_div, self.fc * rotate_vector(self.wind_rot))
+        rot_term = self._vector_spectra(self.wind_rot, self.fc * rotate_vector(self.wind_div))
+
+        return (div_term - rot_term) / 2.0
+
+    def conversion_dke_rke_vorticity(self):
+        """Conversion from divergent to rotational energy
+        """
+
+        # nonlinear interaction terms
+        div_term = self._vector_spectra(self.wind_div, self.vrt * rotate_vector(self.wind_rot))
+        rot_term = self._vector_spectra(self.wind_rot, self.vrt * rotate_vector(self.wind_div))
+
+        return (div_term - rot_term) / 2.0
+
+    def diabatic_conversion(self):
+        # need to estimate Latent heat release*
+        return
+
+    def coriolis_linear_transfer(self):
+        # Coriolis linear transfer
+        return - self._vector_spectra(self.wind, self.fc * rotate_vector(self.wind))
+
+    def non_conservative_term(self):
+        # non-conservative term J(p) in Eq. A11
+        dlog_gamma = self.vertical_gradient(np.log(self.ganma))
+
+        heat_trans = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
+
+        return dlog_gamma.reshape(-1) * heat_trans
+
+    def energy_diagnostics(self):
+        """
+        Computes spectral energy budget and return as dataset objects.
+        """
+        # Compute diagnostics
+        rke, dke, hke = self.horizontal_kinetic_energy()
+        vke = self.vertical_kinetic_energy()
+        ape = self.available_potential_energy()
+
+        return SebaDataset(xr.merge([rke, dke, hke, vke, ape], compat="no_conflicts"))
+
     # --------------------------------------------------------------------
     # Low-level methods for spectral transformations
     # --------------------------------------------------------------------
@@ -856,10 +886,11 @@ class EnergyBudget:
         """
         Compute 2D power spectrum as a function of spherical harmonic degree of a scalar function.
         """
-        scalar_1 = self._spectral_transform(scalar_1)
-
         if scalar_2 is not None:
+            assert scalar_2.shape == scalar_1.shape, "Rank mismatch between scalar_1 and scalar_2."
             scalar_2 = self._spectral_transform(scalar_2)
+
+        scalar_1 = self._spectral_transform(scalar_1)
 
         return self.cross_spectrum(scalar_1, scalar_2)
 
@@ -867,25 +898,24 @@ class EnergyBudget:
         """
         Compute spherical harmonic cross spectra between two vector fields on the sphere.
         """
-        rot_1, div_1 = self._compute_rotdiv(vector_1)
-
         if vector_2 is None:
-            spectrum = self.cross_spectrum(rot_1) + self.cross_spectrum(div_1)
+            vector_2 = (None, None)
         else:
-            rot_2, div_2 = self._compute_rotdiv(vector_2)
+            assert vector_2.shape == vector_1.shape, "Rank mismatch between vector_1 and vector_2."
+            vector_2 = self._compute_rotdiv(vector_2)
 
-            spectrum = self.cross_spectrum(rot_1, rot_2) + self.cross_spectrum(div_1, div_2)
+        vector_1 = self._compute_rotdiv(vector_1)
 
-        # normalization factor for vector analysis n * (n + 1) / re ** 2
-        norm = broadcast_1dto(self.kappa_h ** 2, spectrum.shape).clip(cn.epsilon, None)
+        spectrum = self.cross_spectrum(vector_1[0], vector_2[0])
+        spectrum += self.cross_spectrum(vector_1[1], vector_2[1])
 
-        return spectrum / norm
+        return spectrum / self.norm
 
     def vertical_gradient(self, scalar, vertical_axis=-1):
         """
             Computes vertical gradient of a scalar function in pressure coordinates: d(scalar)/dp
         """
-        scalar_grad = gradient_1d(scalar, self.pressure, axis=vertical_axis)
+        scalar_grad = gradient_1d(scalar, self.pressure, axis=vertical_axis, order=8)
 
         # preserve the mask of scalar if masked
         if np.ma.is_masked(scalar):

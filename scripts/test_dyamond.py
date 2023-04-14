@@ -23,20 +23,18 @@ if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
     resolution = 'n512'
-    data_path = 'data/'
+    data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[0]'
-    file_names = data_path + '{}_atm_3d_inst_{}_gps_{}.nc'
+    date_time = '20[0123]'
+    file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
     # # load earth topography and surface pressure
     dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
     sfc_pres = dataset_sfc.pres_sfc
 
-    dataset_dyn = xr.open_mfdataset(file_names.format(model, resolution, date_time))
-
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ps=sfc_pres, jobs=1)
+    budget = EnergyBudget(file_names, ps=sfc_pres, jobs=1)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
@@ -129,38 +127,36 @@ if __name__ == '__main__':
     kappa = 1e3 * budget.kappa_h
 
     # get nonlinear energy fluxes. Compute time-averaged cumulative fluxes
-    dataset_fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa').mean(dim='time')
+    dataset_fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa')
 
     # Perform vertical integration along last axis
     layers = {
         # 'Stratosphere': [50e2, 250e2],
         'Free troposphere': [250e2, 500e2]
     }
-    limits = {
+    ke_limits = {
         'Stratosphere': [-0.4, 0.4],
         'Free troposphere': [-0.5, 1.0],
     }
 
     for i, (level, prange) in enumerate(layers.items()):
-        data = dataset_fluxes.integrate_range(coord_range=prange)
+        data = dataset_fluxes.integrate_range(coord_range=prange).mean(dim='time')
 
-        pik = data.pi_dke.values + data.pi_rke.values
-        pia = data.pi_ape.values
-        cka = data.cad.values
-        lct = data.lc.values
-        vfk = data.vf_dke.values
-        vfa = data.vf_ape.values
-        cdr = data.cdr.values
+        pik = data.pi_hke
+        pia = data.pi_ape
+        pit = pik + pia
+
+        cad = data.cad
+        lct = data.lc
+        cdr = data.cdr
+
+        vfk = data.vfd_dke
+        vfa = data.vfd_ape
 
         # Create figure
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
 
-        pit = pik + pia
-
-        y_min = 1.5 * np.nanmin([pik, cdr])
-        y_max = 1.5 * np.nanmax([pit, vfk + vfa, cka])
-
-        y_limits = limits[level]
+        y_limits = ke_limits[level]
 
         at = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='upper left', )
         at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
@@ -171,7 +167,7 @@ if __name__ == '__main__':
         ax.semilogx(kappa, pik, label=r'$\Pi_K$', linewidth=1.6, linestyle='-', color='red')
         ax.semilogx(kappa, pia, label=r'$\Pi_A$', linewidth=1.6, linestyle='-', color='navy')
 
-        ax.semilogx(kappa, cka, label=r'$C_{A\rightarrow D}$',
+        ax.semilogx(kappa, cad, label=r'$C_{A\rightarrow D}$',
                     linewidth=1.6, linestyle='--', color='green')
         ax.semilogx(kappa, cdr, label=r'$C_{D\rightarrow R}$',
                     linewidth=1.6, linestyle='-.', color='cyan')
@@ -217,8 +213,7 @@ if __name__ == '__main__':
         'Lower troposphere': [500e2, 950e2]
     }
 
-    ke_limits = {'Free troposphere': [-0.6, 0.6],
-                 'Lower troposphere': [-0.6, 0.6]}
+    ke_limits = {'Free troposphere': [-0.6, 0.6], 'Lower troposphere': [-0.6, 0.6]}
     # perform vertical integration
     colors = ['green', 'magenta']
     if kappa.size < 1000:
@@ -230,9 +225,8 @@ if __name__ == '__main__':
 
     for i, (level, prange) in enumerate(layers.items()):
         # Integrate fluxes in layers
-        data = dataset_fluxes.integrate_range(coord_range=prange)
+        data = dataset_fluxes.integrate_range(coord_range=prange).mean(dim='time')
 
-        cad = data.cad.values
         pid = data.pi_dke.values
         pir = data.pi_rke.values
 
@@ -300,8 +294,8 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
-    figure_name = './figures/{}_fluxes_section_{}.pdf'.format(model, resolution)
+    figure_name = '../figures/{}_fluxes_section_{}.pdf'.format(model, resolution)
 
-    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vf_dke'],
+    fluxes_slices_by_models(dataset_fluxes, model=None, variables=['cdr', 'vfd_dke'],
                             resolution='n1024', y_limits=[1000., 100.],
                             fig_name=figure_name)

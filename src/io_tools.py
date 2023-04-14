@@ -11,7 +11,7 @@ from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
 from tools import interpolate_1d, inspect_gridtype, prepare_data, surface_mask, is_sorted
 
-path_global_topo = "./data/topo_global_n1250m.nc"
+path_global_topo = "../data/topo_global_n1250m.nc"
 
 CF_variable_conventions = {
     "geopotential": {
@@ -260,31 +260,55 @@ class SebaDataset(Dataset):
         # (Useful for cleaner vectorized operations)
         return prepare_data(data, info_coords)
 
-    def integrate_range(self, variable=None, coord_name="level", coord_range=None):
+    def _coordinate_range(self, name="level", limits=None):
+        # Find vertical coordinate and sort 'coord_range' accordingly
+        coord = self.find_coordinate(coord_name=name)
 
+        _range = (coord.values.min(), coord.values.max())
+        if limits is None:
+            coord_range = _range
+        elif isinstance(limits, (list, tuple)):
+            # Replaces None in 'coord_range' and sort the values. If None appears in the first
+            # position, e.g. [None, b], the integration is done from the [coord.min, b].
+            # Similarly for [a, None] , the integration is done from the [a, coord.max].
+            coord_range = [r if c is None else c for c, r in zip(limits, _range)]
+            coord_range = np.sort(coord_range)
+        else:
+            raise ValueError("Illegal type of parameter 'coord_range'. Expecting a scalar, "
+                             "a list or tuple of length two defining the integration limits.")
+
+        return coord_range, coord
+
+    def difference_range(self, variable=None, dim="level", coord_range=None):
         if variable is None:
             # create a copy and integrate the entire dataset.
             data = self.copy()
+        elif isinstance(variable, (list, tuple)):
+            data = self[list(variable)]
         elif variable in self:
             data = self[variable].to_dataset(promote_attrs=True)
         else:
             raise ValueError(f"Variable {variable} not found in dataset!")
 
         # Find vertical coordinate and sort 'coord_range' accordingly
-        coord = self.find_coordinate(coord_name=coord_name)
+        coord_range, coord = self._coordinate_range(name=dim, limits=coord_range)
 
-        _range = (coord.values.min(), coord.values.max())
-        if coord_range is None:
-            coord_range = _range
-        elif isinstance(coord_range, (list, tuple)):
-            # Replaces None in 'coord_range' and sort the values. If None appears in the first
-            # position, e.g. [None, b], the integration is done from the [coord.min, b].
-            # Similarly for [a, None] , the integration is done from the [a, coord.max].
-            coord_range = [r if c is None else c for c, r in zip(coord_range, _range)]
-            coord_range = np.sort(coord_range)
+        return data.sel({coord.name: coord_range}, method='nearest').diff(dim=dim)
+
+    def integrate_range(self, variable=None, dim="level", coord_range=None):
+
+        if variable is None:
+            # create a copy and integrate the entire dataset.
+            data = self.copy()
+        elif isinstance(variable, (list, tuple)):
+            data = self[list(variable)]
+        elif variable in self:
+            data = self[variable].to_dataset(promote_attrs=True)
         else:
-            raise ValueError("Illegal type of parameter 'coord_range'. Expecting a scalar, "
-                             "a list or tuple of length two defining the integration limits.")
+            raise ValueError(f"Variable {variable} not found in dataset!")
+
+        # Find vertical coordinate and sort 'coord_range' accordingly
+        coord_range, coord = self._coordinate_range(name=dim, limits=coord_range)
 
         # Sorting dataset in ascending order along coordinate before selection. This ensures
         # that the selection of integration limits is inclusive (behaves like method='nearest')
@@ -655,9 +679,11 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
 
     # Check for pressure velocity: If not present in dataset, it is estimated from
     # height-based vertical velocity using the hydrostatic approximation.
-    data['omega'] = dataset.find_variable('omega', raise_notfound=False)
+    omega = dataset.find_variable('omega', raise_notfound=False)
 
-    if not data['omega'].all():
+    if omega is not None:
+        data['omega'] = omega
+    else:
         # Searching for vertical velocity. Raise error if 'w_wind' cannot be found!
         w_wind = dataset.find_variable('w_wind', raise_notfound=True)
 
@@ -675,11 +701,12 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
     data = data.interpolate_levels(p_levels).sortby(["level", 'latitude'], ascending=False)
 
     # Compute geopotential if not present in dataset
-    data['geopotential'] = dataset.find_variable('geopotential', raise_notfound=False)
+    phi = dataset.find_variable('geopotential', raise_notfound=False)
 
-    if not data['geopotential'].all():
-
-        print("Computing geopotential ...")
+    if phi is not None:
+        data['geopotential'] = phi
+    else:
+        print("Computing geopotential from temperature ...")
 
         # reshape temperature to pass it to fortran subroutine
         target_dims = ('time', 'latitude', 'longitude', 'level')
