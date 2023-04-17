@@ -229,7 +229,7 @@ class SebaDataset(Dataset):
         return ds
 
     def get_field(self, name):
-        """ Returns a field in dataset after preprocessing:
+        """ Returns a field in dataset after preprocessing to be used by seba.EnergyBudget:
             - Exclude extrapolated data below the surface (p >= ps).
             - Ensure latitude axis is oriented north-to-south.
             - Reverse vertical axis from the surface to the model top.
@@ -249,6 +249,10 @@ class SebaDataset(Dataset):
 
         # Mask data pierced by the topography, if not already masked during interpolation.
         data = self[name].where(mask, np.nan)
+
+        # sort data north-south and starting at the surface
+        data = data.sortby([dim for dim in ["latitude", "level"]
+                            if dim in data.coords], ascending=False)
 
         info_coords = "".join(data.coords[name].axis.lower() for name in data.dims)
         data = data.to_masked_array()
@@ -681,7 +685,7 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
 
             arrays[name] = surface_var
 
-    # Create output dataset with required fields.
+    # Create output dataset with required fields and check units consistency.
     data = SebaDataset(arrays).check_convert_units()
 
     # Check for pressure velocity: If not present in dataset, it is estimated from
@@ -692,6 +696,7 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
         data['omega'] = omega
     else:
         # Searching for vertical velocity. Raise error if 'w_wind' cannot be found!
+        # This is neither 'omega' nor 'w_wind' are present in dataset.
         w_wind = dataset.find_variable('w_wind', raise_notfound=True)
 
         # Checking 'w_wind' units and converting to standard before computing omega.
@@ -703,16 +708,21 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
         # add standard units [Ps/s]
         data.omega.attrs["units"] = expected_units['omega']
 
-    # Perform interpolation to constant pressure levels as needed (after all dynamic fields added)
-    # Ensures latitude dimension is ordered north-to-south and starting from the surface.
-    data = data.interpolate_levels(p_levels).sortby(["level", 'latitude'], ascending=False)
-
-    # Compute geopotential if not present in dataset
+    # Check if geopotential is present in dataset and add to data before interpolation
     phi = dataset.find_variable('geopotential', raise_notfound=False)
 
     if phi is not None:
         data['geopotential'] = phi
-    else:
+
+    # Perform interpolation to constant pressure levels if necessary (after all dynamic fields
+    # added). Ensures latitude dimension is ordered north-to-south and vertical levels starting
+    # at the surface.
+    data = data.interpolate_levels(p_levels).sortby(["level", 'latitude'], ascending=False)
+
+    # Computing geopotential if not found in dataset. This step must be done with data in
+    # pressure coordinates sorted from the surface up.
+    if 'geopotential' not in data:
+
         print("Computing geopotential from temperature ...")
 
         # reshape temperature to pass it to fortran subroutine
@@ -750,7 +760,8 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
             # noinspection PyTypeChecker
             sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
 
-        # get surface elevation for the given grid.
+        # get surface elevation for the given grid. Using interpolated data
+        # from global dataset if it does not exist already.
         sfch = get_surface_elevation(data.latitude, data.longitude).values.ravel()
 
         # Compute geopotential from the temperature field: d(phi)/d(log p) = - Rd * T(p)

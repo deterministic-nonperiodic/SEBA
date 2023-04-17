@@ -140,18 +140,8 @@ if __name__ == '__main__':
     }
 
     for i, (level, prange) in enumerate(layers.items()):
+        # vertically integrated and time averaged fluxes
         data = dataset_fluxes.integrate_range(coord_range=prange).mean(dim='time')
-
-        pik = data.pi_hke
-        pia = data.pi_ape
-        pit = pik + pia
-
-        cad = data.cad
-        lct = data.lc
-        cdr = data.cdr
-
-        vfk = data.vfd_dke
-        vfa = data.vfd_ape
 
         # Create figure
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7.5, 5.8), constrained_layout=True)
@@ -162,18 +152,21 @@ if __name__ == '__main__':
         at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
         ax.add_artist(at)
 
-        ax.semilogx(kappa, pit, label=r'$\Pi = \Pi_K + \Pi_A$',
+        ax.semilogx(kappa, data.pi_hke + data.pi_ape, label=r'$\Pi = \Pi_K + \Pi_A$',
                     linewidth=2.5, linestyle='-', color='k')
-        ax.semilogx(kappa, pik, label=r'$\Pi_K$', linewidth=1.6, linestyle='-', color='red')
-        ax.semilogx(kappa, pia, label=r'$\Pi_A$', linewidth=1.6, linestyle='-', color='navy')
 
-        ax.semilogx(kappa, cad, label=r'$C_{A\rightarrow D}$',
+        ax.semilogx(kappa, data.pi_hke, label=r'$\Pi_K$',
+                    linewidth=1.6, linestyle='-', color='red')
+        ax.semilogx(kappa, data.pi_ape, label=r'$\Pi_A$',
+                    linewidth=1.6, linestyle='-', color='navy')
+
+        ax.semilogx(kappa, data.cad, label=r'$C_{A\rightarrow D}$',
                     linewidth=1.6, linestyle='--', color='green')
-        ax.semilogx(kappa, cdr, label=r'$C_{D\rightarrow R}$',
+        ax.semilogx(kappa, data.cdr, label=r'$C_{D\rightarrow R}$',
                     linewidth=1.6, linestyle='-.', color='cyan')
 
-        # ax.semilogx(kappa, lct_l, label=r'$L_c$', linewidth=1.6, linestyle='--', color='orange')
-        ax.semilogx(kappa, vfk + vfa, label=r'$F_{\uparrow}(p_b) - F_{\uparrow}(p_t)$',
+        ax.semilogx(kappa, data.vfd_dke + data.vfd_ape,
+                    label=r'$F_{\uparrow}(p_b) - F_{\uparrow}(p_t)$',
                     linewidth=1.6, linestyle='-.', color='magenta')
 
         ax.set_ylabel(r'Cumulative energy flux ($W~m^{-2}$)', fontsize=15)
@@ -224,16 +217,8 @@ if __name__ == '__main__':
         xticks = np.array([2, 20, 200, 2000])
 
     for i, (level, prange) in enumerate(layers.items()):
-        # Integrate fluxes in layers
+        # vertically integrated and time averaged fluxes
         data = dataset_fluxes.integrate_range(coord_range=prange).mean(dim='time')
-
-        pid = data.pi_dke.values
-        pir = data.pi_rke.values
-
-        cdr_w = data.cdr_w.values
-        cdr_v = data.cdr_v.values
-        cdr_c = data.cdr_c.values
-        cdr = data.cdr.values - cdr_c
 
         # ------------------------------------------------------------------------------------------
         # Visualization of Kinetic energy budget
@@ -244,21 +229,21 @@ if __name__ == '__main__':
         at.patch.set_boxstyle("round,pad=-0.3,rounding_size=0.2")
         ax.add_artist(at)
 
-        # ax.semilogx(kappa, cad, label=r'$C_{A\rightarrow D}$',
-        #             linewidth=1.6, linestyle='-', color='green')
+        ax.semilogx(kappa, data.pi_dke + data.pi_rke, label=r'$\Pi_K$',
+                    linewidth=2., linestyle='-', color='k')
 
-        ax.semilogx(kappa, pid + pir, label=r'$\Pi_K$', linewidth=2., linestyle='-', color='k')
+        ax.semilogx(kappa, data.pi_dke, label=r'$\Pi_D$',
+                    linewidth=1.6, linestyle='-', color='green')
+        ax.semilogx(kappa, data.pi_rke, label=r'$\Pi_R$',
+                    linewidth=1.6, linestyle='-', color='red')
 
-        ax.semilogx(kappa, pid, label=r'$\Pi_D$', linewidth=1.6, linestyle='-', color='green')
-        ax.semilogx(kappa, pir, label=r'$\Pi_R$', linewidth=1.6, linestyle='-', color='red')
-
-        ax.semilogx(kappa, cdr, label=r'$C_{D \rightarrow R}$',
+        ax.semilogx(kappa, data.cdr - data.cdr_c, label=r'$C_{D \rightarrow R}$',
                     linewidth=2., linestyle='-', color='blue')
 
-        ax.semilogx(kappa, cdr_w, label=r'Vertical motion', linewidth=1.6,
+        ax.semilogx(kappa, data.cdr_w, label=r'Vertical motion', linewidth=1.6,
                     linestyle='-.', color='black')
 
-        ax.semilogx(kappa, cdr_v, label=r'Relative vorticity', linewidth=1.6,
+        ax.semilogx(kappa, data.cdr_v, label=r'Relative vorticity', linewidth=1.6,
                     linestyle='-.', color='red')
 
         # ax.semilogx(kappa, cdr_cl, label=r'Coriolis', linewidth=1.6,

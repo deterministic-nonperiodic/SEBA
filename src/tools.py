@@ -212,10 +212,9 @@ def transform_io(func, order='C'):
         transformed_args = [self, ]
         for arg in args:
             if isinstance(arg, np.ndarray):
-                # fill masked arrays before spectral transforms
-                arg = np.ma.fix_invalid(arg).filled(fill_value=0.0)
+                # fill masked arrays before spectral transforms (moved to 'spherical_harmonics')
+                # arg = np.ma.fix_invalid(arg).filled(fill_value=0.0)
                 transformed_args.append(self._pack_levels(arg, order=order))
-
         results = func(*transformed_args, **kwargs)
         # convert output back to original shape
         return self._unpack_levels(results, order=order)
@@ -671,9 +670,7 @@ def gradient_1d(scalar, x, axis=-1, order=6):
     # determine if the grid is regular
     dx = np.diff(x)
 
-    is_regular = np.allclose(np.max(dx), np.min(dx), atol=1e-12)
-
-    if is_regular:
+    if np.allclose(np.max(dx), np.min(dx), atol=1e-12):
         # Using high order schemes for regular grid, otherwise
         # using second-order accurate central finite differences
         scalar = np.moveaxis(scalar, axis, -1)

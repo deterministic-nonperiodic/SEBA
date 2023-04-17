@@ -95,7 +95,8 @@ class Spharmt(object):
         """Wrapper function for running _shtns functions along sample dimension"""
 
         # Compact args to a single array (input arrays must be broadcastable)
-        data = np.asarray(args)
+        # If passing masked arrays fill with zeros
+        data = np.ma.asarray(args).filled(fill_value=0.0)
 
         # check data type (real objects must be of type float64)
         if np.isrealobj(data):

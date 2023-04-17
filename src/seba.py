@@ -308,6 +308,17 @@ class EnergyBudget:
                                           long_name='available potential energy per unit mass')
         return potential_energy
 
+    def energy_diagnostics(self):
+        """
+        Computes spectral energy budget and return as dataset objects.
+        """
+        # Compute diagnostics
+        rke, dke, hke = self.horizontal_kinetic_energy()
+        vke = self.vertical_kinetic_energy()
+        ape = self.available_potential_energy()
+
+        return SebaDataset(xr.merge([rke, dke, hke, vke, ape], compat="no_conflicts"))
+
     def nonlinear_energy_fluxes(self):
         """
         Computes each term in spectral energy budget and return as xr.DataArray objects.
@@ -324,7 +335,7 @@ class EnergyBudget:
         cdr_c = self.conversion_dke_rke_coriolis()
 
         # Total conversion from divergent to rotational kinetic energy.
-        c_dr = cdr_w + cdr_v + cdr_c
+        cdr = cdr_w + cdr_v + cdr_c
 
         # Compute cumulative nonlinear spectral energy fluxes
         pi_rke = self.rke_nonlinear_transfer()
@@ -362,7 +373,7 @@ class EnergyBudget:
                                          long_name='conversion from divergent to rotational '
                                                    'kinetic energy due to the coriolis effect')
 
-        fluxes['cdr'] = self.add_field(c_dr, units=units, standard_name='conversion_dke_rke',
+        fluxes['cdr'] = self.add_field(cdr, units=units, standard_name='conversion_dke_rke',
                                        long_name='conversion from divergent to '
                                                  'rotational kinetic energy')
 
@@ -773,17 +784,6 @@ class EnergyBudget:
 
         return dlog_gamma.reshape(-1) * heat_trans
 
-    def energy_diagnostics(self):
-        """
-        Computes spectral energy budget and return as dataset objects.
-        """
-        # Compute diagnostics
-        rke, dke, hke = self.horizontal_kinetic_energy()
-        vke = self.vertical_kinetic_energy()
-        ape = self.available_potential_energy()
-
-        return SebaDataset(xr.merge([rke, dke, hke, vke, ape], compat="no_conflicts"))
-
     # --------------------------------------------------------------------
     # Low-level methods for spectral transformations
     # --------------------------------------------------------------------
@@ -827,20 +827,57 @@ class EnergyBudget:
         Returns:
             Arrays containing gridded zonal and meridional components of the gradient vector.
         """
-        return self.sphere.getgrad(scalar)
+
+        # Compute horizontal gradient on grid-point space
+        scalar_gradient = self.sphere.getgrad(scalar)
+
+        if np.ma.is_masked(scalar):
+            # Let's apply a correction trick to remove boundary effects. Here, β is the
+            # terrain mask containing 0 for levels satisfying p > ps and 1 otherwise.
+            beta = (~scalar.mask).astype(float)
+
+            # Let's get the masked gradient using: β ∇φ = ∇(β φ) - (β φ) ∇β. The exact form of
+            # the last term should be φ∇β instead of (β φ) ∇β, however the two formulations are
+            # equivalent in non-masked regions (β = 1). We don't know φ anyway, only (β φ).
+            scalar_gradient -= self.sphere.getgrad(beta) * scalar
+
+        return scalar_gradient
 
     def _scalar_advection(self, scalar):
-        """
-        Compute the horizontal advection as dot product between
-        the wind vector and scalar gradient.
+        r"""
+        Compute the horizontal advection of a scalar field on the sphere.
 
-        scalar: scalar field to be advected
+        .. math:: \mathbf{u}\cdot\nabla_h\phi = \nabla_h\cdot(\phi\mathbf{u}) - \delta\phi
+
+        where :math:`\phi` is an arbitrary scalar, :math:`\mathbf{u}=(u, v)` is the horizontal
+        wind vector, and :math:`\delta` is the horizontal wind divergence.
+
+        Parameters:
+        -----------
+            scalar: `np.ndarray`
+                scalar field to be advected
+        Returns:
+        --------
+            advection: `np.ndarray`
+                Array containing the advection of a scalar field.
         """
+
         # computes the components of the scalar advection: (2, nlat, nlon, ...)
-        scalar_advection = self.wind * self.horizontal_gradient(scalar)
+        # scalar_advection = self.wind * self.horizontal_gradient(scalar)
+        # adding up horizontal components
+        # scalar_advection = np.ma.sum(scalar_advection, axis=0)
 
-        # returns the summed horizontal components
-        return np.ma.sum(scalar_advection, axis=0)
+        # Implementation of advection in flux form for a proper handling masked data.
+        # Spectral coefficients of the scalar flux divergence: ∇⋅(φu)
+        scalar_divergence = self._compute_rotdiv(scalar * self.wind)[1]
+
+        # back to grid-point space
+        scalar_divergence = self._inverse_transform(scalar_divergence)
+
+        # back to actual advection: u⋅∇φ = ∇⋅(φu) - δφ
+        scalar_advection = scalar_divergence - self.div * scalar
+
+        return scalar_advection
 
     def _wind_advection(self):
         r"""
@@ -913,15 +950,21 @@ class EnergyBudget:
 
     def vertical_gradient(self, scalar, vertical_axis=-1):
         """
-            Computes vertical gradient of a scalar function in pressure coordinates: d(scalar)/dp
+            Computes vertical gradient (∂φ/∂p) of a scalar function (φ) in pressure coordinates.
         """
-        scalar_grad = gradient_1d(scalar, self.pressure, axis=vertical_axis, order=8)
+        scalar_gradient = gradient_1d(scalar, self.pressure, axis=vertical_axis, order=8)
 
         # preserve the mask of scalar if masked
         if np.ma.is_masked(scalar):
-            scalar_grad = np.ma.masked_array(scalar_grad, mask=scalar.mask, fill_value=0.0)
+            # Let's apply a correction trick to remove boundary effects. Here, β is the
+            # terrain mask containing 0 for levels satisfying p >= ps and 1 otherwise.
+            beta = (~scalar.mask).astype(float)
+            beta_grad = gradient_1d(beta, self.pressure, axis=vertical_axis, order=8)
 
-        return scalar_grad
+            # Let's get the masked gradient using: β ∂φ/∂p = ∂(β φ)/∂p - (β φ) ∂β/∂p.
+            scalar_gradient -= beta_grad * scalar
+
+        return scalar_gradient
 
     def global_mean(self, scalar, weights=None, lat_axis=None):
         """
@@ -958,7 +1001,7 @@ class EnergyBudget:
                                  "Expected length {} but got {}.".format(self.nlat, weights.size))
 
         # Compute area-weighted average on the sphere (using either gaussian or linear weights)
-        # Added masked-arrays support to exclude data below the surface. "np.average" doesn't work!
+        # Added masked-arrays support to exclude data below the surface.
         scalar_average = np.ma.average(scalar, weights=weights, axis=lat_axis)
 
         # mean along the longitude dimension (same as lat_axis after array reduction)
@@ -1078,7 +1121,7 @@ class EnergyBudget:
     # Functions for preprocessing data:
     def _pack_levels(self, data, order='C'):
         # pack dimensions of arrays (nlat, nlon, ...) to (nlat, nlon, samples)
-        data_length = np.shape(data)[0]
+        data_length = len(data)
 
         if data_length == 2:
             new_shape = np.shape(data)[:3]
