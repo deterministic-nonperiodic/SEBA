@@ -528,11 +528,11 @@ end subroutine adams_moulton
 ! adams moulton-4 ... ( foward )
  do k = 2, ns - 1
 
-     c1 =  (ds(k) / (6.0 * (ds(k) + ds(k-1)))) * (2.0 * ds(k) + 3.0 * ds(k-1))
-     c2 =  (ds(k) / (6.0 * ds(k-1))) * (ds(k) + 3.0 * ds(k-1))
-     c3 = -(ds(k) ** 3) / (6.0 * ds(k-1) * (ds(k) + ds(k-1)))
+     c1 = (ds(k) / (6.0 * (ds(k) + ds(k - 1)))) * (2.0 * ds(k) + 3.0 * ds(k - 1))
+     c2 = (ds(k) / (6.0 * ds(k - 1))) * (ds(k) + 3.0 * ds(k - 1))
+     c3 = -(ds(k) ** 3) / (6.0 * ds(k - 1) * (ds(k) + ds(k - 1)))
 
-     var(k+1) = var(k) + c1 * func(k+1) + c2 * func(k) + c3 * func(k-1)
+     var(k + 1) = var(k) + c1 * func(k + 1) + c2 * func(k) + c3 * func(k - 1)
 
  end do
 
@@ -594,7 +594,6 @@ end subroutine adaptative_adams_moulton
  end do
 
  !Integrating using Simpson's rule on regularly spaced data...
-
  intvar = ( vari(1) + vari(n) )
 
  intvar = dzi * (intvar + 4.0 * sum(vari(1:n-1:2)) + 2.0 * sum(vari(2:n-1:2))) / 3.0
@@ -687,74 +686,74 @@ end subroutine lagrange_intp
 !===================================================================================================
 
 !===================================================================================================
-  subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, nt, ns, np)
+subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, nt, ns, np)
 !===================================================================================================
 
-      implicit none
+    implicit none
 
-      integer, intent(in) :: nt, ns, np
+    integer, intent(in) :: nt, ns, np
 
-      double precision, intent(in) :: pres (np)
-      double precision, intent(in) :: sfch (ns)
-      double precision, intent(in) :: sfcp (ns)
-      ! surface temperatue is optional. If not given,
-      ! it is approximated by linear interpolation.
-      double precision, optional, intent(in) :: sfct (nt, ns)
-      double precision, intent(in) :: temp (nt, ns, np)
+    double precision, intent(in) :: pres (np)
+    double precision, intent(in) :: sfch (ns)
+    double precision, intent(in) :: sfcp (ns)
+    ! surface temperatue is optional. If not given,
+    ! it is approximated by linear interpolation.
+    double precision, optional, intent(in) :: sfct (nt, ns)
+    double precision, intent(in) :: temp (nt, ns, np)
 
-      double precision :: sfc_temp (nt, ns)
-      double precision :: lnp  (np)
-      double precision :: lnps (ns)
+    double precision :: sfc_temp (nt, ns)
+    double precision :: lnp  (np)
+    double precision :: lnps (ns)
 
-      double precision :: Rd, g
-      double precision :: phi_bc, tbar
+    double precision :: Rd, g
+    double precision :: phi_bc, tbar
 
-      integer :: i, j, nc, kn
+    integer :: i, j, nc, kn
 
-      double precision, intent(out) :: phi (nt, ns, np)
+    double precision, intent(out) :: phi (nt, ns, np)
 
- Rd = 287.058 ! gas constant for dry air (J / kg / K)
- g = 9.806650 ! acceleration of gravity  (m / s**2)
+    Rd = 287.058 ! gas constant for dry air (J / kg / K)
+    g = 9.806650 ! acceleration of gravity  (m / s**2)
 
- ! initializing geopotential array
- phi = 0.0
+    ! initializing geopotential array
+    phi = 0.0
 
- ! local arrays for working on log-pressure coordinates
- lnp = log(pres)
- lnps = log(sfcp)
+    ! local arrays for working on log-pressure coordinates
+    lnp = log(pres)
+    lnps = log(sfcp)
 
- ! Check if surface temperature is passed as argument (default .false.)
- if (present(sfct)) then
-     sfc_temp = sfct
- else
-     ! Approximate surface temperature by linear interpolation
-     call surface_temperature(sfc_temp, sfcp, temp, pres, nt, ns, np)
- end if
+    ! Check if surface temperature is passed as argument (default .false.)
+    if (present(sfct)) then
+        sfc_temp = sfct
+    else
+        ! Approximate surface temperature by linear interpolation
+        call surface_temperature(sfc_temp, sfcp, temp, pres, nt, ns, np)
+    end if
 
- ! Start vertical integration of the hydrostatic equation: d(phi)/d(log p) = - Rd * T(p)
-      do i = 1, nt ! loop over samples
-          do j = 1, ns ! loop over spatial dimension
+    ! Start vertical integration of the hydrostatic equation: d(phi)/d(log p) = - Rd * T(p)
+    do i = 1, nt ! loop over samples
+        do j = 1, ns ! loop over spatial dimension
 
-              ! find the first level above the surface (p <= sfcp)
-              kn = minloc(abs(pres - sfcp(j)), mask = pres <= sfcp(j), dim = 1)
+            ! find the first level above the surface (p <= sfcp)
+            kn = minloc(abs(pres - sfcp(j)), mask = pres <= sfcp(j), dim = 1)
 
-              ! number of levels above the surface
-              nc = np + 1 - kn
+            ! number of levels above the surface
+            nc = np + 1 - kn
 
-              ! Using second order accurate mid-point method in log-pressure for the
-              ! first integration step. Average temperature in the first two levels:
-     tbar = (lnp(kn) * temp(i, j, kn) + lnps(j) * sfc_temp(i, j)) / (lnp(kn) + lnps(j))
+            ! Using second order accurate mid-point method in log-pressure for the
+            ! first integration step. Average temperature in the first two levels:
+            tbar = (lnp(kn) * temp(i, j, kn) + lnps(j) * sfc_temp(i, j)) / (lnp(kn) + lnps(j))
 
-     ! Lower boundary condition for the geopotential (first level above the surface)
-     phi_bc = g * sfch(j) - Rd * (lnp(kn) - lnps(j)) * tbar
+            ! Lower boundary condition for the geopotential (first level above the surface)
+            phi_bc = g * sfch(j) - Rd * (lnp(kn) - lnps(j)) * tbar
 
-     ! Vertical integration for levels above the surface: d(phi)/d(log p) = - Rd * T(p)
-     ! Integrating in log-pressure space using 4th-order Adams-Moulton linear multistep method.
-     call adaptative_adams_moulton(phi(i, j, kn:np), phi_bc, -Rd*temp(i, j, kn:np), lnp(kn:np), nc)
+            ! Vertical integration for levels above the surface: d(phi)/d(log p) = - Rd * T(p)
+            ! Integrating in log-pressure space using 4th-order Adams-Moulton linear multistep method.
+            call adaptative_adams_moulton(phi(i, j, kn:np), phi_bc, -Rd * temp(i, j, kn:np), lnp(kn:np), nc)
 
-   end do
- end do
+        end do
+    end do
 
- return
+    return
 end subroutine geopotential
 !===================================================================================================

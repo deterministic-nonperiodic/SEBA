@@ -162,6 +162,19 @@ class SebaDataset(Dataset):
     def find_variable(self, name=None, raise_notfound=True):
         return _find_variable(self, name, raise_notfound=raise_notfound)
 
+    def coordinate_names(self):
+        return get_coordinate_names(self)
+
+    def coordinates_by_axes(self):
+        cds = self.coords
+        return {cds[name].axis.lower(): cds[name] for name in self.coordinate_names()}
+
+    def data_shape(self):
+        return tuple(self.dims[name] for name in self.coordinate_names())
+
+    def interpolate_levels(self, p_levels=None):
+        return interpolate_pressure_levels(self, p_levels=p_levels)
+
     def check_convert_units(self, other=None):
 
         is_array = False
@@ -215,19 +228,6 @@ class SebaDataset(Dataset):
 
         return ds
 
-    def coordinate_names(self):
-        return get_coordinate_names(self)
-
-    def coordinates_by_axes(self):
-        cds = self.coords
-        return {cds[name].axis.lower(): cds[name] for name in self.coordinate_names()}
-
-    def data_shape(self):
-        return tuple(self.dims[name] for name in self.coordinate_names())
-
-    def interpolate_levels(self, p_levels=None):
-        return interpolate_pressure_levels(self, p_levels=p_levels)
-
     def get_field(self, name):
         """ Returns a field in dataset after preprocessing:
             - Exclude extrapolated data below the surface (p >= ps).
@@ -264,20 +264,24 @@ class SebaDataset(Dataset):
         # Find vertical coordinate and sort 'coord_range' accordingly
         coord = self.find_coordinate(coord_name=name)
 
-        _range = (coord.values.min(), coord.values.max())
+        c_range = [coord.values.min(), coord.values.max()]
         if limits is None:
-            coord_range = _range
+            limits = c_range
         elif isinstance(limits, (list, tuple)):
             # Replaces None in 'coord_range' and sort the values. If None appears in the first
             # position, e.g. [None, b], the integration is done from the [coord.min, b].
             # Similarly for [a, None] , the integration is done from the [a, coord.max].
-            coord_range = [r if c is None else c for c, r in zip(limits, _range)]
-            coord_range = np.sort(coord_range)
+            if None not in limits:
+                limits = sorted(limits)
+            else:
+                limits = [le if le is not None else r for le, r in zip(limits, c_range)]
+
+            limits = np.clip(limits, *c_range)
         else:
-            raise ValueError("Illegal type of parameter 'coord_range'. Expecting a scalar, "
+            raise ValueError("Illegal type of parameter 'limits'. Expecting a scalar, "
                              "a list or tuple of length two defining the integration limits.")
 
-        return coord_range, coord
+        return sorted(limits), coord
 
     def difference_range(self, variable=None, dim="level", coord_range=None):
         if variable is None:
@@ -292,8 +296,11 @@ class SebaDataset(Dataset):
 
         # Find vertical coordinate and sort 'coord_range' accordingly
         coord_range, coord = self._coordinate_range(name=dim, limits=coord_range)
+        coord_name = coord.name
 
-        return data.sel({coord.name: coord_range}, method='nearest').diff(dim=dim)
+        data = data.sel({coord_name: coord_range}, method='nearest').diff(dim=coord_name)
+
+        return data.squeeze(drop=True)
 
     def integrate_range(self, variable=None, dim="level", coord_range=None):
 
@@ -744,15 +751,14 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
             sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
 
         # get surface elevation for the given grid.
-        sfch = get_surface_elevation(data.latitude, data.longitude)
-        sfch = sfch.values.ravel()
+        sfch = get_surface_elevation(data.latitude, data.longitude).values.ravel()
 
         # Compute geopotential from the temperature field: d(phi)/d(log p) = - Rd * T(p)
         phi = numeric_tools.geopotential(data.pressure.values, temperature, sfch, sfcp, sfct=sfct)
         phi = DataArray(phi.reshape(data_shape), dims=target_dims)
 
         data['geopotential'] = phi.transpose("time", "level", "latitude", "longitude")
-        data['geopotential'].attrs['units'] = 'joule / kg'
+        data['geopotential'].attrs['units'] = 'joule / kilogram'
 
     print("Data processing completed successfully!")
 
