@@ -35,24 +35,162 @@
  if ( vfmt(1:1) == 'I' ) then
    write( unit=*, fmt=trim(adjustl(str_fmt)), iostat=ios) int( values )
  else
-   write( unit=*, fmt=trim(adjustl(str_fmt)), iostat=ios) values
+     write(unit = *, fmt = trim(adjustl(str_fmt)), iostat = ios) values
  endif
 
- if ( ios /= 0 ) stop 'write error in unit '
+ if (ios /= 0) stop 'write error in unit '
 
-return
-end subroutine model_message
+ return
+  end subroutine model_message
 !===================================================================================================
 
 !===================================================================================================
-  subroutine gradient(dpds, var, ds, ns, nt, order)
+subroutine getspecindx(index_mn, ntrunc)
+
+    ! This subroutine returns the spectral indices corresponding
+    ! to the spherical harmonic degree l and the order m.
+
+    implicit none
+
+    integer, intent(in) :: ntrunc
+    integer, intent(out) :: index_mn(2, (ntrunc + 1) * (ntrunc + 2) / 2)
+
+    integer :: m, n, nmstrt, nm
+
+    ! create spectral indices
+    nmstrt = 0
+    do m = 1, ntrunc + 1
+        do n = m, ntrunc + 1
+            nm = nmstrt + n - m + 1
+            index_mn(:, nm) = [m, n]
+        enddo
+        nmstrt = nmstrt + ntrunc - m + 2
+    enddo
+
+    return
+end subroutine getspecindx
 !===================================================================================================
 
- implicit none
+!===================================================================================================
+subroutine onedtotwod(spec_2d, spec_1d, nlat, nmdim, nt)
 
- ! input vars ...
- integer,          intent(in)  :: order
- integer,          intent(in)  :: ns, nt
+    implicit none
+    ! input-output parameters
+    integer, intent(in) :: nlat, nmdim, nt
+    complex(kind = 8), intent(in) :: spec_1d(nmdim, nt)
+    complex(kind = 8), intent(out) :: spec_2d(nlat, nlat, nt)
+    ! local variables
+    integer :: nmstrt, ntrunc
+    integer :: n, m, nm
+
+    ! compute triangular truncation
+    ntrunc = int(-1.5 + 0.5 * sqrt(9. - 8. * (1. - float(nmdim))))
+
+    !    call getspecindx(index_mn, ntrunc)
+    !    do nm = 1, nmdim
+    !        spec_2d(index_mn(1, nm), index_mn(2, nm), :) = scale * spec_1d(nm, :)
+    !    end do
+    nmstrt = 0
+    do m = 1, ntrunc + 1
+        do n = m, ntrunc + 1
+            nm = nmstrt + n - m + 1
+            spec_2d(m, n, :) = spec_1d(nm, :)
+        enddo
+        nmstrt = nmstrt + ntrunc - m + 2
+    enddo
+
+    return
+end subroutine onedtotwod
+!===================================================================================================
+
+!===================================================================================================
+subroutine twodtooned(spec_1d, spec_2d, nlat, ntrunc, nt)
+
+    implicit none
+    ! input-output parameters
+    integer, intent(in) :: nlat, ntrunc, nt
+    complex(kind = 8), intent(in) :: spec_2d(nlat, nlat, nt)
+    complex(kind = 8), intent(out) :: spec_1d((ntrunc + 1) * (ntrunc + 2) / 2, nt)
+    ! local variables
+    integer :: nmstrt
+    integer :: n, m, nm
+
+    nmstrt = 0
+    do m = 1, ntrunc + 1
+        do n = m, ntrunc + 1
+            nm = nmstrt + n - m + 1
+            spec_1d(nm, :) = spec_2d(m, n, :)
+        enddo
+        nmstrt = nmstrt + ntrunc - m + 2
+    enddo
+
+    return
+end subroutine twodtooned
+!===================================================================================================
+
+!===================================================================================================
+subroutine integrate_order(spectrum, cs_lm, ntrunc, nsp, ns)
+    ! input-output parameters
+    implicit none
+    integer, intent(in) :: ntrunc, nsp, ns
+    double complex, intent(in) :: cs_lm     (nsp, ns)
+    double precision, intent(out) :: spectrum  (ntrunc, ns)
+    ! lcal variables
+    double complex :: scaled_cs (ntrunc, ntrunc, ns)
+    integer :: ln
+
+    ! Reshape the spectral coefficients to matrix form (2, ntrunc, ntrunc, ...)
+    call onedtotwod(scaled_cs, cs_lm, ntrunc, nsp, ns)
+
+    ! Scale non-symmetric coefficients (ms != 1) by two
+    scaled_cs(2:ntrunc, :, :) = 2.0 * scaled_cs(2:ntrunc, :, :)
+
+    ! Initialize array for the 1D energy/power spectrum shaped (truncation, ...)
+    spectrum = 0.0
+
+    ! Compute spectrum as a function of total wavenumber: SUM Cml(m <= l).
+    do ln = 1, ntrunc
+        spectrum(ln, :) = real(sum(scaled_cs(1:ln, ln, :), dim = 1))
+    enddo
+
+    return
+end subroutine integrate_order
+!===================================================================================================
+
+!===================================================================================================
+subroutine cross_spectrum(spectrum, clm_1, clm_2, ntrunc, nsp, ns)
+
+    implicit none
+
+    ! input-output parameters
+    integer, intent(in) :: ntrunc, nsp, ns
+
+    complex(kind = 8), intent(in) :: clm_1(nsp, ns)
+    complex(kind = 8), intent(in) :: clm_2(nsp, ns)
+    double precision, intent(out) :: spectrum(ntrunc, ns)
+
+    ! lcal variables
+    double complex :: clm_cs   (nsp, ns)
+
+    ! Compute cross spectrum in (m, l) space
+    clm_cs = clm_1 * conjg(clm_2)
+
+    ! Compute spectrum as a function of total wavenumber: SUM Cml(m <= l).
+    call integrate_order(spectrum, clm_cs, ntrunc, nsp, ns)
+
+    return
+end subroutine cross_spectrum
+!===================================================================================================
+
+!===================================================================================================
+subroutine gradient(dpds, var, ds, ns, nt, order)
+    !===================================================================================================
+
+    implicit none
+
+    ! input vars ...
+    integer, intent(in) :: order
+    integer, intent(in) :: ns, nt
  double precision, intent(in)  :: ds
  double precision, intent(in)  :: var (nt, ns)
 

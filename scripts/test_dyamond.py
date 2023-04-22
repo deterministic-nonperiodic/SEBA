@@ -21,12 +21,12 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
 
     # Load dyamond dataset
-    model = 'ICON'
+    model = 'IFS'
     resolution = 'n512'
     data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[0123]'
+    date_time = '20[1]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
     # # load earth topography and surface pressure
@@ -132,11 +132,14 @@ if __name__ == '__main__':
     # Perform vertical integration along last axis
     layers = {
         # 'Stratosphere': [50e2, 250e2],
-        'Free troposphere': [250e2, 500e2]
+        'Free troposphere': [250e2, 500e2],
+        'Lower troposphere': [500e2, 950e2],
     }
+
     ke_limits = {
         'Stratosphere': [-0.4, 0.4],
         'Free troposphere': [-0.5, 1.0],
+        'Lower troposphere': [-1.0, 1.5],
     }
 
     for i, (level, prange) in enumerate(layers.items()):
@@ -171,8 +174,8 @@ if __name__ == '__main__':
 
         ax.set_ylabel(r'Cumulative energy flux ($W~m^{-2}$)', fontsize=15)
 
-        ax.axhline(y=0.0, xmin=0, xmax=1, color='gray', linewidth=1.2, linestyle='dashed',
-                   alpha=0.5)
+        ax.axhline(y=0.0, xmin=0, xmax=1, color='gray',
+                   linewidth=1.2, linestyle='dashed', alpha=0.5)
 
         secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
         secax.xaxis.set_major_formatter(ScalarFormatter())

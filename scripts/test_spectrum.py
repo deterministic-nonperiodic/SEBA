@@ -10,9 +10,9 @@ from src.seba import EnergyBudget
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
-          'text.usetex': False, 'font.size': 12,
+          'text.usetex': False, 'font.size': 15,
           'font.family': 'serif', 'font.weight': 'normal'}
-plt.rcParams['legend.title_fontsize'] = 10
+plt.rcParams['legend.title_fontsize'] = 14
 plt.rcParams.update(params)
 
 warnings.filterwarnings('ignore')
@@ -36,38 +36,39 @@ def sh_cross_spectrum(grid1, grid2):
 
 
 if __name__ == '__main__':
+
     # Load dyamond dataset
-    resolution = 'n128'
+    model = 'IFS'
+    resolution = 'n512'
     data_path = '../data/'
-    date_time = '20200128'
-    file_names = data_path + 'ICON_atm_3d_inst_{}_PL_{}_{}.nc'
+    # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    dset_dyn = xr.merge([
-        xr.open_mfdataset(file_names.format(idv, resolution, date_time))
-        for idv in ['uvt', 'pwe']])
+    date_time = '20[1]'
+    file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
-    # load earth topography and surface pressure
-    dset_sfc = xr.open_dataset(data_path + 'DYAMOND2_topography_{}.nc'.format(resolution))
-
-    sfc_hgt = dset_sfc.topography_c.values
-    sfc_pres = None  # dset_sfc.pres_sfc.values
+    # # load earth topography and surface pressure
+    dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
+    sfc_pres = dataset_sfc.pres_sfc
 
     # Create energy budget object
-    AEB = EnergyBudget(dset_dyn, ghsl=sfc_hgt, ps=sfc_pres,
-                       leveltype='pressure', filter_terrain=False, jobs=1)
+    budget = EnergyBudget(file_names, ps=sfc_pres, jobs=1)
+
+    # compute mask
+    beta = (~budget.theta_prime.mask).astype(float)
+
+    # no mode-coupling assumption
+    f_sky = budget.representative_mean(beta)
 
     # visualize profiles
-    variables = ['omega', 'wind', 'theta_pbn']
+    variables = ['omega', 'wind', 'theta_prime', 'theta']
     vars_info = {
-        # 'w': ('scalar', r'Vertical kinetic energy $(m^{2}~s^{-2})$'),
         'omega': ('scalar', r'Pressure velocity $(Pa^{2}~s^{-2})$'),
-        'theta_pbn': ('scalar', r'${\theta^{\prime}}^{2}~(K^{2})$'),
+        'theta': ('scalar', r'${\theta}^{2}~(K^{2})$'),
+        'theta_prime': ('scalar', r'${\theta^{\prime}}^{2}~(K^{2})$'),
         'wind': ('vector', r'Horizontal kinetic energy  $(m^{2}~s^{-2})$')
     }
-    pressure = 1e-2 * AEB.pressure
-    lats, weights_gs = spharm.gaussian_lats_wts(AEB.nlat)
-
-    weights_ln = weights_gs  # np.ones_like(lats) / lats.size
+    pressure = 1e-2 * budget.pressure
+    lats, weights_gs = spharm.gaussian_lats_wts(budget.nlat)
 
     n_cols = len(variables)
     fig, axes = plt.subplots(nrows=1, ncols=n_cols, figsize=(n_cols * 5, 10.0),
@@ -77,27 +78,31 @@ if __name__ == '__main__':
     # Compute spectrum of scalar variables
     for i, variable in enumerate(variables):
         ax = axes[i]
-        data = AEB.__dict__[variable]
+        data = budget.__dict__[variable]
 
         if vars_info[variable][0] == 'vector':
             # The global average of the dot product of two vectors must equal the sum
             # of the vectors' cross-spectrum along all spherical harmonic degrees.
             data_sqd = np.sum(data ** 2, axis=0)
-            data_ln = AEB.global_mean(data_sqd, weights=weights_ln).mean(0)
-            data_gs = AEB.global_mean(data_sqd, weights=weights_gs).mean(0)
-            data_sp = AEB._vector_spectra(data).sum(0).mean(0)
+            data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
+            data_sp = np.nansum(budget._vector_spectra(data), axis=0).mean(0)
         else:
             data_sqd = data ** 2
-            data_ln = AEB.global_mean(data_sqd, weights=weights_ln).mean(0)
-            data_gs = AEB.global_mean(data_sqd, weights=weights_gs).mean(0)
-            data_sp = AEB._scalar_spectra(data).sum(0).mean(0)
+            data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
+            data_sp = np.nansum(budget._scalar_spectra(data), axis=0).mean(0)
 
-        lines = ax.plot(data_ln.T, pressure, '-r', data_gs.T, pressure, '-b',
-                        data_sp.T, pressure, '--k', lw=1.5)
+        # data_sp_corrected = data_sp / f_sky
 
-        ax.legend(lines, ['global mean', 'global average', 'recovered'],
-                  title=vars_info[variable][1], loc='best')
-        ax.set_ylim(1015, 80)
+        lines = ax.plot(data_gs.T, pressure, '-b',
+                        data_sp.T, pressure, '-.k',
+                        lw=2.5)
+        labels = [
+            'global mean',
+            'recovered',
+            # 'masked corrected'
+        ]
+        ax.legend(lines, labels, title=vars_info[variable][1], loc='best')
+        ax.set_ylim(1020, 20)
 
     axes[0].set_ylabel('Pressure (hPa)')
 

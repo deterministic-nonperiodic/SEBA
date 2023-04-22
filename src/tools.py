@@ -4,11 +4,12 @@ import time
 import numpy as np
 import scipy.signal as sig
 import scipy.special as spec
+import shtns
 from joblib import Parallel, delayed, cpu_count
 from scipy.spatial import KDTree
 
 from fortran_libs import numeric_tools
-from spectral_analysis import lambda_from_deg
+from spectral_analysis import lambda_from_deg, cross_spectrum
 
 
 class Timer(object):
@@ -176,7 +177,7 @@ def getspecindx(ntrunc):
      @param ntrunc: spherical harmonic triangular truncation limit.
      @return: C{B{index_m, index_n}} - rank 1 numpy Int32 arrays
      containing zonal wavenumber (index_m) and degree (index_n) of
-     spherical harmonic coefficients.
+     spherical harmonic coefficients with size (ntrunc+1)*(ntrunc+2)/2.
     """
     index_m, index_n = np.indices((ntrunc + 1, ntrunc + 1))
 
@@ -246,7 +247,7 @@ def regular_longitudes(nlon):
     """
     assert nlon > 3, f"Wrong value for 'nlon' {nlon} - must be at least 4."
 
-    return np.arange(0., 360.0, 360.0 / nlon)
+    return np.linspace(0.0, 360., nlon, endpoint=False)
 
 
 def regular_lats_wts(nlat):
@@ -564,6 +565,74 @@ def surface_mask(p, ps, smooth=True, jobs=None):
 
     # clipping is necessary to remove overshoots
     return beta.clip(0.0, 1.0)
+
+
+def mode_coupling_matrix(beta):
+    return beta
+
+
+def make_pure_tone_map(l, nlat, grid_type='regular'):
+    # Construct grid
+    lat, lon = create_grid(nlat, grid_type=grid_type)
+
+    # convert longitude and co-latitude to radians
+    lon, lat = np.deg2rad(np.meshgrid(lon, 90.0 - lat))
+
+    # Evaluate spherical harmonic at m = l
+    m = l
+    ylm = spec.sph_harm(m, l, lat, lon).real
+
+    power_spectrum = 1.0
+    # # scale power spectrum
+    # power_spectrum = np.zeros((l + 1) ** 2)
+    # power_spectrum[l ** 2 + l + m] = 1.0
+
+    # Generate map scaled by the power spectrum
+    return ylm * power_spectrum
+
+
+def compute_mode_coupling_matrix(mask, grid_type='gaussian', realizations=1):
+    # Initialize the mode-coupling matrix
+
+    nlat = mask.shape[0]
+    nlon = 2 * nlat
+
+    # infer lmax from mask size
+    lmax = nlat - 1
+    coupling_matrix = np.zeros((lmax + 1, lmax + 1))
+
+    # Create the grid
+    if grid_type not in ['gaussian', 'regular']:
+        raise ValueError('Invalid grid_type parameter. Choose between "gaussian" and "regular".')
+
+    # define spherical harmonics
+    sht = shtns.sht(lmax, lmax, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
+
+    if grid_type == 'gaussian':
+        sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
+    else:
+        sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
+
+    # Loop over all l values
+    for l in range(lmax + 1):
+        # Compute the spherical harmonics for this l value
+        masked_map = mask * make_pure_tone_map(l, nlat, grid_type=grid_type)
+
+        Clm_sum = 0.0
+        for i in range(realizations):
+            # Mask the map using the input mask
+            noise = np.random.choice([0, 1], size=masked_map.size, p=[0.5, 0.5])
+
+            # Add to the sum over all trial maps
+            Clm_sum += cross_spectrum(sht.analys(noise * masked_map))
+
+        # Compute the average power spectrum and store the Mlm values
+        coupling_matrix[l] = Clm_sum / realizations
+
+    # Compute the inverse of the mode-coupling matrix
+    # Minv = np.linalg.inv(coupling_matrix)
+
+    return coupling_matrix  # , Minv
 
 
 def _select_by_distance(priority, distance):

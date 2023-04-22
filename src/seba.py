@@ -5,13 +5,14 @@ import xarray as xr
 from numpy.core.numeric import normalize_axis_index
 
 import constants as cn
+from fortran_libs import numeric_tools
 from io_tools import parse_dataset, SebaDataset
 from kinematics import coriolis_parameter
 from spectral_analysis import triangular_truncation, kappa_from_deg
 from spherical_harmonics import Spharmt
 from thermodynamics import exner_function, potential_temperature
 from thermodynamics import stability_parameter, vertical_velocity
-from tools import inspect_gridtype, prepare_data, recover_data, recover_spectra
+from tools import inspect_gridtype, prepare_data  # , recover_data, recover_spectra
 from tools import rotate_vector, broadcast_1dto, gradient_1d, transform_io
 
 # declare global read-only variables
@@ -134,7 +135,6 @@ class EnergyBudget:
         # -----------------------------------------------------------------------------
         # Initialize a sphere object to perform the spectral transformations.
         # -----------------------------------------------------------------------------
-
         # Inspect grid type based on the latitude sampling
         self.gridtype, self.latitude, self.weights = inspect_gridtype(data.latitude)
 
@@ -165,33 +165,51 @@ class EnergyBudget:
 
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as xarray objects
-        self.coords = data.coordinates_by_axes()
+        self.gp_coords = data.coordinates_by_names()
 
         # create horizontal wavenumber coordinates for spectral quantities.
-        self.sp_coords = [c for ic, c in self.coords.items() if ic not in 'xy']
+        self.sp_coords = {name: coord for name, coord in self.gp_coords.items()
+                          if name not in ['latitude', 'longitude']}
 
-        self.sp_coords.append(xr.Coordinate('kappa', self.kappa_h,
-                                            attrs={'standard_name': 'wavenumber',
-                                                   'long_name': 'horizontal wavenumber',
-                                                   'axis': 'X', 'units': 'm**-1'}))
+        self.sp_coords['kappa'] = xr.Coordinate('kappa', self.kappa_h,
+                                                attrs={'standard_name': 'wavenumber',
+                                                       'long_name': 'horizontal wavenumber',
+                                                       'axis': 'X', 'units': 'm**-1'})
 
         # ------------------------------------------------------------------------------------------
         # Initialize dynamic fields
         # ------------------------------------------------------------------------------------------
         self.pressure = data.pressure.values
 
-        self.omega, self.data_info = data.get_field('omega')
+        # get vertical velocity
+        self.omega = data.get_field('omega')
 
-        # define data mask once for consistency
-        self.data_mask = self.omega.mask
+        # Get geopotential field and compute geopotential height
+        self.phi = data.get_field('geopotential')
 
         # create wind array from masked wind components (preserving mask)
-        self.wind = np.ma.stack((data.get_field('u_wind')[0],
-                                 data.get_field('v_wind')[0]))
+        self.wind = np.ma.stack((data.get_field('u_wind'),
+                                 data.get_field('v_wind')))
 
         # compute thermodynamic quantities from masked temperature
-        self.temperature = data.get_field('temperature')[0]
+        self.temperature = data.get_field('temperature')
 
+        # ------------------------------------------------------------------------------------------
+        # Infer data mask for spectral corrections due to missing data. Here, β is
+        # the terrain mask containing 0 for levels satisfying p >= ps and 1 otherwise.
+        # ------------------------------------------------------------------------------------------
+        # define data mask once for consistency
+        self.mask = self.omega.mask
+
+        # logical AND reduction along the time axis (once masked always masked)
+        self.beta = (~self.mask).astype(float)
+
+        # compute fraction of valid points at every level for Spectral Mode-Coupling Correction
+        self.beta_fraction = self.representative_mean(self.beta)
+
+        # ------------------------------------------------------------------------------------------
+        # Kinematics
+        # ------------------------------------------------------------------------------------------
         # Compute vorticity and divergence of the wind field.
         self.vrt, self.div = self.vorticity_divergence()
 
@@ -205,20 +223,14 @@ class EnergyBudget:
         self.fc = broadcast_1dto(coriolis_parameter(self.latitude), self.wind.shape)
 
         # ------------------------------------------------------------------------------------------
-        # Thermodynamic diagnostics
+        # Thermodynamics
         # ------------------------------------------------------------------------------------------
         self.exner = exner_function(self.pressure)
         self.theta = potential_temperature(self.pressure, self.temperature)
 
-        # Get geopotential field and compute geopotential height
-        self.phi = data.get_field('geopotential')[0]
-
         # Compute global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
         self.theta_avg, self.theta_prime = self._split_mean_perturbation(self.theta)
-
-        # Compute vertical gradient of potential temperature perturbations
-        self.ddp_theta_prime = self.vertical_gradient(self.theta_prime)
 
         # Parameter ganma to convert from temperature variance to APE
         self.ganma = stability_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
@@ -230,21 +242,27 @@ class EnergyBudget:
         """
             Add metadata and export variables as xr.DataArray
         """
+        expected_gridtype = ['spectral', 'gaussian', 'regular']
+        if gridtype not in expected_gridtype:
+            raise ValueError(f"Unknown grid type! Must be one of: {expected_gridtype}")
+
         if gridtype == 'spectral':
             coords = self.sp_coords
-            data = recover_spectra(data, self.data_info)
+            # data = recover_spectra(data, self.data_info)
+            dims = ['kappa', 'time', 'level']
         else:
-            coords = self.coords.values()
-            data = recover_data(data, self.data_info)
+            coords = self.gp_coords
+            # data = recover_data(data, self.data_info)
+            dims = ['latitude', 'longitude', 'time', 'level']
 
-        # create xarray.DataArray
-        array = xr.DataArray(data=data, name=name, coords=coords)
+        # create xarray.DataArray... dimensions are sorted according to dims
+        array = xr.DataArray(data=data, name=name, dims=dims, coords=coords)
 
         # add attributes to variable
-        for attr, value in attributes.items():
-            array.attrs[attr] = value
+        attributes.update(gridtype=gridtype)
+        array.attrs.update(attributes)
 
-        return array
+        return array.transpose('time', 'level', ...)
 
     # ------------------------------------------------------------------------------------------
     # Methods for computing diagnostics: kinetic and available potential energies
@@ -467,7 +485,7 @@ class EnergyBudget:
         if da_flag:
             if tendency_name is None:
                 tendency_name = tendency.name.split("_")[-1]
-            info = ''.join([tendency.coords[dim].axis for dim in tendency.dims]).lower()
+            info = ''.join([tendency.gp_coords[dim].axis for dim in tendency.dims]).lower()
 
             tendency, _ = prepare_data(tendency.values, info)
         else:
@@ -510,7 +528,7 @@ class EnergyBudget:
         if da_flag:
             if tendency_name is None:
                 tendency_name = tendency.name.split("_")[-1]
-            info = ''.join([tendency.coords[dim].axis for dim in tendency.dims]).lower()
+            info = ''.join([tendency.gp_coords[dim].axis for dim in tendency.dims]).lower()
 
             tendency, _ = prepare_data(tendency.values, info)
         else:
@@ -559,10 +577,8 @@ class EnergyBudget:
         psi_grad = self.horizontal_gradient(psi_grid)
 
         # apply mask to computed gradients
-        mask = self.wind.mask
-
-        chi_grad = np.ma.masked_array(chi_grad, mask=mask, fill_value=0.0)
-        psi_grad = np.ma.masked_array(psi_grad, mask=mask, fill_value=0.0)
+        chi_grad = np.ma.masked_array(chi_grad, mask=self.wind.mask, fill_value=0.0)
+        psi_grad = np.ma.masked_array(psi_grad, mask=self.wind.mask, fill_value=0.0)
 
         return chi_grad, rotate_vector(psi_grad)
 
@@ -577,8 +593,8 @@ class EnergyBudget:
         vrt = self._inverse_transform(vrt_spc)
         div = self._inverse_transform(div_spc)
 
-        vrt = np.ma.masked_array(vrt, mask=self.data_mask, fill_value=0.0)
-        div = np.ma.masked_array(div, mask=self.data_mask, fill_value=0.0)
+        vrt = np.ma.masked_array(vrt, mask=self.mask, fill_value=0.0)
+        div = np.ma.masked_array(div, mask=self.mask, fill_value=0.0)
 
         return vrt, div
 
@@ -640,7 +656,7 @@ class EnergyBudget:
         """
 
         # Horizontal kinetic energy per unit mass in grid-point space
-        kinetic_energy = np.sum(self.wind * self.wind, axis=0)
+        kinetic_energy = np.ma.sum(self.wind * self.wind, axis=0)
 
         # Horizontal gradient of horizontal kinetic energy
         kinetic_energy_gradient = self.horizontal_gradient(kinetic_energy)
@@ -682,9 +698,11 @@ class EnergyBudget:
         # compute nonlinear spectral transfer related to horizontal advection
         advection_term = - self._scalar_spectra(self.theta_prime, theta_advection)
 
-        # compute vertical heat flux
-        vertical_term = self._scalar_spectra(self.ddp_theta_prime, self.omega * self.theta_prime)
-        vertical_term -= self._scalar_spectra(self.theta_prime, self.omega * self.ddp_theta_prime)
+        # Compute vertical gradient of potential temperature perturbations
+        theta_gradient = self.vertical_gradient(self.theta_prime)
+
+        vertical_term = self._scalar_spectra(theta_gradient, self.omega * self.theta_prime)
+        vertical_term -= self._scalar_spectra(self.theta_prime, self.omega * theta_gradient)
 
         return self.ganma * (advection_term + vertical_term / 2.0)
 
@@ -816,7 +834,9 @@ class EnergyBudget:
         """
             Computes the streamfunction and potential of a vector field on the sphere.
         """
-        return self.sphere.getpsichi(*vector)
+        psi_chi = self.sphere.getpsichi(*vector)
+
+        return psi_chi
 
     @transform_io
     def horizontal_gradient(self, scalar):
@@ -832,20 +852,38 @@ class EnergyBudget:
         scalar_gradient = self.sphere.getgrad(scalar)
 
         if np.ma.is_masked(scalar):
-            # Let's apply a correction trick to remove boundary effects. Here, β is the
-            # terrain mask containing 0 for levels satisfying p > ps and 1 otherwise.
-            beta = (~scalar.mask).astype(float)
+            # Recovering "ground-truth" masked gradient using: β ∇φ = ∇(β φ) - (β φ) ∇β.
+            # The exact form of the last term should be φ∇β instead of (β φ) ∇β, however the two
+            # formulas are equivalent in non-masked regions (β = 1). We don't know the exact φ.
+            beta_gradient = self.sphere.getgrad((~scalar.mask).astype(float))
 
-            # Let's get the masked gradient using: β ∇φ = ∇(β φ) - (β φ) ∇β. The exact form of
-            # the last term should be φ∇β instead of (β φ) ∇β, however the two formulations are
-            # equivalent in non-masked regions (β = 1). We don't know φ anyway, only (β φ).
-            scalar_gradient -= self.sphere.getgrad(beta) * scalar
+            scalar_gradient = scalar_gradient - beta_gradient * scalar
+
+        return scalar_gradient
+
+    def vertical_gradient(self, scalar, vertical_axis=-1):
+        """
+            Computes vertical gradient (∂φ/∂p) of a scalar function (φ) in pressure coordinates.
+        """
+        scalar_gradient = gradient_1d(scalar, self.pressure, axis=vertical_axis)
+
+        # preserve the mask of scalar if masked
+        if np.ma.is_masked(scalar):
+            # Let's get the masked gradient using: β ∂φ/∂p = ∂(β φ)/∂p - (β φ) ∂β/∂p.
+            beta_gradient = gradient_1d((~scalar.mask).astype(float), self.pressure,
+                                        axis=vertical_axis)
+
+            scalar_gradient = scalar_gradient - beta_gradient * scalar
 
         return scalar_gradient
 
     def _scalar_advection(self, scalar):
         r"""
         Compute the horizontal advection of a scalar field on the sphere.
+
+        Advection is computed in flux form for better conservation properties
+        and handling masked data properly. This approach also has higher performance
+        than computing horizontal gradients directly.
 
         .. math:: \mathbf{u}\cdot\nabla_h\phi = \nabla_h\cdot(\phi\mathbf{u}) - \delta\phi
 
@@ -862,19 +900,13 @@ class EnergyBudget:
                 Array containing the advection of a scalar field.
         """
 
-        # computes the components of the scalar advection: (2, nlat, nlon, ...)
-        # scalar_advection = self.wind * self.horizontal_gradient(scalar)
-        # adding up horizontal components
-        # scalar_advection = np.ma.sum(scalar_advection, axis=0)
-
-        # Implementation of advection in flux form for a proper handling masked data.
-        # Spectral coefficients of the scalar flux divergence: ∇⋅(φu)
+        # Spectral coefficients of the scalar flux divergence: ∇⋅(φ u)
         scalar_divergence = self._compute_rotdiv(scalar * self.wind)[1]
 
         # back to grid-point space
         scalar_divergence = self._inverse_transform(scalar_divergence)
 
-        # back to actual advection: u⋅∇φ = ∇⋅(φu) - δφ
+        # recover scalar advection: u⋅∇φ = ∇⋅(φu) - δφ
         scalar_advection = scalar_divergence - self.div * scalar
 
         return scalar_advection
@@ -909,9 +941,9 @@ class EnergyBudget:
         """
 
         # Horizontal kinetic energy per unit mass in grid-point space
-        kinetic_energy = np.ma.sum(self.wind * self.wind, axis=0) / 2.0
+        kinetic_energy = np.ma.sum(self.wind ** 2, axis=0) / 2.0
 
-        # Horizontal gradient of horizontal kinetic energy
+        # Horizontal gradient of the horizontal kinetic energy
         # (components stored along the first dimension)
         ke_gradient = self.horizontal_gradient(kinetic_energy)
 
@@ -921,7 +953,7 @@ class EnergyBudget:
 
     def _scalar_spectra(self, scalar_1, scalar_2=None):
         """
-        Compute 2D power spectrum as a function of spherical harmonic degree of a scalar function.
+        Compute cross/spectrum of a scalar field as a function of spherical harmonic degree.
         """
         if scalar_2 is not None:
             assert scalar_2.shape == scalar_1.shape, "Rank mismatch between scalar_1 and scalar_2."
@@ -933,7 +965,7 @@ class EnergyBudget:
 
     def _vector_spectra(self, vector_1, vector_2=None):
         """
-        Compute spherical harmonic cross spectra between two vector fields on the sphere.
+        Compute cross/spectrum of two vector fields as a function of spherical harmonic degree.
         """
         if vector_2 is None:
             vector_2 = (None, None)
@@ -941,6 +973,7 @@ class EnergyBudget:
             assert vector_2.shape == vector_1.shape, "Rank mismatch between vector_1 and vector_2."
             vector_2 = self._compute_rotdiv(vector_2)
 
+        # Compute the spectral coefficients of the curl and divergence of vector_1
         vector_1 = self._compute_rotdiv(vector_1)
 
         spectrum = self.cross_spectrum(vector_1[0], vector_2[0])
@@ -948,25 +981,7 @@ class EnergyBudget:
 
         return spectrum / self.norm
 
-    def vertical_gradient(self, scalar, vertical_axis=-1):
-        """
-            Computes vertical gradient (∂φ/∂p) of a scalar function (φ) in pressure coordinates.
-        """
-        scalar_gradient = gradient_1d(scalar, self.pressure, axis=vertical_axis, order=8)
-
-        # preserve the mask of scalar if masked
-        if np.ma.is_masked(scalar):
-            # Let's apply a correction trick to remove boundary effects. Here, β is the
-            # terrain mask containing 0 for levels satisfying p >= ps and 1 otherwise.
-            beta = (~scalar.mask).astype(float)
-            beta_grad = gradient_1d(beta, self.pressure, axis=vertical_axis, order=8)
-
-            # Let's get the masked gradient using: β ∂φ/∂p = ∂(β φ)/∂p - (β φ) ∂β/∂p.
-            scalar_gradient -= beta_grad * scalar
-
-        return scalar_gradient
-
-    def global_mean(self, scalar, weights=None, lat_axis=None):
+    def representative_mean(self, scalar, weights=None, lat_axis=None):
         """
         Computes the global weighted average of a scalar function on the sphere.
         The weights are initialized according to 'grid_type': for grid_type='gaussian' we use
@@ -1007,7 +1022,7 @@ class EnergyBudget:
         # mean along the longitude dimension (same as lat_axis after array reduction)
         return np.ma.mean(scalar_average, axis=lat_axis)
 
-    def integrate_order(self, cs_lm, degrees=None):
+    def accumulate_order(self, cs_lm, axis=0):
         """Accumulates over spherical harmonic order and returns spectrum as a function of
         spherical harmonic degree.
 
@@ -1019,57 +1034,34 @@ class EnergyBudget:
         ----------
         cs_lm : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
             contains the cross-spectrum of a set of spherical harmonic coefficients.
-        degrees: 1D array, optional, default = None
-            Spherical harmonics degree. If not given, degrees are inferred from
-            the class definition or calculated from the number of latitude points.
+        axis : int, optional
+            axis of the spectral coefficients
         Returns
         -------
         array : ndarray, shape (len(degrees), ...)
             contains the 1D spectrum as a function of spherical harmonic degree.
         """
 
-        # Get indexes of the triangular matrix with spectral coefficients
-        # (move this to class init?)
-        sample_shape = cs_lm.shape[1:]
+        clm_shape = list(cs_lm.shape)
+        nml_shape = clm_shape.pop(axis)
 
-        coeffs_size = cs_lm.shape[0]
-
-        if degrees is None:
-            # check if degrees are defined
-            if hasattr(self, 'degrees'):
-                degrees = self.degrees
-            else:
-                if hasattr(self, 'truncation'):
-                    ntrunc = self.truncation
-                else:
-                    ntrunc = triangular_truncation(coeffs_size)
-                degrees = np.arange(ntrunc + 1, dtype=int)
+        if hasattr(self, 'truncation'):
+            truncation = self.truncation + 1
         else:
-            degrees = np.asarray(degrees)
-            if (degrees.ndim != 1) or (degrees.size > self.nlat):
-                raise ValueError("If given, 'degrees' must be a 1D array of length <= 'nlat'."
-                                 "Expected size {} and got {}".format(self.nlat, degrees.size))
+            truncation = triangular_truncation(nml_shape) + 1
 
-        # define wavenumbers locally
-        ls = self.sphere.degree
-        ms = self.sphere.order
+        # reshape coefficients for consistency with fortran routine
+        cs_lm = np.moveaxis(cs_lm, axis, 0).reshape((nml_shape, -1))
 
-        # Multiplying by 2 to account for symmetric coefficients (ms != 0)
-        cs_lm *= broadcast_1dto(np.where(ms == 0, 1.0, 2.0), cs_lm.shape)
+        # Compute spectrum as a function of spherical harmonic degree (total wavenumber).
+        spectrum = numeric_tools.integrate_order(cs_lm, truncation)
 
-        # Initialize array for the 1D energy/power spectrum shaped (truncation, ...)
-        spectrum = np.zeros((degrees.size,) + sample_shape)
+        # back to original shape
+        spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)
 
-        # Compute spectrum as a function of total wavenumber by adding up the zonal wavenumbers.
-        for ln, degree in enumerate(degrees):
-            # Sum over all zonal wavenumbers <= total wavenumber
-            degree_range = (ms <= degree) & (ls == degree)
-            spectrum[ln] = np.nansum(cs_lm[degree_range], axis=0)
-
-        # Normalize as in equation (7) of Lambert [1984]? i.e. spectrum /= 2.0
         return spectrum
 
-    def cross_spectrum(self, clm1, clm2=None, degrees=None, convention='power', integrate=True):
+    def cross_spectrum(self, clm1, clm2=None, accumulate=True):
         """Returns the cross-spectrum of the spherical harmonic coefficients as a
         function of spherical harmonic degree.
 
@@ -1083,40 +1075,28 @@ class EnergyBudget:
             contains the first set of spherical harmonic coefficients.
         clm2 : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...), optional
             contains the second set of spherical harmonic coefficients.
-        degrees: 1D array, optional, default = None
-            Spherical harmonics degree. If not given, degrees are inferred from
-            the class definition or calculated from the number of latitude points.
-        convention : str, optional, default = 'power'
-            The type of spectrum to return: 'power' for power spectrum, 'energy'
-            for energy spectrum, and 'l2norm' for the l2-norm spectrum.
-        integrate : bool, default = True
-            Option to integrate along the zonal wavenumber (order)
+        accumulate : bool, default = True
+            Integrate along the zonal wavenumber (order)
         Returns
         -------
         array : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
             contains the cross spectrum as a function of spherical harmonic degree (and order).
         """
-
-        if convention not in ['energy', 'power']:
-            raise ValueError("Parameter 'convention' must be one of"
-                             " ['energy', 'power']. Given {}".format(convention))
-
         if clm2 is None:
-            clm_sqd = (clm1 * clm1.conjugate()).real
+            spectrum = clm1 * clm1.conjugate()
         else:
             assert clm2.shape == clm1.shape, \
                 "Arrays 'clm1' and 'clm2' of spectral coefficients must have the same shape. " \
                 "Expected 'clm2' shape: {} got: {}".format(clm1.shape, clm2.shape)
 
-            clm_sqd = (clm1 * clm2.conjugate()).real
+            spectrum = clm1 * clm2.conjugate()
 
-        if convention.lower() == 'energy':
-            clm_sqd *= 4.0 * np.pi
+        # Compute spectrum as a function of spherical harmonic degree (total wavenumber).
+        if accumulate:
+            spectrum = self.accumulate_order(spectrum)
 
-        if integrate:
-            return self.integrate_order(clm_sqd, degrees)
-        else:
-            return clm_sqd
+        # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
+        return spectrum.real / self.beta_fraction
 
     # Functions for preprocessing data:
     def _pack_levels(self, data, order='C'):
@@ -1142,22 +1122,13 @@ class EnergyBudget:
         else:
             return data
 
-    def _representative_mean(self, scalar):
-        # Computes representative mean of a scalar function: weighted average
-        # on gaussian or regular grid excluding masked values over a constant
-        # pressure level for regions above the surface.
-        return self.global_mean(scalar, lat_axis=0)
-
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean and perturbations.
 
         # A&L13 formula for the representative mean
-        scalar_avg = self._representative_mean(scalar)
+        scalar_avg = self.representative_mean(scalar, lat_axis=0)
 
-        # Calculate perturbation
-        scalar_pbn = scalar - scalar_avg
-
-        return scalar_avg, scalar_pbn
+        return scalar_avg, scalar - scalar_avg
 
     def _scalar_perturbation(self, scalar):
         # Compute scalar perturbations in spectral space

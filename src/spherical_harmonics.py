@@ -95,12 +95,11 @@ class Spharmt(object):
         """Wrapper function for running _shtns functions along sample dimension"""
 
         # Compact args to a single array (input arrays must be broadcastable)
-        # If passing masked arrays fill with zeros
-        data = np.ma.asarray(args).filled(fill_value=0.0)
+        # Infer mask when passing masked arrays and fill with zeros preserving dtype.
+        data = np.ma.fix_invalid(args).filled(fill_value=0.0)
 
         # check data type (real objects must be of type float64)
-        if np.isrealobj(data):
-            data = data.astype(np.float64)
+        if np.isrealobj(data): data = data.astype(np.float64)
 
         # add dummy sample dimension if necessary
         n_samples = data.shape[-1]
@@ -114,10 +113,7 @@ class Spharmt(object):
         # results = np.array(pool(delayed(func)(*data[..., i]) for i in range(n_samples)))
         results = np.array([func(*data[..., i]) for i in range(n_samples)])
 
-        if results.shape[0] == n_samples:
-            results = np.moveaxis(results, 0, -1)
-
-        return results
+        return np.moveaxis(results, 0, -1)
 
     def grdtospec(self, scalar):
         """compute spectral coefficients from gridded data"""

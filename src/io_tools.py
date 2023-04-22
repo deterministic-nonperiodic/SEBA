@@ -9,7 +9,8 @@ from xarray import Dataset, DataArray, open_dataset, open_mfdataset
 import constants as cn
 from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
-from tools import interpolate_1d, inspect_gridtype, prepare_data, surface_mask, is_sorted
+from tools import interpolate_1d, inspect_gridtype
+from tools import surface_mask, is_sorted  # , prepare_data
 
 path_global_topo = "../data/topo_global_n1250m.nc"
 
@@ -169,6 +170,10 @@ class SebaDataset(Dataset):
         cds = self.coords
         return {cds[name].axis.lower(): cds[name] for name in self.coordinate_names()}
 
+    def coordinates_by_names(self):
+        cds = self.coords
+        return {name: cds[name] for name in self.coordinate_names()}
+
     def data_shape(self):
         return tuple(self.dims[name] for name in self.coordinate_names())
 
@@ -254,15 +259,19 @@ class SebaDataset(Dataset):
         data = data.sortby([dim for dim in ["latitude", "level"]
                             if dim in data.coords], ascending=False)
 
-        info_coords = "".join(data.coords[name].axis.lower() for name in data.dims)
+        # Transpose dimensions for cleaner vectorized operations.
+        # - moving dimensions 'lat' and 'lon' forward and 'levels' to last dimension
+        target_dims = ('latitude', 'longitude', 'time', 'level')
+        coord_order = [data.dims.index(dim) for dim in target_dims]
+
+        # info_coords = "".join(data.coords[name].axis.lower() for name in data.dims)
         data = data.to_masked_array()
 
         # masked elements are filled with zeros before the spectral analysis
         data.set_fill_value(0.0)
 
-        # Move dimensions (nlat, nlon) forward and vertical axis last
-        # (Useful for cleaner vectorized operations)
-        return prepare_data(data, info_coords)
+        # prepare_data(data, info_coords)
+        return np.ma.transpose(data, axes=coord_order)
 
     def _coordinate_range(self, name="level", limits=None):
         # Find vertical coordinate and sort 'coord_range' accordingly
@@ -687,6 +696,7 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
 
     # Create output dataset with required fields and check units consistency.
     data = SebaDataset(arrays).check_convert_units()
+    del arrays
 
     # Check for pressure velocity: If not present in dataset, it is estimated from
     # height-based vertical velocity using the hydrostatic approximation.
