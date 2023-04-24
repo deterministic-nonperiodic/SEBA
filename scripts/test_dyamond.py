@@ -133,7 +133,7 @@ if __name__ == '__main__':
     layers = {
         # 'Stratosphere': [50e2, 250e2],
         'Free troposphere': [250e2, 500e2],
-        'Lower troposphere': [500e2, 950e2],
+        # 'Lower troposphere': [500e2, 950e2],
     }
 
     ke_limits = {

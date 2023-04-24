@@ -38,7 +38,7 @@ def sh_cross_spectrum(grid1, grid2):
 if __name__ == '__main__':
 
     # Load dyamond dataset
-    model = 'IFS'
+    model = 'ICON'
     resolution = 'n512'
     data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'

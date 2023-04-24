@@ -62,7 +62,7 @@ def triangular_truncation(nspc):
     return int(-1.5 + 0.5 * np.sqrt(9. - 8. * (1. - float(nspc))))
 
 
-def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0, integrate=True):
+def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0):
     """Returns the cross-spectrum of the spherical harmonic coefficients as a
     function of spherical harmonic degree.
 
@@ -83,8 +83,6 @@ def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0, integ
         triangular truncation
     axis : int, optional
         axis of the spectral coefficients
-    integrate : bool, default is True
-        Option to integrate along the zonal wavenumber (order)
 
     Returns
     -------
@@ -103,9 +101,6 @@ def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0, integ
     clm_shape = list(clm1.shape)
     nlm = clm_shape.pop(axis)
 
-    # flatten sample dimensions
-    clm1 = np.moveaxis(clm1, axis, 0).reshape((nlm, -1))
-
     if lmax is None:
         # Get indexes of the triangular matrix with spectral coefficients
         truncation = triangular_truncation(clm1.shape[0]) + 1
@@ -114,21 +109,21 @@ def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0, integ
 
     # Compute cross spectrum from spherical harmonic expansion coefficients
     if clm2 is None:
-        cs_lm = (clm1 * clm1.conjugate()).real
+        cs_lm = clm1 * clm1.conjugate()
     else:
-        clm2 = np.moveaxis(clm2, axis, 0).reshape((nlm, -1))
+        msg = f"Arrays 'clm1' and 'clm2' of spectral coefficients must have the same shape. " \
+              f"Expected 'clm2' shape: {clm1.shape} got: {clm2.shape}"
+        assert clm2.shape == clm1.shape, msg
 
-        cs_lm = (clm1 * clm2.conjugate()).real
+        cs_lm = clm1 * clm2.conjugate()
 
     if convention.lower() == 'energy':
         cs_lm *= 4.0 * np.pi
 
     # Compute spectrum as a function of spherical harmonic degree (wavenumber).
-    if integrate:
-        spectrum = numeric_tools.integrate_order(cs_lm, truncation)
-        spectrum_shape = tuple([truncation] + clm_shape)
-    else:
-        spectrum = cs_lm
-        spectrum_shape = tuple([nlm] + clm_shape)
+    cs_lm = np.moveaxis(cs_lm, axis, 0).reshape((nlm, -1))
+
+    spectrum = numeric_tools.integrate_order(cs_lm, truncation)
+    spectrum_shape = tuple([truncation] + clm_shape)
 
     return np.moveaxis(spectrum.reshape(spectrum_shape), 0, axis)

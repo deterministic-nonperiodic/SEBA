@@ -146,7 +146,6 @@ if __name__ == '__main__':
         # Integrate fluxes in layers
         data = dataset_fluxes.integrate_range(coord_range=prange)
 
-        cad = data.cad.values
         pid = data.pi_dke.values
         pir = data.pi_rke.values
 

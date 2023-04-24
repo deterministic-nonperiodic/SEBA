@@ -5,11 +5,13 @@ import numpy as np
 import scipy.signal as sig
 import scipy.special as spec
 import shtns
+from _shtns import sht_idx
 from joblib import Parallel, delayed, cpu_count
+from scipy.linalg import inv
 from scipy.spatial import KDTree
 
 from fortran_libs import numeric_tools
-from spectral_analysis import lambda_from_deg, cross_spectrum
+from spectral_analysis import lambda_from_deg
 
 
 class Timer(object):
@@ -77,7 +79,7 @@ def prepare_data(data, dim_order):
     # pack sample dimension
     inter_shape = data.shape
 
-    data = data.reshape(inter_shape[:2] + (-1, inter_shape[-1]))  # .squeeze()
+    data = data.reshape(inter_shape[:2] + (-1, inter_shape[-1]))
 
     out_order = dim_order.replace('x', '')
     out_order = out_order.replace('y', '')
@@ -188,6 +190,29 @@ def getspecindx(ntrunc):
     return np.squeeze(index_m), np.squeeze(index_n)
 
 
+def _pack_levels(sbo, data, order='C'):
+    # pack dimensions of arrays (nlat, nlon, ...) to (nlat, nlon, samples)
+    data_length = len(data)
+    expected_length = [2, sbo.nlat, sbo.nlm]
+
+    if data_length not in expected_length:
+        raise ValueError(f"Inconsistent array shape: expecting "
+                         f"first dimension of size {sbo.nlat} or {sbo.nlm}.")
+
+    data_shape = np.shape(data)[:3 - expected_length.index(data_length)] + (-1,)
+
+    return np.reshape(data, data_shape, order=order).squeeze()
+
+
+def _unpack_levels(sbo, data, order='C'):
+    # unpack dimensions of arrays (nlat, nlon, samples)
+    if np.shape(data)[-1] == sbo.samples * sbo.nlevels:
+        data_shape = np.shape(data)[:-1] + (sbo.samples, sbo.nlevels)
+        return np.reshape(data, data_shape, order=order)
+    else:
+        return data
+
+
 def transform_io(func, order='C'):
     """
     Decorator for handling arrays' IO dimensions for calling SHTns' spectral functions.
@@ -209,16 +234,14 @@ def transform_io(func, order='C'):
     @functools.wraps(func)
     def dimension_packer(*args, **kwargs):
         # self passed as first argument
-        self, *_ = args
-        transformed_args = [self, ]
+        sbo, *_ = args
+        transformed_args = [sbo, ]
         for arg in args:
             if isinstance(arg, np.ndarray):
-                # fill masked arrays before spectral transforms (moved to 'spherical_harmonics')
-                # arg = np.ma.fix_invalid(arg).filled(fill_value=0.0)
-                transformed_args.append(self._pack_levels(arg, order=order))
+                transformed_args.append(_pack_levels(sbo, arg, order=order))
         results = func(*transformed_args, **kwargs)
         # convert output back to original shape
-        return self._unpack_levels(results, order=order)
+        return _unpack_levels(sbo, results, order=order)
 
     return dimension_packer
 
@@ -393,7 +416,7 @@ def cumulative_flux(spectra, axis=0):
     return np.moveaxis(spectra_flux, 0, axis)
 
 
-def kernel_2d(fc, n):
+def lanczos_kernel(fc, n):
     """ Generate a low-pass Lanczos kernel
         :param fc: float or  iterable [float, float],
             cutoff frequencies for each dimension (normalized by the sampling frequency)
@@ -424,7 +447,7 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
         jobs = min(cpu_count(), arr.shape[0])
 
     # compute lanczos 2D kernel for convolution
-    kernel = kernel_2d(cutoff_freq, window_size)
+    kernel = lanczos_kernel(cutoff_freq, window_size)
     kernel = np.expand_dims(kernel, 0)
 
     # padding array using circular boundary conditions along the longitudinal dimension
@@ -516,8 +539,10 @@ def interpolate_nn_2d(x, y, data, xi, yi, axes=None):
 
 def indices_to_3d(mask, size):
     """
-    Converts a 2D array mask[i, j] containing indices into a 3D mask with a new dimension of
-    length 'size' where all indices k < mask[i, j] along the new dimension are 0
+    Converts a 2D array mask[i, j] containing indices onto a 3D mask with a new dimension of
+    length 'size' where all indices k < mask[i, j] along the new dimension are 0 and 1 otherwise.
+    Used to mask terrain in 3D field from a 2D map (surface pressure) intersecting a 1D
+    coordinate (pressure profile).
     """
 
     shape = tuple(mask.shape) + (size,)
@@ -567,72 +592,69 @@ def surface_mask(p, ps, smooth=True, jobs=None):
     return beta.clip(0.0, 1.0)
 
 
-def mode_coupling_matrix(beta):
-    return beta
+def linear_scaler(data, feature_range=(0, 1)):
+    #
+    d_min, d_max = feature_range
+
+    scaled_data = (data - data.min()) * (d_max - d_min) / (data.max() - data.min())
+
+    return scaled_data + d_min
 
 
-def make_pure_tone_map(l, nlat, grid_type='regular'):
-    # Construct grid
-    lat, lon = create_grid(nlat, grid_type=grid_type)
-
-    # convert longitude and co-latitude to radians
-    lon, lat = np.deg2rad(np.meshgrid(lon, 90.0 - lat))
-
-    # Evaluate spherical harmonic at m = l
-    m = l
-    ylm = spec.sph_harm(m, l, lat, lon).real
-
-    power_spectrum = 1.0
-    # # scale power spectrum
-    # power_spectrum = np.zeros((l + 1) ** 2)
-    # power_spectrum[l ** 2 + l + m] = 1.0
-
-    # Generate map scaled by the power spectrum
-    return ylm * power_spectrum
-
-
-def compute_mode_coupling_matrix(mask, grid_type='gaussian', realizations=1):
+def compute_mode_coupling(mask, grid_type='gaussian', realizations=3):
     # Initialize the mode-coupling matrix
 
-    nlat = mask.shape[0]
-    nlon = 2 * nlat
+    nlat, nlon = mask.shape
 
     # infer lmax from mask size
     lmax = nlat - 1
-    coupling_matrix = np.zeros((lmax + 1, lmax + 1))
 
     # Create the grid
     if grid_type not in ['gaussian', 'regular']:
         raise ValueError('Invalid grid_type parameter. Choose between "gaussian" and "regular".')
 
-    # define spherical harmonics
+    # initialize spherical harmonics
     sht = shtns.sht(lmax, lmax, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
 
+    # set horizontal grid
     if grid_type == 'gaussian':
         sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
     else:
         sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
 
-    # Loop over all l values
-    for l in range(lmax + 1):
-        # Compute the spherical harmonics for this l value
-        masked_map = mask * make_pure_tone_map(l, nlat, grid_type=grid_type)
+    # initialize mode-coupling matrix
+    coupling = np.zeros((lmax + 1, lmax + 1))
 
-        Clm_sum = 0.0
+    for ln in range(lmax + 1):
+
+        # Initialize spherical harmonics coefficients
+        clm = np.zeros(sht.nlm, dtype=np.complex128)
+
+        # get spherical harmonic index and assign 1/2 (power spectrum equals 1)
+        lm_index = sht_idx(sht, ln, ln)
+        clm[lm_index] = 0.5
+
+        # generate a masked map with pure tone at degree ln
+        masked_map = mask * sht.synth(clm)
+
+        clm_sum = 0.0
         for i in range(realizations):
-            # Mask the map using the input mask
-            noise = np.random.choice([0, 1], size=masked_map.size, p=[0.5, 0.5])
+            # create white noise within range (0.65, 1.2)
+            noise = np.random.normal(0, 1, size=mask.size)
+            noise = linear_scaler(noise, feature_range=(0.75, 1.0))
 
-            # Add to the sum over all trial maps
-            Clm_sum += cross_spectrum(sht.analys(noise * masked_map))
+            # Compute observed spectra of masked noisy data
+            clm = sht.analys(masked_map * noise.reshape(mask.shape))
+            clm_sum += numeric_tools.cross_spectrum(clm, clm, lmax + 1)
 
-        # Compute the average power spectrum and store the Mlm values
-        coupling_matrix[l] = Clm_sum / realizations
+        # Compute the average power spectrum and store the M(m, l) values
+        coupling[ln] = np.squeeze(clm_sum) / realizations
 
-    # Compute the inverse of the mode-coupling matrix
-    # Minv = np.linalg.inv(coupling_matrix)
+    # Transpose to (l, m) and compute the inverse of the mode-coupling matrix.
+    # This step may fail if M is singular!
+    coupling = inv(coupling)
 
-    return coupling_matrix  # , Minv
+    return coupling
 
 
 def _select_by_distance(priority, distance):
@@ -742,14 +764,14 @@ def gradient_1d(scalar, x, axis=-1, order=6):
     if np.allclose(np.max(dx), np.min(dx), atol=1e-12):
         # Using high order schemes for regular grid, otherwise
         # using second-order accurate central finite differences
-        scalar = np.moveaxis(scalar, axis, -1)
+        scalar = np.moveaxis(scalar, axis, 0)
         scalar_shape = scalar.shape
 
-        scalar = scalar.reshape((-1, scalar_shape[-1]))
+        scalar = scalar.reshape((scalar_shape[0], -1))
         # compute gradient with a 6th-order compact finite difference scheme (Lele 1992),
         # and explicit 4th-order scheme at the boundaries.
         scalar_grad = numeric_tools.gradient(scalar, dx[0], order=order)
-        scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), -1, axis)
+        scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), 0, axis)
     else:
         # Using numpy implementation of second-order finite differences for irregular grids
         scalar_grad = np.gradient(scalar, x, axis=axis, edge_order=2)
@@ -854,7 +876,3 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
             var_interp = np.swapaxes(np.swapaxes(var_interp, 0, axis)[::-1], 0, axis)
 
         yield var_interp
-
-
-if __name__ == '__main__':
-    pass

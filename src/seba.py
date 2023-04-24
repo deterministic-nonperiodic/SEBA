@@ -205,6 +205,7 @@ class EnergyBudget:
         self.beta = (~self.mask).astype(float)
 
         # compute fraction of valid points at every level for Spectral Mode-Coupling Correction
+        # same as the power-spectrum of the mask integrated along spherical harmonic degree.
         self.beta_fraction = self.representative_mean(self.beta)
 
         # ------------------------------------------------------------------------------------------
@@ -311,7 +312,7 @@ class EnergyBudget:
         kinetic_energy = self.add_field(kinetic_energy, 'vke',
                                         gridtype='spectral', units='m**2 s**-2',
                                         standard_name='vertical_kinetic_energy',
-                                        long_name='vertical kinetic energy per unit mass')
+                                        long_name='vertical kinetic energy')
         return kinetic_energy
 
     def available_potential_energy(self):
@@ -323,7 +324,7 @@ class EnergyBudget:
         potential_energy = self.add_field(potential_energy, 'ape',
                                           gridtype='spectral', units='m**2 s**-2',
                                           standard_name='available_potential_energy',
-                                          long_name='available potential energy per unit mass')
+                                          long_name='available potential energy')
         return potential_energy
 
     def energy_diagnostics(self):
@@ -1085,9 +1086,10 @@ class EnergyBudget:
         if clm2 is None:
             spectrum = clm1 * clm1.conjugate()
         else:
-            assert clm2.shape == clm1.shape, \
-                "Arrays 'clm1' and 'clm2' of spectral coefficients must have the same shape. " \
-                "Expected 'clm2' shape: {} got: {}".format(clm1.shape, clm2.shape)
+            msg = f"Arrays 'clm1' and 'clm2' of spectral coefficients must have the same shape. " \
+                  f"Expected 'clm2' shape: {clm1.shape} got: {clm2.shape}"
+
+            assert clm2.shape == clm1.shape, msg
 
             spectrum = clm1 * clm2.conjugate()
 
@@ -1097,30 +1099,6 @@ class EnergyBudget:
 
         # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
         return spectrum.real / self.beta_fraction
-
-    # Functions for preprocessing data:
-    def _pack_levels(self, data, order='C'):
-        # pack dimensions of arrays (nlat, nlon, ...) to (nlat, nlon, samples)
-        data_length = len(data)
-
-        if data_length == 2:
-            new_shape = np.shape(data)[:3]
-        elif data_length == self.nlat:
-            new_shape = np.shape(data)[:2]
-        elif data_length == self.nlm:
-            new_shape = np.shape(data)[:1]
-        else:
-            raise ValueError("Inconsistent array shape: expecting "
-                             "first dimension of size {} or {}.".format(self.nlat, self.nlm))
-        return np.reshape(data, new_shape + (-1,), order=order).squeeze()
-
-    def _unpack_levels(self, data, order='C'):
-        # unpack dimensions of arrays (nlat, nlon, samples)
-        if np.shape(data)[-1] == self.samples * self.nlevels:
-            new_shape = np.shape(data)[:-1] + (self.samples, self.nlevels)
-            return np.reshape(data, new_shape, order=order)
-        else:
-            return data
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean and perturbations.
