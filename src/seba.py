@@ -8,12 +8,12 @@ import constants as cn
 from fortran_libs import numeric_tools
 from io_tools import parse_dataset, SebaDataset
 from kinematics import coriolis_parameter
-from spectral_analysis import triangular_truncation, kappa_from_deg
+from spectral_analysis import kappa_from_deg
 from spherical_harmonics import Spharmt
 from thermodynamics import exner_function, potential_temperature
 from thermodynamics import stability_parameter, vertical_velocity
-from tools import inspect_gridtype, prepare_data  # , recover_data, recover_spectra
-from tools import rotate_vector, broadcast_1dto, gradient_1d, transform_io
+from tools import inspect_gridtype, prepare_data, transform_io
+from tools import rotate_vector, broadcast_1dto, gradient_1d
 
 # declare global read-only variables
 _private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
@@ -155,13 +155,14 @@ class EnergyBudget:
         # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
         self.nlm = self.sphere.nlm
 
-        # get spherical harmonic degree and horizontal wavenumber (rad / meter)
-        self.degrees = np.arange(self.truncation + 1, dtype=int)
-        self.kappa_h = kappa_from_deg(self.degrees)
+        # horizontal wavenumber (rad / meter)
+        self.kappa_h = kappa_from_deg(np.arange(self.truncation + 1, dtype=int))
 
-        # normalization factor for vector analysis n * (n + 1) / re ** 2
-        sp_shape = (self.truncation + 1, self.samples, self.nlevels)
-        self.norm = broadcast_1dto(self.kappa_h ** 2, sp_shape).clip(cn.epsilon, None)
+        # Compute scale factor for vector spectra: l (l + 1) / Re ** 2
+        _, ls = numeric_tools.getspecindx(self.truncation)
+        norm = ls * (ls - 1) / cn.earth_radius ** 2
+
+        self.norm = broadcast_1dto(norm, (self.nlm, self.samples, self.nlevels))
 
         # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as xarray objects
@@ -249,11 +250,14 @@ class EnergyBudget:
 
         if gridtype == 'spectral':
             coords = self.sp_coords
-            # data = recover_spectra(data, self.data_info)
             dims = ['kappa', 'time', 'level']
+
+            # Accumulate along spherical harmonic order (m) and return
+            # spectrum as a function of spherical harmonic degree (l)
+            if data.shape[0] == self.nlm:
+                data = self.accumulate_order(data)
         else:
             coords = self.gp_coords
-            # data = recover_data(data, self.data_info)
             dims = ['latitude', 'longitude', 'time', 'level']
 
         # create xarray.DataArray... dimensions are sorted according to dims
@@ -1049,20 +1053,21 @@ class EnergyBudget:
         if hasattr(self, 'truncation'):
             truncation = self.truncation + 1
         else:
-            truncation = triangular_truncation(nml_shape) + 1
+            truncation = numeric_tools.truncation(nml_shape)
 
         # reshape coefficients for consistency with fortran routine
         cs_lm = np.moveaxis(cs_lm, axis, 0).reshape((nml_shape, -1))
 
         # Compute spectrum as a function of spherical harmonic degree (total wavenumber).
-        spectrum = numeric_tools.integrate_order(cs_lm, truncation)
+        spectrum = numeric_tools.accumulate_order(cs_lm, truncation)
 
         # back to original shape
         spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)
 
-        return spectrum
+        # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
+        return spectrum.real / self.beta_fraction
 
-    def cross_spectrum(self, clm1, clm2=None, accumulate=True):
+    def cross_spectrum(self, clm1, clm2=None, accumulate=False):
         """Returns the cross-spectrum of the spherical harmonic coefficients as a
         function of spherical harmonic degree.
 
@@ -1097,8 +1102,7 @@ class EnergyBudget:
         if accumulate:
             spectrum = self.accumulate_order(spectrum)
 
-        # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
-        return spectrum.real / self.beta_fraction
+        return spectrum
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean and perturbations.

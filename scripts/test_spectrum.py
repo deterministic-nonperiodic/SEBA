@@ -85,21 +85,21 @@ if __name__ == '__main__':
             # of the vectors' cross-spectrum along all spherical harmonic degrees.
             data_sqd = np.sum(data ** 2, axis=0)
             data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
-            data_sp = np.nansum(budget._vector_spectra(data), axis=0).mean(0)
+            data_sp = budget.accumulate_order(budget._vector_spectra(data))
         else:
             data_sqd = data ** 2
             data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
-            data_sp = np.nansum(budget._scalar_spectra(data), axis=0).mean(0)
+            data_sp = budget.accumulate_order(budget._scalar_spectra(data))
 
-        # data_sp_corrected = data_sp / f_sky
+        # sum over all spherical harmonic degrees
+        data_sp = np.nansum(data_sp, axis=0).mean(0)
 
+        # plot vertical profiles of reconstructed mean
         lines = ax.plot(data_gs.T, pressure, '-b',
-                        data_sp.T, pressure, '-.k',
-                        lw=2.5)
+                        data_sp.T, pressure, '-.k', lw=2.5)
         labels = [
             'global mean',
             'recovered',
-            # 'masked corrected'
         ]
         ax.legend(lines, labels, title=vars_info[variable][1], loc='best')
         ax.set_ylim(1020, 20)

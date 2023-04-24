@@ -123,7 +123,7 @@ def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0):
     # Compute spectrum as a function of spherical harmonic degree (wavenumber).
     cs_lm = np.moveaxis(cs_lm, axis, 0).reshape((nlm, -1))
 
-    spectrum = numeric_tools.integrate_order(cs_lm, truncation)
+    spectrum = numeric_tools.accumulate_order(cs_lm, truncation)
     spectrum_shape = tuple([truncation] + clm_shape)
 
     return np.moveaxis(spectrum.reshape(spectrum_shape), 0, axis)

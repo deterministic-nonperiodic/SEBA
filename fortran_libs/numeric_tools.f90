@@ -43,6 +43,20 @@ end subroutine model_message
 !===================================================================================================
 
 !===================================================================================================
+integer function truncation(nspc)
+
+    ! This function computes the triangular truncation given the number of spectral coefficients
+    implicit none
+    integer, intent(in) :: nspc
+
+    ! compute triangular truncation
+    truncation = int(-1.5 + 0.5 * sqrt(9. - 8. * (1. - float(nspc)))) + 1
+
+    return
+end function truncation
+!===================================================================================================
+
+!===================================================================================================
 subroutine getspecindx(index_mn, ntrunc)
 
     ! This subroutine returns the spectral indices corresponding
@@ -70,19 +84,19 @@ end subroutine getspecindx
 !===================================================================================================
 
 !===================================================================================================
-subroutine onedtotwod(spec_2d, spec_1d, nlat, nmdim, nt)
+subroutine onedtotwod(spec_2d, spec_1d, nlat, nspc, nt)
 
     implicit none
     ! input-output parameters
-    integer, intent(in) :: nlat, nmdim, nt
-    double complex, intent(in) :: spec_1d(nmdim, nt)
+    integer, intent(in) :: nlat, nspc, nt
+    double complex, intent(in) :: spec_1d(nspc, nt)
     double complex, intent(out) :: spec_2d(nlat, nlat, nt)
     ! local variables
-    integer :: nmstrt, ntrunc
+    integer :: nmstrt, ntrunc, truncation
     integer :: n, m, mn
 
     ! compute triangular truncation
-    ntrunc = int(-1.5 + 0.5 * sqrt(9. - 8. * (1. - float(nmdim)))) + 1
+    ntrunc = truncation(nspc)
 
     ! check number of coefficients (ntrunc <= nlat - 1)
     if (ntrunc > nlat) then
@@ -139,19 +153,19 @@ end subroutine twodtooned
 !===================================================================================================
 
 !===================================================================================================
-subroutine integrate_order(spectrum, cs_lm, ntrunc, nsp, ns)
+subroutine accumulate_order(spectrum, cs_lm, ntrunc, nspc, ns)
     ! input-output parameters
     implicit none
 
-    integer, intent(in) :: ntrunc, nsp, ns
-    double complex, intent(in) :: cs_lm     (nsp, ns)
+    integer, intent(in) :: ntrunc, nspc, ns
+    double complex, intent(in) :: cs_lm     (nspc, ns)
     double precision, intent(out) :: spectrum  (ntrunc, ns)
     ! lcal variables
     double complex :: scaled_cs (ntrunc, ntrunc, ns)
     integer :: ln
 
     ! Reshape the spectral coefficients to matrix form (2, ntrunc, ntrunc, ...)
-    call onedtotwod(scaled_cs, cs_lm, ntrunc, nsp, ns)
+    call onedtotwod(scaled_cs, cs_lm, ntrunc, nspc, ns)
 
     ! Scale non-symmetric coefficients (ms != 1) by two
     scaled_cs(2:ntrunc, :, :) = 2.0 * scaled_cs(2:ntrunc, :, :)
@@ -165,29 +179,29 @@ subroutine integrate_order(spectrum, cs_lm, ntrunc, nsp, ns)
     enddo
 
     return
-end subroutine integrate_order
+end subroutine accumulate_order
 !===================================================================================================
 
 !===================================================================================================
-subroutine cross_spectrum(spectrum, clm_1, clm_2, ntrunc, nsp, ns)
+subroutine cross_spectrum(spectrum, clm_1, clm_2, ntrunc, nspc, ns)
 
     implicit none
 
     ! input-output parameters
-    integer, intent(in) :: ntrunc, nsp, ns
+    integer, intent(in) :: ntrunc, nspc, ns
 
-    double complex, intent(in) :: clm_1(nsp, ns)
-    double complex, intent(in) :: clm_2(nsp, ns)
+    double complex, intent(in) :: clm_1(nspc, ns)
+    double complex, intent(in) :: clm_2(nspc, ns)
     double precision, intent(out) :: spectrum(ntrunc, ns)
 
     ! lcal variables
-    double complex :: clm_cs   (nsp, ns)
+    double complex :: clm_cs   (nspc, ns)
 
     ! Compute cross spectrum in (m, l) space
     clm_cs = clm_1 * conjg(clm_2)
 
     ! Compute spectrum as a function of total wavenumber: SUM Cml(m <= l).
-    call integrate_order(spectrum, clm_cs, ntrunc, nsp, ns)
+    call accumulate_order(spectrum, clm_cs, ntrunc, nspc, ns)
 
     return
 end subroutine cross_spectrum
