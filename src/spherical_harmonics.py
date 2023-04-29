@@ -10,8 +10,8 @@ _private_vars = ['nlon', 'nlat', 'gridtype', 'rsphere']
 
 class Spharmt(object):
     """
-         wrapper class for commonly used spectral transform operations in
-         atmospheric models.  Provides an interface to shtns compatible
+         wrapper class for commonly used spectral transform operators in
+         atmospheric models. Provides an interface to shtns compatible
          with pyspharm.
     """
 
@@ -33,7 +33,7 @@ class Spharmt(object):
         else:
             del self.__dict__[key]
 
-    def __init__(self, nlon, nlat, rsphere=earth_radius,
+    def __init__(self, nlat, nlon, rsphere=earth_radius,
                  gridtype='gaussian', ntrunc=None, jobs=None):
         """initialize
            nlon:  number of longitudes
@@ -92,7 +92,9 @@ class Spharmt(object):
         self.kappa_sq = - self.degree * (self.degree + 1.0).astype(complex) / self.rsphere
 
     def _map(self, func, *args):
-        """Wrapper function for running _shtns functions along sample dimension"""
+        """ Wrapper function for running _shtns functions along sample dimension. This function
+            also handles input arguments in both spectral and grid-point space.
+        """
 
         # Compact args to a single array (input arrays must be broadcastable)
         # Infer mask when passing masked arrays and fill with zeros preserving dtype.

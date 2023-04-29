@@ -622,7 +622,7 @@ def compute_mode_coupling(mask, grid_type='gaussian', realizations=3):
     else:
         sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
 
-    # initialize mode-coupling matrix
+    # initialize mode-coupling matrix (m,l)
     coupling = np.zeros((lmax + 1, lmax + 1))
 
     for ln in range(lmax + 1):

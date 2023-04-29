@@ -1,3 +1,5 @@
+    Description
+    -----------
     A collection of tools to compute the Spectral Energy Budget of a dry hydrostatic
     Atmosphere (SEBA). This package is developed for application to global numerical
     simulations of General Circulation Models (GCMs). SEBA is implemented based on the

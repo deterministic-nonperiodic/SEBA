@@ -19,24 +19,21 @@ def _process_model(model, resolution, date_time):
     date_time_op = date_time_op.replace("?", "")
     suffix = "_".join([resolution, date_time_op])
 
-    file_names = DATA_PATH + '{}_atm_3d_inst_{}_gps_{}.nc'
-    dataset_dyn = file_names.format(model, resolution, date_time)
+    file_names = DATA_PATH + f'{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc'
 
-    file_name = '{}_atm_3d_tend_{}_gps_{}.nc'.format(model, resolution, date_time)
+    file_name = f'{model}_atm_3d_tend_{resolution}_gps_{date_time}.nc'
     dataset_tnd = xr.open_mfdataset(DATA_PATH + file_name)
-    # load earth topography and surface pressure
-    dset_sfc = xr.open_dataset(DATA_PATH + 'DYAMOND2_topography_{}.nc'.format(resolution))
 
     sfc_file = DATA_PATH + '{}_sfcp_{}_{}.nc'.format(model, date_time, resolution)
     if os.path.exists(sfc_file):
-        dset_sfc = dset_sfc.update(xr.open_dataset(sfc_file))
+        dset_sfc = xr.open_dataset(sfc_file)
+        sfcp = dset_sfc.get('pres_sfc')
     else:
         print("No surface pressure file found!")
-
-    sfcp = dset_sfc.get('pres_sfc')
+        sfcp = None
 
     # Create energy budget object
-    budget = EnergyBudget(dataset_dyn, ps=sfcp, jobs=1)
+    budget = EnergyBudget(file_names, ps=sfcp, jobs=1)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
@@ -44,7 +41,7 @@ def _process_model(model, resolution, date_time):
     # - Nonlinear energy transfers for DKE and RKE
     # - Energy conversion terms APE --> DKE and DKE --> RKE
     # - Vertical pressure and turbulent fluxes
-    fluxes = budget.nonlinear_energy_fluxes()
+    fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa')
 
     # Compute spectral energy diagnostics
     fluxes['rke'], fluxes['dke'], fluxes['hke'] = budget.horizontal_kinetic_energy()

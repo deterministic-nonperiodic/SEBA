@@ -95,20 +95,15 @@ subroutine onedtotwod(spec_2d, spec_1d, nlat, nspc, nt)
     integer :: nmstrt, ntrunc, truncation
     integer :: n, m, mn
 
-    ! compute triangular truncation
+    ! compute triangular truncation. If nlat < ntrunc, then the coefficients are truncated
     ntrunc = truncation(nspc)
-
-    ! check number of coefficients (ntrunc <= nlat - 1)
-    if (ntrunc > nlat) then
-        call model_error("Bad number of coefficients: truncation > nlat - 1")
-    end if
 
     ! initialize coefficients. If ntrunc < nlat - 1 the coefficients are filled with zeros
     spec_2d = 0.0
 
     nmstrt = 0
-    do m = 1, ntrunc
-        do n = m, ntrunc
+    do m = 1, nlat
+        do n = m, nlat
             mn = nmstrt + n - m + 1
             spec_2d(m, n, :) = spec_1d(mn, :)
         enddo

@@ -2,14 +2,17 @@ import os
 import warnings
 from functools import reduce
 
+import cartopy.crs as ccrs
 import colorcet
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import scipy.stats as stats
+import xarray as xr
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.colors import SymLogNorm
 from matplotlib.offsetbox import AnchoredText
-from matplotlib.ticker import ScalarFormatter
+from matplotlib.ticker import ScalarFormatter, FixedLocator
 from scipy.ndimage.filters import gaussian_filter
 from sklearn.preprocessing import MinMaxScaler
 
@@ -135,6 +138,237 @@ DATA_KEYMAP = {
     'dke_dl_vf': r'$\partial_{\kappa}(\partial_{p}F_{D\uparrow})$',
     'dcdr_dl': r'$\partial_{\kappa} C_{D \rightarrow R}$',
 }
+
+map_layers = ['BlueMarble_NextGeneration', 'VIIRS_CityLights_2012',
+              'Reference_Features', 'Sea_Surface_Temp_Blended', 'MODIS_Terra_Aerosol',
+              'Coastlines', 'BlueMarble_ShadedRelief', 'BlueMarble_ShadedRelief_Bathymetry']
+
+crs = ccrs.PlateCarree()
+
+locations = {
+    'southpole': (-90, 140.7),
+    'northpole': (90, -57),
+    'northincl': (65, -75.),
+    'goes': (10, -65.),
+}
+
+name_conv_models = {
+    'nwp2.5': 'icon 2.5 km',
+    'ifs4': 'ifs 4 km',
+    'geos3': 'geos 3 km',
+    'nicam3': 'nicam 3 km',
+}
+
+comp_names = {
+    'RO': 'ROS',
+    'IG': 'IGW'
+}
+
+
+def wind_speed(u, v):
+    return np.sqrt(u * u + v * v)
+
+
+def normalize(x, min_x=-1, max_x=1):
+    return min_x + (max_x - min_x) * (x - np.nanmin(x)) / x.ptp()
+
+
+def global_map(lon, lat, data, wind=None, titles=None, data_name='', time_str='', units='',
+               data_range=None,
+               cmap='viridis', central_proj=None, gridtype='regular'):
+    shape = np.shape(data)
+
+    if titles is None:
+        titles = shape[0] * ['']
+
+    if central_proj is None:
+        central_proj = (90, 10.0)
+
+    # Geostationary extent
+    central_lat, central_lon = central_proj  # 45
+
+    semi_major = 6378137.0
+    semi_minor = 6356752.31414
+
+    globe = ccrs.Globe(semimajor_axis=semi_major,
+                       semiminor_axis=semi_minor,
+                       flattening=1.0e-30)
+
+    projection = ccrs.Orthographic(central_longitude=central_lon,
+                                   central_latitude=central_lat,
+                                   globe=globe)
+
+    crs_map = ccrs.PlateCarree(central_longitude=180, globe=globe)
+    crs_wind = ccrs.RotatedPole(pole_latitude=90, pole_longitude=180)
+
+    # 0.6 * 15. / 0.75
+    fig = plt.figure(figsize=(10.2, 6.), constrained_layout=True)
+
+    if data_range is None:
+        data_range = {key: np.percentile(value, [1., 99.])
+                      for key, value in data.items()}
+
+    # -------------------------------------------------------------------------
+    # Using the Orthographic projection centered at the poles
+    # -------------------------------------------------------------------------
+    indicator = 'abcdefghijklmn'
+    for i, (component, var) in enumerate(data.items()):
+
+        ax_id = int('1' + str(len(data)) + str(i + 1))
+
+        ax = fig.add_subplot(ax_id, projection=projection)
+
+        at = AnchoredText(comp_names[component], prop=dict(size=15),
+                          frameon=False, loc='upper left', borderpad=1.)
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        ax.add_artist(at)
+
+        at = AnchoredText("({})".format(indicator[i]), prop=dict(size=16),
+                          frameon=False, loc='upper right', borderpad=1.)
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        ax.add_artist(at)
+
+        gl = ax.gridlines(ccrs.PlateCarree(),
+                          draw_labels=False,
+                          linestyle="--", linewidth=0.2,
+                          color='gray', zorder=2)
+        # Manipulate latitude and longitude grid-line numbers and spacing
+        gl.ylocator = FixedLocator(np.arange(-90, 90, 30))
+        gl.xlocator = FixedLocator(np.arange(-180, 180, 30))
+
+        # Plot the image
+        if gridtype == 'irregular':
+
+            img = ax.tricontourf(lon, lat, var, levels=14, alpha=0.9,
+                                 vmin=data_range[component][0], vmax=data_range[component][1],
+                                 transform=crs_map, interpolation='bilinear', cmap=cmap)
+
+        else:
+
+            img = ax.imshow(var, vmin=data_range[component][0], vmax=data_range[component][1],
+                            transform=crs_map, interpolation='bilinear',
+                            origin='upper', cmap=cmap, alpha=0.9)
+
+        cb = plt.colorbar(img, ax=ax, orientation='horizontal',
+                          aspect=10, pad=0.015, fraction=0.15, shrink=0.75)
+        cb.ax.tick_params(labelsize=9)
+        cb.ax.set_title(data_name + ' ' + units, fontsize=12)
+
+        # add streamplot of wind vector
+        if component == 'RO' and (wind is not None):
+            u, v = wind[component]
+            ax.streamplot(lon, lat, u, v, linewidth=0.28, arrowsize=0.6,
+                          density=2.25, color='w', transform=crs_wind)
+
+        # Add coastlines, borders and gridlines
+        ax.coastlines(resolution='50m', color='k', linewidth=0.25, alpha=0.6)
+
+        ax_title = ' '.join([titles, 4 * ' ', time_str, 'UTC'])
+        at = AnchoredText(ax_title, prop=dict(size=14),
+                          frameon=False, loc='upper center', borderpad=-2.)
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        ax.add_artist(at)
+
+    plt.show()
+    return fig
+
+
+def generate_global_maps(model,
+                         variable=None, components=None, level=None, skip=1,
+                         location='southpole', time_range=None):
+    if time_range is None:
+        time_range = [None, ]
+
+    if variable is None:
+        variable = 'wind'
+
+    if components is None:
+        components = ['RO', 'IG']
+
+    variable_names = {
+        'wind': 'Horizontal wind speed',
+        'ua': 'Zonal wind',
+        'va': 'Meridional wind',
+        'wa': 'Vertical velocity',
+        'ta': 'Temperature'
+    }
+    variable_units = {'wind': r'(m/s)', 'ua': r'(m/s)', 'va': r'(m/s)',
+                      'wa': r'($\times 10^{-2}$ m/s)', 'ta': r'(K)'}
+
+    fig_title = '{}  {} km'.format(model, int(level))
+
+    time_id = slice(None)
+
+    model_data = {}
+    model_wind = {}
+    timestamps = {}
+    coordinates = {}
+    for component in components:
+
+        print('Retrieving data from ', component)
+
+        base_path = '/media/yanm/Data/DYAMOND/data/'
+        file_names = os.path.join(base_path, '{}_{}_wind_202002*_n256.nc'.format(model, component))
+
+        model_dataset = xr.open_mfdataset(file_names)
+        model_dataset = model_dataset.sel(time=slice(*time_range))
+
+        # Create a list with timestamps
+        timestamps[component] = [
+            pd.to_datetime(str(date_time)).strftime("%Y-%m-%d %H:%M")
+            for date_time in model_dataset.time.values[time_id]
+        ]
+
+        lat = model_dataset['lat'].values
+        lon = model_dataset['lon'].values
+        height = 1.0e-3 * model_dataset['height'].values
+
+        coordinates[component] = (lat, lon, height)
+
+        level_id = np.argmin(abs(height - level))
+        dims = (time_id, slice(level_id, level_id + 1)) + 2 * (slice(None, None, skip),)
+
+        u = model_dataset['ua'].values[dims]
+        v = model_dataset['va'].values[dims]
+
+        model_wind[component] = np.stack([u, v])
+
+        # create dataset
+        if variable == 'wind':
+            model_data[component] = wind_speed(u, v)
+        elif variable in ['ua', 'va', 'wa']:
+            model_data[component] = model_dataset[variable].values[dims]
+            if variable == 'wa':
+                model_data[component] *= 1e2
+        else:
+            raise ValueError('Wrong variable name')
+
+    if variable == 'wind':
+        colormap = BWG  # 'rainbow' # CET_L20
+    elif variable in ['ua', 'va', 'wa']:
+        colormap = BWG
+    else:
+        colormap = parula
+
+    data_range = {key: np.percentile(value, [1., 99.]) for key, value in model_data.items()}
+
+    # Create maps
+    for i, timestamp in enumerate(timestamps['IG']):
+        wind = {'RO': model_wind['RO'][:, i].squeeze()}
+        data = {c: model_data[c][i].squeeze() for c in components}
+
+        lat, lon, height = coordinates['IG']
+
+        fig = global_map(lon, lat, data, wind=wind, data_range=data_range,
+                         titles=fig_title, data_name=variable_names[variable],
+                         units=variable_units[variable],
+                         time_str=timestamp, cmap=colormap,
+                         central_proj=locations[location])
+
+        fig.savefig(
+            'figures/animation/{}_{}_{}km_{}_comparison_{:04d}.pdf'.format(
+                model, variable, int(level), timestamp.split(' ')[0], i + 45), dpi=300)
+        plt.close(fig)
 
 
 def find_symlog_params(data):

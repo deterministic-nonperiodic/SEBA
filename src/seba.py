@@ -121,12 +121,11 @@ class EnergyBudget:
         """
 
         # Parsing input dataset to search for required analysis fields.
-        data = parse_dataset(dataset, variables=variables,
-                             surface_data={'ps': ps, 'ts': None},
+        data = parse_dataset(dataset, variables=variables, surface_data={'ps': ps, 'ts': None},
                              p_levels=p_levels)
 
         # Get the size of every dimension. The analysis is performed over 3D slices of data
-        # (lat, lon, pressure) by simply iterating over the sample axis.
+        # (lat, lon, pressure) by simply iterating over the temporal axis.
         self.nlat = data.latitude.size
         self.nlon = data.longitude.size
         self.nlevels = data.pressure.size
@@ -148,29 +147,28 @@ class EnergyBudget:
                 raise ValueError(f'Truncation must be between 0 and {self.nlat - 1}')
 
         # Create sphere object for spectral transforms
-        self.sphere = Spharmt(self.nlon, self.nlat,
+        self.sphere = Spharmt(self.nlat, self.nlon,
                               gridtype=self.gridtype, rsphere=rsphere,
                               ntrunc=self.truncation, jobs=jobs)
 
-        # number of spectral coefficients: (truncation + 1) * (truncation + 2) / 2
+        # Compute scale factor for vector spectra: l (l + 1) / Re ** 2 = kappa ** -2
         self.nlm = self.sphere.nlm
 
-        # horizontal wavenumber (rad / meter)
-        self.kappa_h = kappa_from_deg(np.arange(self.truncation + 1, dtype=int))
-
-        # Compute scale factor for vector spectra: l (l + 1) / Re ** 2
-        _, ls = numeric_tools.getspecindx(self.truncation)
-        norm = ls * (ls - 1) / cn.earth_radius ** 2
+        ls = self.sphere.degree.astype(int)
+        norm = np.where(ls == 0, 1, ls * (ls + 1) / cn.earth_radius ** 2)
 
         self.norm = broadcast_1dto(norm, (self.nlm, self.samples, self.nlevels))
 
-        # Create dictionary with axis/coordinate pairs (ensure dimension order is preserved)
-        # These coordinates are used to export data as xarray objects
+        # Create dictionary with name/coordinate pairs (ensure dimension order is preserved)
+        # These coordinates are used to export data as SebaDataset
         self.gp_coords = data.coordinates_by_names()
 
-        # create horizontal wavenumber coordinates for spectral quantities.
+        # Create coordinates for spectral quantities.
         self.sp_coords = {name: coord for name, coord in self.gp_coords.items()
                           if name not in ['latitude', 'longitude']}
+
+        # compute horizontal wavenumber (rad / meter)
+        self.kappa_h = kappa_from_deg(np.arange(self.truncation + 1, dtype=int))
 
         self.sp_coords['kappa'] = xr.Coordinate('kappa', self.kappa_h,
                                                 attrs={'standard_name': 'wavenumber',
@@ -178,7 +176,7 @@ class EnergyBudget:
                                                        'axis': 'X', 'units': 'm**-1'})
 
         # ------------------------------------------------------------------------------------------
-        # Initialize dynamic fields
+        # Initialize dynamic fields for the analysis
         # ------------------------------------------------------------------------------------------
         self.pressure = data.pressure.values
 
@@ -189,8 +187,7 @@ class EnergyBudget:
         self.phi = data.get_field('geopotential')
 
         # create wind array from masked wind components (preserving mask)
-        self.wind = np.ma.stack((data.get_field('u_wind'),
-                                 data.get_field('v_wind')))
+        self.wind = np.ma.stack((data.get_field('u_wind'), data.get_field('v_wind')))
 
         # compute thermodynamic quantities from masked temperature
         self.temperature = data.get_field('temperature')
@@ -202,12 +199,15 @@ class EnergyBudget:
         # define data mask once for consistency
         self.mask = self.omega.mask
 
-        # logical AND reduction along the time axis (once masked always masked)
+        # binary array with 0 for points below the surface and 1 otherwise.
         self.beta = (~self.mask).astype(float)
 
-        # compute fraction of valid points at every level for Spectral Mode-Coupling Correction
-        # same as the power-spectrum of the mask integrated along spherical harmonic degree.
-        self.beta_fraction = self.representative_mean(self.beta)
+        # Compute fraction of valid points at every level for Spectral Mode-Coupling Correction
+        # same as the power-spectrum of the mask integrated along spherical harmonic degree. This
+        # approximation is not accurate for big masked regions, the proper approach is to
+        # compute the inverse of the Mode-Coupling matrix for many realizations of masked
+        # power spectra (see Cooray et al. 2012), however this is computationally too expensive!
+        self.beta_correction = 1.0 / self.representative_mean(self.beta)
 
         # ------------------------------------------------------------------------------------------
         # Kinematics
@@ -740,8 +740,7 @@ class EnergyBudget:
         return self.vertical_gradient(self.ape_vertical_flux())
 
     def conversion_ape_dke(self):
-        # Conversion of Available Potential energy into kinetic energy
-        # Equivalent to Eq. 19 of A&L, but using potential temperature.
+        # Conversion of Available Potential energy into kinetic energy (Eq. 19 of A&L)
         alpha = cn.Rd * self.temperature / self.pressure
 
         return - self._scalar_spectra(self.omega, alpha)
@@ -821,16 +820,16 @@ class EnergyBudget:
     @transform_io
     def _inverse_transform(self, scalar_sp):
         """
-            Compute spherical harmonic coefficients of a scalar function on the sphere.
-            Wrapper around 'spectogrd' to process inputs and run in parallel.
+        Compute a scalar function on the sphere from spherical harmonic coefficients.
+        Wrapper around 'spectogrd' to process inputs and run in parallel.
         """
         return self.sphere.spectogrd(scalar_sp)
 
     @transform_io
     def _compute_rotdiv(self, vector):
         """
-        Compute the spectral coefficients of vorticity and horizontal
-        divergence of a vector field on the sphere.
+        Compute the spectral coefficients of vorticity and horizontal divergence
+        of a vector field on the sphere.
         """
         return self.sphere.getvrtdivspec(*vector)
 
@@ -839,9 +838,7 @@ class EnergyBudget:
         """
             Computes the streamfunction and potential of a vector field on the sphere.
         """
-        psi_chi = self.sphere.getpsichi(*vector)
-
-        return psi_chi
+        return self.sphere.getpsichi(*vector)
 
     @transform_io
     def horizontal_gradient(self, scalar):
@@ -1028,8 +1025,8 @@ class EnergyBudget:
         return np.ma.mean(scalar_average, axis=lat_axis)
 
     def accumulate_order(self, cs_lm, axis=0):
-        """Accumulates over spherical harmonic order and returns spectrum as a function of
-        spherical harmonic degree.
+        """Accumulates over spherical harmonic order and returns
+           spectrum as a function of spherical harmonic degree.
 
         Signature
         ---------
@@ -1065,7 +1062,7 @@ class EnergyBudget:
         spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)
 
         # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
-        return spectrum.real / self.beta_fraction
+        return spectrum.real * self.beta_correction
 
     def cross_spectrum(self, clm1, clm2=None, accumulate=False):
         """Returns the cross-spectrum of the spherical harmonic coefficients as a
@@ -1114,6 +1111,7 @@ class EnergyBudget:
 
     def _scalar_perturbation(self, scalar):
         # Compute scalar perturbations in spectral space
+        # This does not work very well with masked data...
         scalar_spc = self._spectral_transform(scalar)
 
         # set mean coefficient (ls=ms=0) to 0.0 and invert transformation

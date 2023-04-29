@@ -116,34 +116,24 @@ expected_range = {
 }
 
 # from Metpy
+# Create a pint UnitRegistry object
+UNITS_REG = pint.UnitRegistry()
+
+# from Metpy
 cmd = re.compile(r'(?<=[A-Za-z)])(?![A-Za-z)])(?<![0-9\-][eE])(?<![0-9\-])(?=[0-9\-])')
 
-# Create a pint UnitRegistry object
-reg = pint.UnitRegistry()
 
-
-def _parse_power_units(unit_str):
-    return cmd.sub('**', unit_str)
-
-
-def _parse_units():
-    return
+def _parse_units(unit_str):
+    return UNITS_REG(cmd.sub('**', unit_str))
 
 
 def equivalent_units(unit_1, unit_2):
-    unit_1 = reg.Unit(_parse_power_units(unit_1))
-    unit_2 = reg.Unit(_parse_power_units(unit_2))
-
-    ratio = (1 * unit_1 / (1 * unit_2)).to_base_units()
-
+    ratio = (_parse_units(unit_1) / _parse_units(unit_2)).to_base_units()
     return ratio.dimensionless and np.isclose(ratio.magnitude, 1.0)
 
 
 def compatible_units(unit_1, unit_2):
-    unit_1 = reg.Unit(_parse_power_units(unit_1))
-    unit_2 = reg.Unit(_parse_power_units(unit_2))
-
-    return unit_1.is_compatible_with(unit_2)
+    return _parse_units(unit_1).is_compatible_with(_parse_units(unit_2))
 
 
 class SebaDataset(Dataset):
@@ -216,9 +206,9 @@ class SebaDataset(Dataset):
             if var_units != expected_unit:
                 if compatible_units(var_units, expected_unit):
                     # Convert the values to the expected units
-                    fixed_units = reg(_parse_power_units(var_units))
-                    var.values = (var.values * fixed_units).to(
-                        _parse_power_units(expected_unit)).magnitude
+                    fixed_units = _parse_units(var_units)
+                    var.values = (var.values * fixed_units).to(_parse_units(
+                        expected_unit)).magnitude
 
                 else:
                     raise ValueError(f"Cannot convert {varname} units"
@@ -234,7 +224,7 @@ class SebaDataset(Dataset):
         return ds
 
     def get_field(self, name):
-        """ Returns a field in dataset after preprocessing to be used by seba.EnergyBudget:
+        """ Returns a field in dataset after processing to be used by seba.EnergyBudget:
             - Exclude extrapolated data below the surface (p >= ps).
             - Ensure latitude axis is oriented north-to-south.
             - Reverse vertical axis from the surface to the model top.
@@ -351,7 +341,7 @@ class SebaDataset(Dataset):
         # units conversion
         for name, units in var_units.items():
             if units:
-                converted_units = reg(_parse_power_units(units)) * reg(convert_units)
+                converted_units = _parse_units(units) * _parse_units(convert_units)
                 data[name].attrs['units'] = str(converted_units.units)
 
         return data

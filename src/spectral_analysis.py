@@ -86,8 +86,8 @@ def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0):
 
     Returns
     -------
-    array : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
-        contains the cross spectrum as a function of spherical harmonic degree (and order).
+    array : ndarray, shape (lmax + 1, ...)
+        contains the cross spectrum as a function of spherical harmonic degree.
     """
     if convention not in ['energy', 'power']:
         raise ValueError("Parameter 'convention' must be one of"
@@ -101,29 +101,25 @@ def cross_spectrum(clm1, clm2=None, lmax=None, convention='power', axis=0):
     clm_shape = list(clm1.shape)
     nlm = clm_shape.pop(axis)
 
-    if lmax is None:
-        # Get indexes of the triangular matrix with spectral coefficients
-        truncation = triangular_truncation(clm1.shape[0]) + 1
-    else:
-        truncation = lmax + 1
+    # flatten sample dimensions
+    clm1 = np.moveaxis(clm1, axis, 0).reshape((nlm, -1))
 
-    # Compute cross spectrum from spherical harmonic expansion coefficients
+    # Get indexes of the triangular matrix with spectral coefficients
+    truncation = numeric_tools.truncation(nlm)
+
+    if lmax is not None:
+        # If lmax is given make sure it is consistent with the number of clm coefficients
+        truncation = min(lmax + 1, truncation)
+
+    # Compute cross spectrum from spherical harmonic expansion coefficients as
+    # a function of spherical harmonic degree (total wavenumber)
     if clm2 is None:
-        cs_lm = clm1 * clm1.conjugate()
+        spectrum = numeric_tools.cross_spectrum(clm1, clm1, truncation)
     else:
-        msg = f"Arrays 'clm1' and 'clm2' of spectral coefficients must have the same shape. " \
-              f"Expected 'clm2' shape: {clm1.shape} got: {clm2.shape}"
-        assert clm2.shape == clm1.shape, msg
-
-        cs_lm = clm1 * clm2.conjugate()
+        clm2 = np.moveaxis(clm2, axis, 0).reshape((nlm, -1))
+        spectrum = numeric_tools.cross_spectrum(clm1, clm2, truncation)
 
     if convention.lower() == 'energy':
-        cs_lm *= 4.0 * np.pi
+        spectrum *= 4.0 * np.pi
 
-    # Compute spectrum as a function of spherical harmonic degree (wavenumber).
-    cs_lm = np.moveaxis(cs_lm, axis, 0).reshape((nlm, -1))
-
-    spectrum = numeric_tools.accumulate_order(cs_lm, truncation)
-    spectrum_shape = tuple([truncation] + clm_shape)
-
-    return np.moveaxis(spectrum.reshape(spectrum_shape), 0, axis)
+    return np.moveaxis(spectrum.reshape(tuple([truncation] + clm_shape)), 0, axis)
