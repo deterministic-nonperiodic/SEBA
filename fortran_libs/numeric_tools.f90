@@ -817,7 +817,6 @@ subroutine surface_temperature(sfct, sfcp, temp, pres, nt, ns, np)
 
     do i = 1, nt
         do j = 1, ns
-
             ! Index ks closest to the first level pierced by the surface [pres(ke) <= sfcp(j)]
             ! such that temperature is in a valid range [temp(i, j, ks) > safe_temp].
             mask = pack(temp(i, j, :) > safe_temp, .not.isnan(temp(i, j, :)))

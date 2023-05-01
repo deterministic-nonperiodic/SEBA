@@ -21,12 +21,12 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
 
     # Load dyamond dataset
-    model = 'IFS'
+    model = 'ICON'
     resolution = 'n512'
     data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[0]'
+    date_time = '20[012]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
     # # load earth topography and surface pressure
@@ -133,7 +133,7 @@ if __name__ == '__main__':
     layers = {
         # 'Stratosphere': [50e2, 250e2],
         'Free troposphere': [250e2, 500e2],
-        # 'Lower troposphere': [500e2, 950e2],
+        'Lower troposphere': [500e2, 850e2],
     }
 
     ke_limits = {
@@ -206,7 +206,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     layers = {
         'Free troposphere': [250e2, 500e2],
-        'Lower troposphere': [500e2, 950e2]
+        'Lower troposphere': [500e2, 850e2]
     }
 
     ke_limits = {'Free troposphere': [-0.6, 0.6], 'Lower troposphere': [-0.6, 0.6]}

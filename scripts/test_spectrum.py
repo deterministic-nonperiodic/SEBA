@@ -39,11 +39,11 @@ if __name__ == '__main__':
 
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n512'
+    resolution = 'n1024'
     data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[1]'
+    date_time = '20[0]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
     # # load earth topography and surface pressure

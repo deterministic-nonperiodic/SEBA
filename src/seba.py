@@ -1061,8 +1061,7 @@ class EnergyBudget:
         # back to original shape
         spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)
 
-        # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
-        return spectrum.real * self.beta_correction
+        return spectrum.real
 
     def cross_spectrum(self, clm1, clm2=None, accumulate=False):
         """Returns the cross-spectrum of the spherical harmonic coefficients as a
@@ -1099,7 +1098,8 @@ class EnergyBudget:
         if accumulate:
             spectrum = self.accumulate_order(spectrum)
 
-        return spectrum
+        # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
+        return spectrum * self.beta_correction
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean and perturbations.

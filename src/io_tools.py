@@ -223,6 +223,88 @@ class SebaDataset(Dataset):
 
         return ds
 
+    def add_surface_data(self, surface_data=None):
+
+        if surface_data is None:
+            surface_data = {'': None}
+
+        # spatial shape of variables in dataset
+        grid_shape = (self.latitude.size, self.longitude.size)
+
+        # Find surface data arrays and assign to dataset if given externally
+        for name in ['ts', 'ps']:
+
+            # silence error: these variables are flexible.
+            surface_var = self.find_variable(name, raise_notfound=False)
+
+            if surface_var is None and surface_data is not None:
+                print("Warning: surface variable {} not found!".format(name))
+
+                if name in surface_data and is_standard(surface_data[name], name):
+
+                    surface_var = surface_data[name]
+
+                    if isinstance(surface_var, DataArray):
+
+                        # inputs are DataArray
+                        if 'time' in surface_var.dims:
+                            surface_var = surface_var.mean('time')
+
+                        # Renaming spatial coordinates. Raise error if no coordinate
+                        # is consistent with latitude and longitude standards.
+                        surface_var = surface_var.rename(
+                            {_find_coordinate(surface_var, c).name: c
+                             for c in ("latitude", "longitude")})
+
+                        surface_var = surface_var.transpose('latitude', 'longitude')
+
+                        # check dimensions match (not much precision needed), interpolate otherwise
+                        if not (np.allclose(surface_var.latitude, self.latitude, atol=1e-4)
+                                and np.allclose(surface_var.longitude, self.longitude,
+                                                atol=1e-4)):
+                            surface_var = surface_var.interp(latitude=self.latitude,
+                                                             longitude=self.longitude)
+                        # convert to masked array
+                        surface_var = surface_var.to_masked_array()
+
+                    if isinstance(surface_var, np.ndarray):
+
+                        if surface_var.shape != grid_shape:
+                            raise ValueError(f'Given surface variable {name} must be a '
+                                             f'scalar or a 2D array with shape (nlat, nlon).'
+                                             f'Expected shape {grid_shape}, '
+                                             f'but got {np.shape(surface_var)}')
+
+                        # create DataArray and assign to dataset
+                        surface_var = DataArray(surface_var, name=name,
+                                                dims=("latitude", "longitude"))
+
+                    else:
+                        raise ValueError(f'Illegal type for surface variable {name}! '
+                                         f'If given it must be one of [xr.DataArray, np.ndarray].')
+
+                    self[name] = surface_var
+            else:
+                if 'time' in surface_var.dims:
+                    surface_var = surface_var.mean('time')
+
+                # Surface data must be exactly one dimension less than the total number of
+                # dimensions in dataset (Not sure if this is a good enough condition!?)
+                if not np.all([dim in surface_var.dims for dim in ("latitude", "longitude")]):
+                    raise ValueError(f"Variable {name} must have at least latitude "
+                                     f"and longitude dimensions.")
+
+                self[name] = self.check_convert_units(surface_var)
+
+        # If surface pressure is not found, it is approximated by the pressure
+        # level closest to the surface. This is a fallback option for unmasked terrain.
+        if 'ps' not in self and hasattr(self, 'pressure'):
+            sfcp = np.broadcast_to(np.max(self.pressure) + 1e2, grid_shape)
+            self['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
+            self['ps'].attrs['units'] = 'Pa'
+
+        return self
+
     def get_field(self, name):
         """ Returns a field in dataset after processing to be used by seba.EnergyBudget:
             - Exclude extrapolated data below the surface (p >= ps).
@@ -584,9 +666,6 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
         raise TypeError("Input parameter 'dataset' must be xarray.Dataset instance"
                         "or a string containing the path to a netcdf file.")
 
-    if surface_data is None:
-        surface_data = {'': None}
-
     # Define list of mandatory variables in dataset. Raise error if missing. Pressure vertical
     # velocity 'omega' is estimated from height-based vertical velocity if not present.
     default_variables = ['u_wind', 'v_wind', 'temperature', 'pressure']
@@ -608,8 +687,8 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
             merged_variables[var_name] = var_name
     variables = merged_variables
 
-    # Create a SebaDataset instance for convenience
-    dataset = SebaDataset(dataset)
+    # Create a SebaDataset instance for convenience (remove dask chunks)
+    dataset = SebaDataset(dataset).compute()
 
     # rename spatial coordinates to standard names: (level, latitude, longitude)
     map_dims = {dataset.find_coordinate(name).name: name
@@ -619,74 +698,23 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
     dataset.swap_dims({dataset.find_coordinate('time').name: 'time'})
 
     # find variables by name or candidates variables based on CF conventions
-    arrays = {name_map[0]: dataset.find_variable(name_map, raise_notfound=True)
-              for name_map in variables.items()}
+    data = {name_map[0]: dataset.find_variable(name_map, raise_notfound=True)
+            for name_map in variables.items()}
 
-    if len(arrays) != len(variables):
+    if len(data) != len(variables):
         raise ValueError("Missing variables!")
 
     # check dimensionality of variables
-    for name, values in arrays.items():
+    for name, values in data.items():
 
         # Make sure the shapes of the two components match.
         if (name != 'pressure') and values.ndim < 3:
-            raise ValueError('Fields must be at least 3D.'
-                             'Variable {} has {} dimensions'.format(name, values.ndim))
-
-    grid_shape = (dataset.latitude.size, dataset.longitude.size)
-
-    # Find surface data arrays and assign to dataset if given externally
-    for name in ['ts', 'ps']:
-
-        # silence error: these variables are flexible.
-        surface_var = dataset.find_variable(name, raise_notfound=False)
-
-        if surface_var is None and surface_data is not None:
-            print("Warning: surface variable {} not found!".format(name))
-
-            if name in surface_data and is_standard(surface_data[name], name):
-
-                surface_var = surface_data[name]
-
-                if isinstance(surface_var, DataArray):
-                    # inputs are DataArray
-                    if 'time' in surface_var.dims:
-                        surface_var = surface_var.mean('time')
-
-                    # Renaming spatial coordinates. Raise error if no coordinate
-                    # is consistent with latitude and longitude standards.
-                    surface_var = surface_var.rename(
-                        {_find_coordinate(surface_var, c).name: c
-                         for c in ("latitude", "longitude")})
-
-                elif isinstance(surface_var, np.ndarray):
-
-                    if surface_var.shape != grid_shape:
-                        raise ValueError(f'Given surface variable {name} must be a '
-                                         f'scalar or a 2D array with shape (nlat, nlon).'
-                                         f'Expected shape {grid_shape}, '
-                                         f'but got {np.shape(surface_var)}')
-                    surface_var = DataArray(surface_var, dims=("latitude", "longitude"))
-
-                else:
-                    raise ValueError(f'Illegal type for surface variable {name}!')
-
-                arrays[name] = surface_var
-        else:
-            if 'time' in surface_var.dims:
-                surface_var = surface_var.mean('time')
-
-            # Surface data must be exactly one dimension less than the total number of dimensions
-            # in dataset (Not sure if this is a good enough condition!?)
-            if not np.all([dim in surface_var.dims for dim in ("latitude", "longitude")]):
-                raise ValueError(f"Variable {name} must have at least latitude "
-                                 f"and longitude dimensions.")
-
-            arrays[name] = surface_var
+            raise ValueError(f'Fields must be at least 3D. '
+                             f'Variable {name} has {values.ndim} dimensions')
 
     # Create output dataset with required fields and check units consistency.
-    data = SebaDataset(arrays).check_convert_units()
-    del arrays
+    # Find surface data arrays and assign to dataset if given externally
+    data = SebaDataset(data).add_surface_data(surface_data=surface_data).check_convert_units()
 
     # Check for pressure velocity: If not present in dataset, it is estimated from
     # height-based vertical velocity using the hydrostatic approximation.
@@ -723,8 +751,6 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
     # pressure coordinates sorted from the surface up.
     if 'geopotential' not in data:
 
-        print("Computing geopotential from temperature ...")
-
         # reshape temperature to pass it to fortran subroutine
         target_dims = ('time', 'latitude', 'longitude', 'level')
         coord_order = [data.temperature.dims.index(dim) for dim in target_dims]
@@ -736,13 +762,6 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
         temperature = data.temperature.to_masked_array()
         temperature = np.transpose(temperature, axes=coord_order).reshape(proc_shape)
         temperature = np.ma.filled(temperature, fill_value=0.0)
-
-        # If surface pressure is not given it is approximated by the pressure level
-        # closest to the surface.
-        if 'ps' not in data:
-            sfcp = np.broadcast_to(np.max(data.pressure) + 1e2, grid_shape)
-            data['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
-            data['ps'].attrs['units'] = 'Pa'
 
         sfcp = data.ps.values.ravel()
 
@@ -760,10 +779,12 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
             # noinspection PyTypeChecker
             sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
 
+        print("Get surface elevation ...")
         # get surface elevation for the given grid. Using interpolated data
         # from global dataset if it does not exist already.
         sfch = get_surface_elevation(data.latitude, data.longitude).values.ravel()
 
+        print("Computing geopotential from temperature ...")
         # Compute geopotential from the temperature field: d(phi)/d(log p) = - Rd * T(p)
         phi = numeric_tools.geopotential(data.pressure.values, temperature, sfch, sfcp, sfct=sfct)
         phi = DataArray(phi.reshape(data_shape), dims=target_dims)
