@@ -16,8 +16,6 @@ from tools import inspect_gridtype, prepare_data, transform_io
 from tools import rotate_vector, broadcast_1dto, gradient_1d
 
 # declare global read-only variables
-_private_vars = ['nlon', 'nlat', 'nlevels', 'gridtype']
-
 _global_attrs = {'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
                  'institution': 'Max Planck Institute for Meteorology',
                  'title': 'Spectral Energy Budget of the Atmosphere',
@@ -56,32 +54,14 @@ class EnergyBudget:
         https://doi.org/10.1002/ggge.20071.
     """
 
-    def __setattr__(self, key, val):
-        """
-        Prevent modification of read-only instance variables.
-        """
-        if key in self.__dict__ and key in _private_vars:
-            raise AttributeError('Attempt to rebind read-only instance variable ' + key)
-        else:
-            self.__dict__[key] = val
-
-    def __delattr__(self, key):
-        """
-        Prevent deletion of read-only instance variables.
-        """
-        if key in self.__dict__ and key in _private_vars:
-            raise AttributeError('Attempt to unbind read-only instance variable ' + key)
-        else:
-            del self.__dict__[key]
-
     def __init__(self, dataset, variables=None, ps=None, p_levels=None,
-                 truncation=None, rsphere=None, jobs=None):
+                 truncation=None, rsphere=None):
         """
         Initializing class EnergyBudget.
 
         Signature
         ---------
-        energy_budget =  EnergyBudget(dataset, [ps, ghsl, truncation, rsphere, jobs])
+        energy_budget =  EnergyBudget(dataset, [ps, ghsl, truncation, rsphere])
 
         Parameters
         ----------
@@ -114,10 +94,6 @@ class EnergyBudget:
         :param p_levels: iterable, optional
             Contains the pressure levels in (Pa) for vertical interpolation.
             Ignored if the data is already in pressure coordinates.
-
-        :param jobs: integer, optional, default None
-            Number of processors to operate along non-spatial dimensions in parallel.
-            Recommended jobs=1 since spectral transforms are already efficiently parallelized.
         """
 
         # Parsing input dataset to search for required analysis fields.
@@ -147,16 +123,13 @@ class EnergyBudget:
                 raise ValueError(f'Truncation must be between 0 and {self.nlat - 1}')
 
         # Create sphere object for spectral transforms
-        self.sphere = Spharmt(self.nlat, self.nlon,
-                              gridtype=self.gridtype, rsphere=rsphere,
-                              ntrunc=self.truncation, jobs=jobs)
+        self.sphere = Spharmt(self.nlat, self.nlon, gridtype=self.gridtype,
+                              rsphere=rsphere, ntrunc=self.truncation)
 
         # Compute scale factor for vector spectra: l (l + 1) / Re ** 2 = kappa ** -2
         self.nlm = self.sphere.nlm
 
-        ls = self.sphere.degree.astype(int)
-        norm = np.where(ls == 0, 1, ls * (ls + 1) / cn.earth_radius ** 2)
-
+        norm = np.insert(-self.sphere.kappa_sq[1:] / self.sphere.rsphere, 0, 1.0)
         self.norm = broadcast_1dto(norm, (self.nlm, self.samples, self.nlevels))
 
         # Create dictionary with name/coordinate pairs (ensure dimension order is preserved)
@@ -212,8 +185,12 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Kinematics
         # ------------------------------------------------------------------------------------------
+        self.vrt = data.get_field('vorticity')
+        self.div = data.get_field('divergence')
+
         # Compute vorticity and divergence of the wind field.
-        self.vrt, self.div = self.vorticity_divergence()
+        if self.vrt is None and self.div is None:
+            self.vrt, self.div = self.vorticity_divergence()
 
         # compute the vertical wind shear before filtering to avoid sharp gradients.
         self.wind_shear = self.vertical_gradient(self.wind)
@@ -279,8 +256,8 @@ class EnergyBudget:
         """
 
         # Same as: kinetic_energy = self._vector_spectra(self.wind) / 2.0
-        rke = self._scalar_spectra(self.vrt) / (2.0 * self.norm)
-        dke = self._scalar_spectra(self.div) / (2.0 * self.norm)
+        rke = self._scalar_spectrum(self.vrt) / (2.0 * self.norm)
+        dke = self._scalar_spectrum(self.div) / (2.0 * self.norm)
 
         hke = rke + dke
 
@@ -310,7 +287,7 @@ class EnergyBudget:
         else:
             w_wind = vertical_velocity(self.omega, self.temperature, self.pressure)
 
-        kinetic_energy = self._scalar_spectra(w_wind) / 2.0
+        kinetic_energy = self._scalar_spectrum(w_wind) / 2.0
 
         #  create dataset
         kinetic_energy = self.add_field(kinetic_energy, 'vke',
@@ -323,7 +300,7 @@ class EnergyBudget:
         """
         Total available potential energy after Augier and Lindborg (2013), Eq.10
         """
-        potential_energy = self.ganma * self._scalar_spectra(self.theta_prime) / 2.0
+        potential_energy = self.ganma * self._scalar_spectrum(self.theta_prime) / 2.0
 
         potential_energy = self.add_field(potential_energy, 'ape',
                                           gridtype='spectral', units='m**2 s**-2',
@@ -497,11 +474,11 @@ class EnergyBudget:
             tendency = np.asarray(tendency)
 
             if tendency.shape != self.wind.shape:
-                raise ValueError("The shape of 'tendency' array must be "
-                                 "consistent with the initialized wind. Expecting {}, "
-                                 "but got {}".format(self.wind.shape, tendency.shape))
+                raise ValueError(f"The shape of 'tendency' array must be "
+                                 f"consistent with the initialized wind."
+                                 f"Expecting {self.wind.shape}, but got {tendency.shape}")
 
-        ke_tendency = self._vector_spectra(self.wind, tendency)
+        ke_tendency = self._vector_spectrum(self.wind, tendency)
 
         if da_flag:
             ke_tendency = self.add_field(ke_tendency, tendency_name,
@@ -541,9 +518,9 @@ class EnergyBudget:
             tendency = np.asarray(tendency)
 
             if tendency.shape != self.theta_prime.shape:
-                raise ValueError("The shape of 'tendency' array must be "
-                                 "consistent with the initialized temperature. Expecting {}, "
-                                 "but got {}".format(self.wind.shape, tendency.shape))
+                raise ValueError(f"The shape of 'tendency' array must be "
+                                 f"consistent with the initialized temperature."
+                                 f"Expecting {self.wind.shape}, but got {tendency.shape}")
 
         # remove representative mean from total temperature tendency
         # tendency -= self._representative_mean(tendency)
@@ -551,7 +528,7 @@ class EnergyBudget:
         # convert temperature tendency to potential temperature tendency
         theta_tendency = tendency / self.exner / cn.cp  # rate of production of internal energy
 
-        ape_tendency = self.ganma * self._scalar_spectra(self.theta_prime, theta_tendency)
+        ape_tendency = self.ganma * self._scalar_spectrum(self.theta_prime, theta_tendency)
 
         if da_flag:
             ape_tendency = self.add_field(ape_tendency, tendency_name,
@@ -618,11 +595,11 @@ class EnergyBudget:
         advection_term = self._wind_advection() + self.div * self.wind / 2.0
 
         # compute nonlinear spectral transfer related to horizontal advection
-        advective_flux = - self._vector_spectra(self.wind, advection_term)
+        advective_flux = - self._vector_spectrum(self.wind, advection_term)
 
         # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transport = self._vector_spectra(self.wind_shear, self.omega * self.wind)
-        vertical_transport -= self._vector_spectra(self.wind, self.omega * self.wind_shear)
+        vertical_transport = self._vector_spectrum(self.wind_shear, self.omega * self.wind)
+        vertical_transport -= self._vector_spectrum(self.wind, self.omega * self.wind_shear)
 
         return advective_flux + vertical_transport / 2.0
 
@@ -635,16 +612,16 @@ class EnergyBudget:
         """
 
         # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
-        vertical_transfer -= self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
+        vertical_transfer = self._vector_spectrum(self.wind_shear, self.omega * self.wind_rot)
+        vertical_transfer -= self._vector_spectrum(self.wind_rot, self.omega * self.wind_shear)
 
         # Rotational effect due to Coriolis
-        deformation = - self._vector_spectra(self.wind_rot, self.fc * rotate_vector(self.wind))
-        deformation -= self._vector_spectra(self.wind, self.fc * rotate_vector(self.wind_rot))
+        deformation = - self._vector_spectrum(self.wind_rot, self.fc * rotate_vector(self.wind))
+        deformation -= self._vector_spectrum(self.wind, self.fc * rotate_vector(self.wind_rot))
 
         # Relative vorticity term
-        deformation -= self._vector_spectra(self.wind_rot, self.vrt * rotate_vector(self.wind))
-        deformation -= self._vector_spectra(self.wind, self.vrt * rotate_vector(self.wind_rot))
+        deformation -= self._vector_spectrum(self.wind_rot, self.vrt * rotate_vector(self.wind))
+        deformation -= self._vector_spectrum(self.wind, self.vrt * rotate_vector(self.wind_rot))
 
         return (vertical_transfer + deformation) / 2.0
 
@@ -667,24 +644,24 @@ class EnergyBudget:
         kinetic_energy_gradient = self.horizontal_gradient(kinetic_energy)
 
         # compute nonlinear spectral transfer related to horizontal advection
-        advective_flux = - self._vector_spectra(self.wind_div, kinetic_energy_gradient)
-        advective_flux -= self._vector_spectra(self.wind, self.div * self.wind)
+        advective_flux = - self._vector_spectrum(self.wind_div, kinetic_energy_gradient)
+        advective_flux -= self._vector_spectrum(self.wind, self.div * self.wind)
 
         # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transfer = self._vector_spectra(self.wind_shear, self.omega * self.wind_div)
-        vertical_transfer -= self._vector_spectra(self.wind_div, self.omega * self.wind_shear)
+        vertical_transfer = self._vector_spectrum(self.wind_shear, self.omega * self.wind_div)
+        vertical_transfer -= self._vector_spectrum(self.wind_div, self.omega * self.wind_shear)
 
         # cross product of vertical unit vector and horizontal winds
         cross_wind = rotate_vector(self.wind)
         cross_wdiv = rotate_vector(self.wind_div)
 
         # Coriolis effect
-        deformation = - self._vector_spectra(self.wind_div, self.fc * cross_wind)
-        deformation -= self._vector_spectra(self.wind, self.fc * cross_wdiv)
+        deformation = - self._vector_spectrum(self.wind_div, self.fc * cross_wind)
+        deformation -= self._vector_spectrum(self.wind, self.fc * cross_wdiv)
 
         # Relative vorticity effect
-        deformation -= self._vector_spectra(self.wind_div, self.vrt * cross_wind)
-        deformation -= self._vector_spectra(self.wind, self.vrt * cross_wdiv)
+        deformation -= self._vector_spectrum(self.wind_div, self.vrt * cross_wind)
+        deformation -= self._vector_spectrum(self.wind, self.vrt * cross_wdiv)
 
         return (advective_flux + vertical_transfer + deformation) / 2.0
 
@@ -701,23 +678,23 @@ class EnergyBudget:
         theta_advection += self.div * self.theta_prime / 2.0
 
         # compute nonlinear spectral transfer related to horizontal advection
-        advection_term = - self._scalar_spectra(self.theta_prime, theta_advection)
+        advection_term = - self._scalar_spectrum(self.theta_prime, theta_advection)
 
         # Compute vertical gradient of potential temperature perturbations
         theta_gradient = self.vertical_gradient(self.theta_prime)
 
-        vertical_term = self._scalar_spectra(theta_gradient, self.omega * self.theta_prime)
-        vertical_term -= self._scalar_spectra(self.theta_prime, self.omega * theta_gradient)
+        vertical_term = self._scalar_spectrum(theta_gradient, self.omega * self.theta_prime)
+        vertical_term -= self._scalar_spectrum(self.theta_prime, self.omega * theta_gradient)
 
         return self.ganma * (advection_term + vertical_term / 2.0)
 
     def pressure_flux(self):
         # Pressure flux (Eq.22)
-        return - self._scalar_spectra(self.omega, self.phi)
+        return - self._scalar_spectrum(self.omega, self.phi)
 
     def dke_turbulent_flux(self):
         # Turbulent kinetic energy flux (Eq.22)
-        return - self._vector_spectra(self.wind, self.omega * self.wind) / 2.0
+        return - self._vector_spectrum(self.wind, self.omega * self.wind) / 2.0
 
     def dke_vertical_flux(self):
         # Vertical flux of total kinetic energy (Eq. A9)
@@ -725,7 +702,7 @@ class EnergyBudget:
 
     def ape_vertical_flux(self):
         # Total APE vertical flux (Eq. A10)
-        ape_flux = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
+        ape_flux = self._scalar_spectrum(self.theta_prime, self.omega * self.theta_prime)
 
         return - self.ganma * ape_flux / 2.0
 
@@ -743,7 +720,7 @@ class EnergyBudget:
         # Conversion of Available Potential energy into kinetic energy (Eq. 19 of A&L)
         alpha = cn.Rd * self.temperature / self.pressure
 
-        return - self._scalar_spectra(self.omega, alpha)
+        return - self._scalar_spectrum(self.omega, alpha)
 
     def conversion_dke_rke(self):
         """Conversion from divergent to rotational kinetic energy
@@ -764,8 +741,8 @@ class EnergyBudget:
         """Conversion from divergent to rotational energy due to vertical transfer
         """
         # vertical transfer
-        dke_rke_omega = -self._vector_spectra(self.wind_shear, self.omega * self.wind_rot)
-        dke_rke_omega -= self._vector_spectra(self.wind_rot, self.omega * self.wind_shear)
+        dke_rke_omega = -self._vector_spectrum(self.wind_shear, self.omega * self.wind_rot)
+        dke_rke_omega -= self._vector_spectrum(self.wind_rot, self.omega * self.wind_shear)
 
         return dke_rke_omega / 2.0
 
@@ -775,8 +752,8 @@ class EnergyBudget:
 
         # Rotational effect due to the Coriolis force on the spectral
         # transfer of divergent kinetic energy
-        div_term = self._vector_spectra(self.wind_div, self.fc * rotate_vector(self.wind_rot))
-        rot_term = self._vector_spectra(self.wind_rot, self.fc * rotate_vector(self.wind_div))
+        div_term = self._vector_spectrum(self.wind_div, self.fc * rotate_vector(self.wind_rot))
+        rot_term = self._vector_spectrum(self.wind_rot, self.fc * rotate_vector(self.wind_div))
 
         return (div_term - rot_term) / 2.0
 
@@ -785,8 +762,8 @@ class EnergyBudget:
         """
 
         # nonlinear interaction terms
-        div_term = self._vector_spectra(self.wind_div, self.vrt * rotate_vector(self.wind_rot))
-        rot_term = self._vector_spectra(self.wind_rot, self.vrt * rotate_vector(self.wind_div))
+        div_term = self._vector_spectrum(self.wind_div, self.vrt * rotate_vector(self.wind_rot))
+        rot_term = self._vector_spectrum(self.wind_rot, self.vrt * rotate_vector(self.wind_div))
 
         return (div_term - rot_term) / 2.0
 
@@ -796,13 +773,13 @@ class EnergyBudget:
 
     def coriolis_linear_transfer(self):
         # Coriolis linear transfer
-        return - self._vector_spectra(self.wind, self.fc * rotate_vector(self.wind))
+        return - self._vector_spectrum(self.wind, self.fc * rotate_vector(self.wind))
 
     def non_conservative_term(self):
         # non-conservative term J(p) in Eq. A11
         dlog_gamma = self.vertical_gradient(np.log(self.ganma))
 
-        heat_trans = self._scalar_spectra(self.theta_prime, self.omega * self.theta_prime)
+        heat_trans = self._scalar_spectrum(self.theta_prime, self.omega * self.theta_prime)
 
         return dlog_gamma.reshape(-1) * heat_trans
 
@@ -815,7 +792,7 @@ class EnergyBudget:
         Compute spherical harmonic coefficients of a scalar function on the sphere.
         Wrapper around 'grdtospec' to process inputs and run in parallel.
         """
-        return self.sphere.grdtospec(scalar)
+        return self.sphere.analysis(scalar)
 
     @transform_io
     def _inverse_transform(self, scalar_sp):
@@ -823,7 +800,7 @@ class EnergyBudget:
         Compute a scalar function on the sphere from spherical harmonic coefficients.
         Wrapper around 'spectogrd' to process inputs and run in parallel.
         """
-        return self.sphere.spectogrd(scalar_sp)
+        return self.sphere.synthesis(scalar_sp)
 
     @transform_io
     def _compute_rotdiv(self, vector):
@@ -953,76 +930,41 @@ class EnergyBudget:
         # (components stored along the first dimension)
         return ke_gradient + self.vrt * rotate_vector(self.wind)
 
-    def _scalar_spectra(self, scalar_1, scalar_2=None):
+    def _scalar_spectrum(self, scalar_1, scalar_2=None):
         """
         Compute cross/spectrum of a scalar field as a function of spherical harmonic degree.
         """
-        if scalar_2 is not None:
-            assert scalar_2.shape == scalar_1.shape, "Rank mismatch between scalar_1 and scalar_2."
-            scalar_2 = self._spectral_transform(scalar_2)
 
-        scalar_1 = self._spectral_transform(scalar_1)
+        # Compute the spectral coefficients of scalar_1
+        spectrum = self._spectral_transform(scalar_1)
 
-        return self.cross_spectrum(scalar_1, scalar_2)
+        if scalar_2 is None:
+            spectrum *= spectrum.conjugate()
+        else:
+            assert scalar_2.shape == scalar_1.shape, "Rank mismatch between input scalars."
+            spectrum *= self._spectral_transform(scalar_2).conjugate()
 
-    def _vector_spectra(self, vector_1, vector_2=None):
+        return spectrum.real
+
+    def _vector_spectrum(self, vector_1, vector_2=None):
         """
         Compute cross/spectrum of two vector fields as a function of spherical harmonic degree.
         """
-        if vector_2 is None:
-            vector_2 = (None, None)
+
+        # Compute the spectral coefficients of the vorticity and divergence of vector_1
+        vector_sp1 = self._compute_rotdiv(vector_1)
+
+        if vector_2 is not None:
+            assert vector_2.shape == vector_1.shape, "Rank mismatch between input vectors."
+            # Compute the spectral coefficients of the vorticity and divergence of vector_2
+            vector_sp2 = self._compute_rotdiv(vector_2)
         else:
-            assert vector_2.shape == vector_1.shape, "Rank mismatch between vector_1 and vector_2."
-            vector_2 = self._compute_rotdiv(vector_2)
+            vector_sp2 = vector_sp1
 
-        # Compute the spectral coefficients of the curl and divergence of vector_1
-        vector_1 = self._compute_rotdiv(vector_1)
+        spectrum = vector_sp1[0] * vector_sp2[0].conjugate()
+        spectrum += vector_sp1[1] * vector_sp2[1].conjugate()
 
-        spectrum = self.cross_spectrum(vector_1[0], vector_2[0])
-        spectrum += self.cross_spectrum(vector_1[1], vector_2[1])
-
-        return spectrum / self.norm
-
-    def representative_mean(self, scalar, weights=None, lat_axis=None):
-        """
-        Computes the global weighted average of a scalar function on the sphere.
-        The weights are initialized according to 'grid_type': for grid_type='gaussian' we use
-        gaussian quadrature weights. If grid_type='regular' the weights are defined as the
-        cosine of latitude. If the grid is regular and latitude points are not available
-        it returns global mean with weights = 1 / nlat (not recommended).
-
-        :param scalar: nd-array with data to be averaged
-        :param lat_axis: axis of the meridional dimension.
-        :param weights: 1D-array containing latitudinal weights
-        :return: Global mean of a scalar function
-        """
-
-        lat_axis = normalize_axis_index(lat_axis or 0, scalar.ndim)
-
-        # check array dimensions
-        if scalar.shape[lat_axis] != self.nlat:
-            raise ValueError("Scalar size along axis must be nlat."
-                             "Expected {} and got {}".format(self.nlat, scalar.shape[lat_axis]))
-
-        if scalar.shape[lat_axis + 1] != self.nlon:
-            raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
-
-        if weights is None:
-            if hasattr(self, 'weights'):
-                weights = self.weights
-        else:
-            weights = np.asarray(weights)
-
-            if weights.size != scalar.shape[lat_axis]:
-                raise ValueError("If given, 'weights' must be a 1D array of length 'nlat'."
-                                 "Expected length {} but got {}.".format(self.nlat, weights.size))
-
-        # Compute area-weighted average on the sphere (using either gaussian or linear weights)
-        # Added masked-arrays support to exclude data below the surface.
-        scalar_average = np.ma.average(scalar, weights=weights, axis=lat_axis)
-
-        # mean along the longitude dimension (same as lat_axis after array reduction)
-        return np.ma.mean(scalar_average, axis=lat_axis)
+        return spectrum.real / self.norm
 
     def accumulate_order(self, cs_lm, axis=0):
         """Accumulates over spherical harmonic order and returns
@@ -1061,45 +1003,49 @@ class EnergyBudget:
         # back to original shape
         spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)
 
-        return spectrum.real
-
-    def cross_spectrum(self, clm1, clm2=None, accumulate=False):
-        """Returns the cross-spectrum of the spherical harmonic coefficients as a
-        function of spherical harmonic degree.
-
-        Signature
-        ---------
-        array = cross_spectrum(clm1, [clm2, normalization, convention, unit])
-
-        Parameters
-        ----------
-        clm1 : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
-            contains the first set of spherical harmonic coefficients.
-        clm2 : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...), optional
-            contains the second set of spherical harmonic coefficients.
-        accumulate : bool, default = True
-            Integrate along the zonal wavenumber (order)
-        Returns
-        -------
-        array : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
-            contains the cross spectrum as a function of spherical harmonic degree (and order).
-        """
-        if clm2 is None:
-            spectrum = clm1 * clm1.conjugate()
-        else:
-            msg = f"Arrays 'clm1' and 'clm2' of spectral coefficients must have the same shape. " \
-                  f"Expected 'clm2' shape: {clm1.shape} got: {clm2.shape}"
-
-            assert clm2.shape == clm1.shape, msg
-
-            spectrum = clm1 * clm2.conjugate()
-
-        # Compute spectrum as a function of spherical harmonic degree (total wavenumber).
-        if accumulate:
-            spectrum = self.accumulate_order(spectrum)
-
         # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
-        return spectrum * self.beta_correction
+        return self.beta_correction * spectrum
+
+    def representative_mean(self, scalar, weights=None, lat_axis=None):
+        """
+        Computes the global weighted average of a scalar function on the sphere.
+        The weights are initialized according to 'grid_type': for grid_type='gaussian' we use
+        gaussian quadrature weights. If grid_type='regular' the weights are defined as the
+        cosine of latitude. If the grid is regular and latitude points are not available
+        it returns global mean with weights = 1 / nlat (not recommended).
+
+        :param scalar: nd-array with data to be averaged
+        :param lat_axis: axis of the meridional dimension.
+        :param weights: 1D-array containing latitudinal weights
+        :return: Global mean of a scalar function
+        """
+
+        lat_axis = normalize_axis_index(lat_axis or 0, scalar.ndim)
+
+        # check array dimensions
+        if scalar.shape[lat_axis] != self.nlat:
+            raise ValueError(f"Scalar size along axis must be nlat."
+                             f"Expected {self.nlat} and got {scalar.shape[lat_axis]}")
+
+        if scalar.shape[lat_axis + 1] != self.nlon:
+            raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
+
+        if weights is None:
+            if hasattr(self, 'weights'):
+                weights = self.weights
+        else:
+            weights = np.asarray(weights)
+
+            if weights.size != scalar.shape[lat_axis]:
+                raise ValueError(f"If given, 'weights' must be a 1D array of length 'nlat'."
+                                 f"Expected length {self.nlat} but got {weights.size}.")
+
+        # Compute area-weighted average on the sphere (using either gaussian or linear weights)
+        # Added masked-arrays support to exclude data below the surface.
+        scalar_average = np.ma.average(scalar, weights=weights, axis=lat_axis)
+
+        # mean along the longitude dimension (same as lat_axis after array reduction)
+        return np.ma.mean(scalar_average, axis=lat_axis)
 
     def _split_mean_perturbation(self, scalar):
         # Decomposes a scalar function into the representative mean and perturbations.

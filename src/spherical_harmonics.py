@@ -1,11 +1,51 @@
+import functools
+
 import numpy as np
 import shtns
 
 from constants import earth_radius
-from tools import broadcast_1dto, get_num_cores
+from tools import broadcast_1dto
 
 # private variables for class Spharmt
 _private_vars = ['nlon', 'nlat', 'gridtype', 'rsphere']
+
+
+def iterate_shts(func, axis=-1):
+    """
+    Decorator for handling arrays' IO dimensions for calling SHTns' spectral functions.
+    This wrapper function for running _shtns functions along sample dimension. Input arguments
+    can be in both spectral and grid-point space.
+
+    Parameters:
+    -----------
+    func: decorated function
+    axis: axis
+    """
+
+    @functools.wraps(func)
+    def iterated_sht(*args, **kwargs):
+        # self passed as first argument
+        cls, *data = args
+
+        # Compact args to a single array (input arrays must be broadcastable)
+        # Infer mask when passing masked arrays and fill with zeros preserving dtype.
+        data = np.ma.fix_invalid(data).filled(fill_value=0.0)
+
+        # check data type (real objects must be of type float64)
+        if np.isrealobj(data):
+            data = data.astype(np.float64)
+
+        # expand sample dimension if needed
+        if data.shape[axis] in (cls.nlon, cls.nlm):
+            data = np.expand_dims(data, axis)
+
+        # Apply SHTns' functions along the sample dimension (test parallel loop)
+        slices = np.split(data, data.shape[axis], axis=axis)
+        data = np.stack([func(cls, *slice_[..., 0], **kwargs) for slice_ in slices], axis=axis)
+
+        return data.squeeze() if data.shape[axis] == 1 else data
+
+    return iterated_sht
 
 
 class Spharmt(object):
@@ -33,21 +73,16 @@ class Spharmt(object):
         else:
             del self.__dict__[key]
 
-    def __init__(self, nlat, nlon, rsphere=earth_radius,
-                 gridtype='gaussian', ntrunc=None, jobs=None):
+    def __init__(self, nlat, nlon, rsphere=earth_radius, gridtype='gaussian', ntrunc=None):
         """initialize
-           nlon:  number of longitudes
-           nlat:  number of latitudes
-           ntrunc: triangular truncation
-           gridtype: grid type
-        """
-        if jobs is None:
-            self.jobs = 1
-        elif jobs == -1:
-            self.jobs = get_num_cores()
-        else:
-            self.jobs = int(jobs)
+        :param nlon:  number of longitude points
+        :param nlat:  number of latitude points
 
+        :param ntrunc: int, optional, default None
+            Triangular truncation for the spherical harmonic transforms. If truncation is not
+            specified then 'truncation=nlat-1' is used.
+        :param gridtype: grid type
+        """
         if ntrunc is None:
             ntrunc = nlat - 1
 
@@ -69,20 +104,22 @@ class Spharmt(object):
         else:
             raise ValueError('Illegal value of nlat {} - must be at least 3'.format(nlat))
 
-        if gridtype not in ('regular', 'gaussian'):
+        if gridtype.lower() not in ('regular', 'gaussian'):
             raise ValueError('Illegal value of gridtype {} - must be'
                              'either "gaussian" or "regular"'.format(gridtype))
         else:
-            self.gridtype = gridtype
+            self.gridtype = gridtype.lower()
 
         # Initialize 4pi-normalized harmonics with no CS phase shift (consistent with SPHEREPACK)
+        # No normalization needed to recover the global mean/covariance from the power spectrum.
         # Alternatives are: sht_orthonormal or sht_schmidt.
         self.sht = shtns.sht(ntrunc, ntrunc, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
 
-        if self.gridtype == 'gaussian':
-            self.sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
-        else:
+        if self.gridtype == 'regular':
             self.sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
+        else:
+            # default to gaussian grid
+            self.sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
 
         self.ntrunc = ntrunc
         self.nlm = self.sht.nlm
@@ -90,98 +127,80 @@ class Spharmt(object):
         self.order = self.sht.m
 
         self.kappa_sq = - self.degree * (self.degree + 1.0).astype(complex) / self.rsphere
+        self.inv_kappa_sq = np.insert(1.0 / self.kappa_sq[1:], 0, 1.0)
 
-    def _map(self, func, *args):
-        """ Wrapper function for running _shtns functions along sample dimension. This function
-            also handles input arguments in both spectral and grid-point space.
-        """
+    # ----------------------------------------------------------------------------------------------
+    # Wrappers for running SHTns functions along sample dimension (nlat, nlon, samples)
+    # ----------------------------------------------------------------------------------------------
+    @iterate_shts
+    def synthesis(self, *args):
+        return self.sht.synth(*args)
 
-        # Compact args to a single array (input arrays must be broadcastable)
-        # Infer mask when passing masked arrays and fill with zeros preserving dtype.
-        data = np.ma.fix_invalid(args).filled(fill_value=0.0)
+    @iterate_shts
+    def analysis(self, *args):
+        return self.sht.analys(*args)
 
-        # check data type (real objects must be of type float64)
-        if np.isrealobj(data): data = data.astype(np.float64)
+    @iterate_shts
+    def synth_grad(self, spec):
+        return self.sht.synth_grad(spec)
 
-        # add dummy sample dimension if necessary
-        n_samples = data.shape[-1]
+    # ----------------------------------------------------------------------------------------------
+    # Functions consistent with Spharm using SHTns backend for spherical harmonic transforms
+    # ----------------------------------------------------------------------------------------------
+    def laplacian(self, spec):
+        """compute Laplacian in spectral space"""
+        return broadcast_1dto(self.kappa_sq, spec.shape) * spec
 
-        if n_samples in (self.nlon, self.nlm):
-            data = np.expand_dims(data, -1)
-            n_samples = 1
-
-        # loop along the sample dimension and apply func in parallel
-        # pool = Parallel(n_jobs=self.jobs, backend="threading")
-        # results = np.array(pool(delayed(func)(*data[..., i]) for i in range(n_samples)))
-        results = np.array([func(*data[..., i]) for i in range(n_samples)])
-
-        return np.moveaxis(results, 0, -1)
+    def inverse_laplacian(self, spec):
+        """Invert Laplacian in spectral space"""
+        return broadcast_1dto(self.inv_kappa_sq, spec.shape) * spec
 
     def grdtospec(self, scalar):
         """compute spectral coefficients from gridded data"""
-        return self._map(self.sht.analys, scalar)
+        return self.analysis(scalar)
 
     def spectogrd(self, scalar_spec):
         """compute gridded data from spectral coefficients"""
-        return self._map(self.sht.synth, scalar_spec)
-
-    def laplacian(self, spec):
-        """compute Laplacian in spectral space"""
-        kappa_sq = broadcast_1dto(self.kappa_sq, spec.shape)
-
-        return kappa_sq * spec
-
-    def invert_laplacian(self, spec):
-        """Invert Laplacian in spectral space"""
-
-        inv_kappa_sq = np.insert(1.0 / self.kappa_sq[1:], 0, 1.0)
-        inv_kappa_sq = broadcast_1dto(inv_kappa_sq, spec.shape)
-
-        return inv_kappa_sq * spec
+        return self.synthesis(scalar_spec)
 
     def getpsichi(self, u, v):
         """compute streamfunction and velocity potential from horizontal wind"""
-        psi_spec, chi_spec = self._map(self.sht.analys, u, v)
+        psi_spec, chi_spec = self.analysis(u, v)
 
-        psi_grid = self.rsphere * self.spectogrd(psi_spec)
-        chi_grid = self.rsphere * self.spectogrd(chi_spec)
+        psi_grid = self.rsphere * self.synthesis(psi_spec)
+        chi_grid = self.rsphere * self.synthesis(chi_spec)
 
         return psi_grid, chi_grid
 
     def getvrtdivspec(self, u, v):
         """compute spectral coeffs of vorticity and divergence from wind vector"""
-        psi_spec, chi_spec = self._map(self.sht.analys, u, v)
+        psi_spec, chi_spec = self.analysis(u, v)
 
         return self.laplacian(psi_spec), self.laplacian(chi_spec)
 
     def getuv(self, vrt_spec, div_spec):
         """compute wind vector from spectral coeffs of vorticity and divergence"""
 
-        psi_spec = self.invert_laplacian(vrt_spec)
-        chi_spec = self.invert_laplacian(div_spec)
+        psi_spec = self.inverse_laplacian(vrt_spec)
+        chi_spec = self.inverse_laplacian(div_spec)
 
-        return self._map(self.sht.synth, psi_spec, chi_spec)
+        return self.synthesis(psi_spec, chi_spec)
 
     def getgrad(self, scalar):
-        """Compute gradient vector of scalar function on the sphere"""
-
-        # compute spectral coefficients
-        scalar_spec = self.grdtospec(scalar)
-
-        # compute horizontal gradient of a scalar from spectral coefficients
-        v, u = self._map(self.sht.synth_grad, scalar_spec)
-
-        return u / self.rsphere, - v / self.rsphere
-
-    def getgrad_2(self, scalar):
-        """Compute gradient vector of scalar function on the sphere.
-           slightly slower than 'getgrad' probably due to the initialization with 'np.zeros_like'
+        """ Compute the zonal and meridional components of the gradient
+            of a scalar function on the sphere.
         """
 
         # compute spectral coefficients
-        scalar_spec = self.grdtospec(scalar)
+        scalar_spec = self.analysis(scalar)
 
         # compute horizontal gradient of a scalar from spectral coefficients
-        u, v = self._map(self.sht.synth, np.zeros_like(scalar_spec), scalar_spec)
+        v, u = self.synth_grad(scalar_spec)
+
+        return u / self.rsphere, - v / self.rsphere
+
+    def getuv_from_stream(self, psi_spec):
+        """Compute wind vector from spectral coefficients of stream function"""
+        u, v = self.synth_grad(psi_spec)
 
         return u / self.rsphere, v / self.rsphere

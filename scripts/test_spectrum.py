@@ -51,7 +51,7 @@ if __name__ == '__main__':
     sfc_pres = dataset_sfc.pres_sfc
 
     # Create energy budget object
-    budget = EnergyBudget(file_names, ps=sfc_pres, jobs=1)
+    budget = EnergyBudget(file_names, ps=sfc_pres)
 
     # compute mask
     beta = (~budget.theta_prime.mask).astype(float)
@@ -85,11 +85,11 @@ if __name__ == '__main__':
             # of the vectors' cross-spectrum along all spherical harmonic degrees.
             data_sqd = np.sum(data ** 2, axis=0)
             data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
-            data_sp = budget.accumulate_order(budget._vector_spectra(data))
+            data_sp = budget.accumulate_order(budget._vector_spectrum(data))
         else:
             data_sqd = data ** 2
             data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
-            data_sp = budget.accumulate_order(budget._scalar_spectra(data))
+            data_sp = budget.accumulate_order(budget._scalar_spectrum(data))
 
         # sum over all spherical harmonic degrees
         data_sp = np.nansum(data_sp, axis=0).mean(0)

@@ -48,6 +48,16 @@ CF_variable_conventions = {
                           "upward_air_velocity", "vertical wind component"),
         'units': ("m s-1", "m s**-1", "m/s")
     },
+    'divergence': {
+        'standard_name': ('div', 'sd', 'divergence', 'horizontal divergence',
+                          "horizontal_divergence", "wind_divergence"),
+        'units': ("s-1", "s**-1", "1/s")
+    },
+    'vorticity': {
+        'standard_name': ('vrt', 'svo', 'vor', 'vorticity', 'vertical vorticity',
+                          "vertical_vorticity", "wind_vorticity"),
+        'units': ("s-1", "s**-1", "1/s")
+    },
     'ts': {
         "standard_name": ('ts', 'surface_temperature', 'surface_air_temperature'),
         "units": ('K', 'kelvin', 'Kelvin', 'degree_C')
@@ -99,6 +109,8 @@ expected_units = {
     "u_wind": "m/s",
     "v_wind": "m/s",
     "w_wind": "m/s",
+    "divergence": "1/s",
+    "vorticity": "1/s",
     "temperature": "K",
     "pressure": "Pa",
     "omega": "Pa/s",
@@ -109,6 +121,8 @@ expected_range = {
     "u_wind": [-350., 350.],
     "v_wind": [-350., 350.],
     "w_wind": [-100., 100.],
+    "divergence": [-10., 10.],
+    "vorticity": [-10., 10.],
     "temperature": [120, 350.],
     "pressure": [0.0, 2000e2],
     "omega": [-100, 100],
@@ -547,6 +561,7 @@ def reindex_coordinate(coord, data):
 
 
 def is_standard(data, standard_name):
+    # check if a DataArray is standard CF variable
     if not isinstance(data, (DataArray, Dataset)):
         return False
 
@@ -715,6 +730,13 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
     # Create output dataset with required fields and check units consistency.
     # Find surface data arrays and assign to dataset if given externally
     data = SebaDataset(data).add_surface_data(surface_data=surface_data).check_convert_units()
+
+    # Check if vorticity and divergence are present in dataset
+    for variable in ['vorticity', 'divergence']:
+
+        values = dataset.find_variable(variable, raise_notfound=False)
+        if values is not None:
+            data[variable] = values
 
     # Check for pressure velocity: If not present in dataset, it is estimated from
     # height-based vertical velocity using the hydrostatic approximation.

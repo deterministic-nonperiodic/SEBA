@@ -34,7 +34,7 @@ if __name__ == '__main__':
     sfc_pres = dataset_sfc.pres_sfc
 
     # Create energy budget object
-    budget = EnergyBudget(file_names, ps=sfc_pres, jobs=1)
+    budget = EnergyBudget(file_names, ps=sfc_pres)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
@@ -47,13 +47,13 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    kappa = 1e3 * dataset_energy.kappa.values  # km^-1
+    kappa = 1e3 * budget.kappa_h  # km^-1
 
     if kappa.size < 1000:
-        x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
+        x_limits = 1e3 * kappa_from_deg(np.array([0, 1024]))
         xticks = np.array([1, 10, 100, 1000])
     else:
-        x_limits = 1e3 * kappa_from_deg(np.array([0, 2128]))
+        x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
         xticks = np.array([2, 20, 200, 2000])
 
     y_limits = [1e-4, 5e7]
@@ -118,14 +118,12 @@ if __name__ == '__main__':
 
     plt.show()
 
-    # fig.savefig('figures/icon_total_energy_spectra_{}.pdf'.format(resolution), dpi=300)
-    # plt.close(fig)
+    fig.savefig('../figures/icon_fixed_energy_spectra_{}.pdf'.format(resolution), dpi=300)
+    plt.close(fig)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    kappa = 1e3 * budget.kappa_h
-
     # get nonlinear energy fluxes. Compute time-averaged cumulative fluxes
     dataset_fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa')
 
@@ -133,7 +131,7 @@ if __name__ == '__main__':
     layers = {
         # 'Stratosphere': [50e2, 250e2],
         'Free troposphere': [250e2, 500e2],
-        'Lower troposphere': [500e2, 850e2],
+        # 'Lower troposphere': [500e2, 850e2],
     }
 
     ke_limits = {
@@ -206,18 +204,12 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     layers = {
         'Free troposphere': [250e2, 500e2],
-        'Lower troposphere': [500e2, 850e2]
+        # 'Lower troposphere': [500e2, 850e2]
     }
 
     ke_limits = {'Free troposphere': [-0.6, 0.6], 'Lower troposphere': [-0.6, 0.6]}
     # perform vertical integration
     colors = ['green', 'magenta']
-    if kappa.size < 1000:
-        x_limits = 1e3 * kappa_from_deg(np.array([0, 1000]))
-        xticks = np.array([1, 10, 100, 1000])
-    else:
-        x_limits = 1e3 * kappa_from_deg(np.array([0, 2048]))
-        xticks = np.array([2, 20, 200, 2000])
 
     for i, (level, prange) in enumerate(layers.items()):
         # vertically integrated and time averaged fluxes

@@ -234,14 +234,14 @@ def transform_io(func, order='C'):
     @functools.wraps(func)
     def dimension_packer(*args, **kwargs):
         # self passed as first argument
-        sbo, *_ = args
-        transformed_args = [sbo, ]
+        cls, *args = args
+        transformed_args = [cls, ]
         for arg in args:
-            if isinstance(arg, np.ndarray):
-                transformed_args.append(_pack_levels(sbo, arg, order=order))
+            transformed_args.append(_pack_levels(cls, arg, order=order))
+
         results = func(*transformed_args, **kwargs)
         # convert output back to original shape
-        return _unpack_levels(sbo, results, order=order)
+        return _unpack_levels(cls, results, order=order)
 
     return dimension_packer
 
