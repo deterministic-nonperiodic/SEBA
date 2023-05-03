@@ -172,7 +172,9 @@ def stability_parameter(pressure, theta, vertical_axis=0):
     # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
     ddp_theta = gradient_1d(theta, pressure, axis=vertical_axis)
 
-    return - cn.Rd * exner_function(pressure) / (pressure * ddp_theta)
+    ganma = - cn.Rd * exner_function(pressure) / (pressure * ddp_theta)
+
+    return ganma
 
 
 def density(pressure, temperature):

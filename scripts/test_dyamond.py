@@ -26,7 +26,7 @@ if __name__ == '__main__':
     data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[012]'
+    date_time = '20[01]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
     # # load earth topography and surface pressure

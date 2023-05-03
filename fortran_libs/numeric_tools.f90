@@ -203,7 +203,7 @@ end subroutine cross_spectrum
 !===================================================================================================
 
 !===================================================================================================
-subroutine gradient(dpds, var, ds, ns, nt, order)
+subroutine gradient(dpds, var, ds, ns, nt, order, mask)
 
     implicit none
 
@@ -212,21 +212,28 @@ subroutine gradient(dpds, var, ds, ns, nt, order)
     integer, intent(in) :: ns, nt
     double precision, intent(in) :: ds
     double precision, intent(in) :: var (ns, nt)
+    integer, optional, intent(in) :: mask (nt)
 
     ! local
-    integer :: k, nso, nsf
+    integer :: k, m
+    integer :: start_index (nt)
 
     ! output vars ...
     double precision, intent(out) :: dpds (ns, nt)
 
     dpds = 0.0
 
-    nso = 2
-    nsf = ns - (nso - 1)
+    if (present(mask)) then
+        start_index = mask
+    else
+        start_index = 1
+    end if
 
-    ! loop over samples
+    ! loop over samples and compute gradient for each column
     do k = 1, nt
-        call compact_derivative(dpds(:, k), var(:, k), ds, ns, order)
+        ! m determines the first level above which to compute gradient
+        m = start_index(k)
+        call compact_derivative(dpds(m:ns, k), var(m:ns, k), ds, ns + 1 - m, order)
     enddo
 
     return

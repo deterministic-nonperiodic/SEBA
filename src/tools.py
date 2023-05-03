@@ -553,6 +553,14 @@ def indices_to_3d(mask, size):
     return result_bc
 
 
+def reduce_mask(mask, axis=-1):
+    """
+    Converts a 3D array mask[i, j, k] containing indices onto a 2D terrain mask.
+    Reverts the result of 'indices_to_3d'.
+    """
+    return mask.shape[axis] - np.count_nonzero(mask, axis=axis)
+
+
 def surface_mask(p, ps, smooth=True, jobs=None):
     """
     Creates a terrain mask based on surface pressure and pressure profile
@@ -760,17 +768,30 @@ def gradient_1d(scalar, x, axis=-1, order=6):
 
     # determine if the grid is regular
     dx = np.diff(x)
+    equally_spaced = np.allclose(np.max(dx), np.min(dx), atol=1e-12)
 
-    if np.allclose(np.max(dx), np.min(dx), atol=1e-12):
+    if equally_spaced:
         # Using high order schemes for regular grid, otherwise
         # using second-order accurate central finite differences
         scalar = np.moveaxis(scalar, axis, 0)
         scalar_shape = scalar.shape
 
         scalar = scalar.reshape((scalar_shape[0], -1))
+
+        # check if array is masked and compute index above which to calculate gradients
+        if np.ma.is_masked(scalar):
+            scalar_mask = scalar.mask
+            mask_index = reduce_mask((~scalar_mask).astype(int), axis=0) + 1
+        else:
+            scalar_mask = False
+            mask_index = np.ones(scalar.shape[1:], dtype=int)
+
         # compute gradient with a 6th-order compact finite difference scheme (Lele 1992),
         # and explicit 4th-order scheme at the boundaries.
-        scalar_grad = numeric_tools.gradient(scalar, dx[0], order=order)
+        scalar_grad = numeric_tools.gradient(scalar, dx[0], order=order, mask=mask_index)
+
+        # apply mask back to array
+        scalar_grad = np.ma.masked_array(scalar_grad, mask=scalar_mask)
         scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), 0, axis)
     else:
         # Using numpy implementation of second-order finite differences for irregular grids

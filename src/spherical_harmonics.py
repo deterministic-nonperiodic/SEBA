@@ -116,18 +116,18 @@ class Spharmt(object):
         self.sht = shtns.sht(ntrunc, ntrunc, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
 
         if self.gridtype == 'regular':
-            self.sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
+            self.sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 0)
         else:
             # default to gaussian grid
-            self.sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 1e-12)
+            self.sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 0)
 
         self.ntrunc = ntrunc
         self.nlm = self.sht.nlm
         self.degree = self.sht.l
         self.order = self.sht.m
 
-        self.kappa_sq = - self.degree * (self.degree + 1.0).astype(complex) / self.rsphere
-        self.inv_kappa_sq = np.insert(1.0 / self.kappa_sq[1:], 0, 1.0)
+        self.lap = - self.degree * (self.degree + 1.0) / self.rsphere
+        self.inv_lap = np.insert(1.0 / self.lap[1:], 0, 0.0)
 
     # ----------------------------------------------------------------------------------------------
     # Wrappers for running SHTns functions along sample dimension (nlat, nlon, samples)
@@ -149,11 +149,11 @@ class Spharmt(object):
     # ----------------------------------------------------------------------------------------------
     def laplacian(self, spec):
         """compute Laplacian in spectral space"""
-        return broadcast_1dto(self.kappa_sq, spec.shape) * spec
+        return broadcast_1dto(self.lap, spec.shape) * spec
 
     def inverse_laplacian(self, spec):
         """Invert Laplacian in spectral space"""
-        return broadcast_1dto(self.inv_kappa_sq, spec.shape) * spec
+        return broadcast_1dto(self.inv_lap, spec.shape) * spec
 
     def grdtospec(self, scalar):
         """compute spectral coefficients from gridded data"""

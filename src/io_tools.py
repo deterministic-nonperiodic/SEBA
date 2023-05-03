@@ -319,7 +319,7 @@ class SebaDataset(Dataset):
 
         return self
 
-    def get_field(self, name):
+    def get_field(self, name, default=None):
         """ Returns a field in dataset after processing to be used by seba.EnergyBudget:
             - Exclude extrapolated data below the surface (p >= ps).
             - Ensure latitude axis is oriented north-to-south.
@@ -327,7 +327,7 @@ class SebaDataset(Dataset):
         """
 
         if name not in self.data_vars:
-            return None
+            return default
 
         # Calculate mask to exclude extrapolated data below the surface (p >= ps).
         # beta should be computed just once

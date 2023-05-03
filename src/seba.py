@@ -129,8 +129,8 @@ class EnergyBudget:
         # Compute scale factor for vector spectra: l (l + 1) / Re ** 2 = kappa ** -2
         self.nlm = self.sphere.nlm
 
-        norm = np.insert(-self.sphere.kappa_sq[1:] / self.sphere.rsphere, 0, 1.0)
-        self.norm = broadcast_1dto(norm, (self.nlm, self.samples, self.nlevels))
+        scale = - self.sphere.rsphere * self.sphere.inv_lap
+        self.vector_scale = broadcast_1dto(scale, (self.nlm, self.samples, self.nlevels))
 
         # Create dictionary with name/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as SebaDataset
@@ -143,10 +143,10 @@ class EnergyBudget:
         # compute horizontal wavenumber (rad / meter)
         self.kappa_h = kappa_from_deg(np.arange(self.truncation + 1, dtype=int))
 
-        self.sp_coords['kappa'] = xr.Coordinate('kappa', self.kappa_h,
-                                                attrs={'standard_name': 'wavenumber',
-                                                       'long_name': 'horizontal wavenumber',
-                                                       'axis': 'X', 'units': 'm**-1'})
+        self.sp_coords['kappa'] = xr.IndexVariable('kappa', self.kappa_h,
+                                                   attrs={'standard_name': 'wavenumber',
+                                                          'long_name': 'horizontal wavenumber',
+                                                          'axis': 'X', 'units': 'm**-1'})
 
         # ------------------------------------------------------------------------------------------
         # Initialize dynamic fields for the analysis
@@ -185,12 +185,11 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Kinematics
         # ------------------------------------------------------------------------------------------
-        self.vrt = data.get_field('vorticity')
-        self.div = data.get_field('divergence')
+        # Compute vorticity and divergence from the wind field (ignore if given for consistency)
+        self.vrt, self.div = self.vorticity_divergence()
 
-        # Compute vorticity and divergence of the wind field.
-        if self.vrt is None and self.div is None:
-            self.vrt, self.div = self.vorticity_divergence()
+        # self.vrt = data.get_field('vorticity', self.vrt)
+        # self.div = data.get_field('divergence', self.div)
 
         # compute the vertical wind shear before filtering to avoid sharp gradients.
         self.wind_shear = self.vertical_gradient(self.wind)
@@ -212,6 +211,8 @@ class EnergyBudget:
         self.theta_avg, self.theta_prime = self._split_mean_perturbation(self.theta)
 
         # Parameter ganma to convert from temperature variance to APE
+        # theta_grad = self.representative_mean(self.vertical_gradient(self.theta))
+        # self.ganma = - cn.Rd * self.exner / (self.pressure * theta_grad)
         self.ganma = stability_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
 
     # ------------------------------------------------------------------------------------------
@@ -256,8 +257,8 @@ class EnergyBudget:
         """
 
         # Same as: kinetic_energy = self._vector_spectra(self.wind) / 2.0
-        rke = self._scalar_spectrum(self.vrt) / (2.0 * self.norm)
-        dke = self._scalar_spectrum(self.div) / (2.0 * self.norm)
+        rke = self.vector_scale * self._scalar_spectrum(self.vrt) / 2.0
+        dke = self.vector_scale * self._scalar_spectrum(self.div) / 2.0
 
         hke = rke + dke
 
@@ -741,10 +742,10 @@ class EnergyBudget:
         """Conversion from divergent to rotational energy due to vertical transfer
         """
         # vertical transfer
-        dke_rke_omega = -self._vector_spectrum(self.wind_shear, self.omega * self.wind_rot)
-        dke_rke_omega -= self._vector_spectrum(self.wind_rot, self.omega * self.wind_shear)
+        dke_rke_omega = self._vector_spectrum(self.wind_shear, self.omega * self.wind_rot)
+        dke_rke_omega += self._vector_spectrum(self.wind_rot, self.omega * self.wind_shear)
 
-        return dke_rke_omega / 2.0
+        return - dke_rke_omega / 2.0
 
     def conversion_dke_rke_coriolis(self):
         """Conversion from divergent to rotational energy
@@ -833,36 +834,27 @@ class EnergyBudget:
         if np.ma.is_masked(scalar):
             # Recovering "ground-truth" masked gradient using: β ∇φ = ∇(β φ) - (β φ) ∇β.
             # The exact form of the last term should be φ∇β instead of (β φ) ∇β, however the two
-            # formulas are equivalent in non-masked regions (β = 1). We don't know the exact φ.
-            beta_gradient = self.sphere.getgrad((~scalar.mask).astype(float))
-
-            scalar_gradient = scalar_gradient - beta_gradient * scalar
+            # formulas are equivalent in non-masked regions (β = 1).
+            # beta_gradient = self.sphere.getgrad((~scalar.mask).astype(float))
+            # scalar_gradient = scalar_gradient - beta_gradient * scalar
+            scalar_gradient = np.ma.masked_array(scalar_gradient, mask=[scalar.mask, scalar.mask])
 
         return scalar_gradient
 
-    def vertical_gradient(self, scalar, vertical_axis=-1):
+    def vertical_gradient(self, scalar, order=8):
         """
             Computes vertical gradient (∂φ/∂p) of a scalar function (φ) in pressure coordinates.
+            Using 8th-order compact finite difference scheme (Lele 1992). Contiguous masked
+            regions are excluded from the calculation and the original scalar mask is recovered.
         """
-        scalar_gradient = gradient_1d(scalar, self.pressure, axis=vertical_axis)
-
-        # preserve the mask of scalar if masked
-        if np.ma.is_masked(scalar):
-            # Let's get the masked gradient using: β ∂φ/∂p = ∂(β φ)/∂p - (β φ) ∂β/∂p.
-            beta_gradient = gradient_1d((~scalar.mask).astype(float), self.pressure,
-                                        axis=vertical_axis)
-
-            scalar_gradient = scalar_gradient - beta_gradient * scalar
-
-        return scalar_gradient
+        return gradient_1d(scalar, self.pressure, axis=-1, order=order)
 
     def _scalar_advection(self, scalar):
         r"""
         Compute the horizontal advection of a scalar field on the sphere.
 
-        Advection is computed in flux form for better conservation properties
-        and handling masked data properly. This approach also has higher performance
-        than computing horizontal gradients directly.
+        Advection is computed in flux form for better conservation properties.
+        This approach also has higher performance than computing horizontal gradients.
 
         .. math:: \mathbf{u}\cdot\nabla_h\phi = \nabla_h\cdot(\phi\mathbf{u}) - \delta\phi
 
@@ -878,6 +870,7 @@ class EnergyBudget:
             advection: `np.ndarray`
                 Array containing the advection of a scalar field.
         """
+        # scalar_advection = np.ma.sum(self.wind * self.horizontal_gradient(scalar), axis=0)
 
         # Spectral coefficients of the scalar flux divergence: ∇⋅(φ u)
         scalar_divergence = self._compute_rotdiv(scalar * self.wind)[1]
@@ -964,7 +957,7 @@ class EnergyBudget:
         spectrum = vector_sp1[0] * vector_sp2[0].conjugate()
         spectrum += vector_sp1[1] * vector_sp2[1].conjugate()
 
-        return spectrum.real / self.norm
+        return self.vector_scale * spectrum.real
 
     def accumulate_order(self, cs_lm, axis=0):
         """Accumulates over spherical harmonic order and returns
