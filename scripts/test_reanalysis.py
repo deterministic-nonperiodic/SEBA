@@ -2,7 +2,6 @@ import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
-import xarray as xr
 from matplotlib.ticker import ScalarFormatter
 
 from src.seba import EnergyBudget
@@ -22,27 +21,17 @@ if __name__ == '__main__':
 
     # Load dyamond dataset
     model = 'ERA5'
-    resolution = 'n512'
+    resolution = '025deg'
     data_path = '../data/'
-    # data_path = '/mnt/levante/energy_budget/test_data/'
 
-    date_time = '20[01]'
-    file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
+    date_time = '20200128'
+    file_names = data_path + f"{model}_atm_3d_inst_{resolution}_rps_{date_time}.nc"
 
-    # load earth topography and surface pressure
-    dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    sfc_pres = dataset_sfc.pres_sfc
-
-    # Create energy budget object
-    budget = EnergyBudget(file_names, ps=sfc_pres)
+    # Create energy budget object. Set the truncation
+    budget = EnergyBudget(file_names, truncation=575)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
-
-    layers = {
-        'Troposphere': [250e2, 500e2],
-        'Stratosphere': [50e2, 250e2]
-    }
 
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
@@ -72,6 +61,11 @@ if __name__ == '__main__':
 
     s_lscale = r'$l^{-3}$'
     s_sscale = r'$l^{-5/3}$'
+
+    layers = {
+        'Troposphere': [250e2, 450e2],
+        'Stratosphere': [50e2, 250e2]
+    }
 
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(7., 5.8), constrained_layout=True)
 
@@ -129,13 +123,13 @@ if __name__ == '__main__':
 
     # Perform vertical integration along last axis
     layers = {
-        # 'Stratosphere': [50e2, 250e2],
-        'Free troposphere': [250e2, 500e2],
-        # 'Lower troposphere': [500e2, 850e2],
+        'Stratosphere': [20e2, 250e2],
+        'Free troposphere': [250e2, 450e2],
+        # 'Lower troposphere': [450e2, 950e2],
     }
 
     ke_limits = {
-        'Stratosphere': [-0.4, 0.4],
+        'Stratosphere': [-0.8, 0.8],
         'Free troposphere': [-0.5, 1.0],
         'Lower troposphere': [-1.0, 1.5],
     }
@@ -203,7 +197,7 @@ if __name__ == '__main__':
     # Load computed fluxes
     # ----------------------------------------------------------------------------------------------
     layers = {
-        'Free troposphere': [250e2, 500e2],
+        'Free troposphere': [250e2, 450e2],
         # 'Lower troposphere': [500e2, 850e2]
     }
 

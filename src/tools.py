@@ -193,11 +193,11 @@ def getspecindx(ntrunc):
 def _pack_levels(sbo, data, order='C'):
     # pack dimensions of arrays (nlat, nlon, ...) to (nlat, nlon, samples)
     data_length = len(data)
-    expected_length = [2, sbo.nlat, sbo.nlm]
+    expected_length = [2, sbo.nlat, sbo.sphere.nlm]
 
     if data_length not in expected_length:
         raise ValueError(f"Inconsistent array shape: expecting "
-                         f"first dimension of size {sbo.nlat} or {sbo.nlm}.")
+                         f"first dimension of size {sbo.nlat} or {sbo.sphere.nlm}.")
 
     data_shape = np.shape(data)[:3 - expected_length.index(data_length)] + (-1,)
 
@@ -307,7 +307,7 @@ def gaussian_lats_wts(nlat):
     """
     nodes, weights = spec.roots_legendre(nlat)
     # ensure north-south orientation (weights are symmetric)
-    latitudes = np.arcsin(nodes[::-1]) * 180.0 / np.pi
+    latitudes = np.rad2deg(np.arcsin(nodes[::-1]))
 
     return latitudes, weights
 
@@ -737,7 +737,7 @@ def broadcast_indices(indices, shape, axis):
     return tuple(ret)
 
 
-def gradient_1d(scalar, x, axis=-1, order=6):
+def gradient_1d(scalar, x=None, axis=-1, order=6):
     """
     Computes the gradient of a scalar function d(scalar)/dx along a given axis. Uses high-order
     compact finite differences schemes if the input grid is regularly spaced, otherwise uses the
@@ -762,9 +762,11 @@ def gradient_1d(scalar, x, axis=-1, order=6):
         gradient : ndarray,
             Gradient of the 'scalar' along 'axis'.
     """
-
-    msg = "Coordinate 'x' must be the same size as 'scalar' along the specified axis."
-    assert x.size == scalar.shape[axis], msg
+    if x is None:
+        x = np.arange(scalar.shape[axis])
+    else:
+        msg = "Coordinate 'x' must be the same size as 'scalar' along the specified axis."
+        assert x.size == scalar.shape[axis], msg
 
     # determine if the grid is regular
     dx = np.diff(x)

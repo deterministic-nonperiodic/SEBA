@@ -6,7 +6,6 @@ import cartopy.crs as ccrs
 import colorcet
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import scipy.stats as stats
 import xarray as xr
 from matplotlib.colors import LinearSegmentedColormap
@@ -130,6 +129,7 @@ DATA_KEYMAP = {
     'cad': r'$C_{A \rightarrow D}$',
     'vf_dke': r'$F_{D\uparrow}$',
     'vfd_dke': r'$\partial_{p}F_{D\uparrow}$',
+    'vfd_dke_est': r'$\partial_{p}F_{D\uparrow}$',
     'vf_ape': r'$F_{A\uparrow}$',
     'vfd_ape': r'$\partial_{p}F_{A\uparrow}$',
     'uw_vf': r'$\rho\overline{u^{\prime}w^{\prime}}$',
@@ -314,10 +314,7 @@ def generate_global_maps(model,
         model_dataset = model_dataset.sel(time=slice(*time_range))
 
         # Create a list with timestamps
-        timestamps[component] = [
-            pd.to_datetime(str(date_time)).strftime("%Y-%m-%d %H:%M")
-            for date_time in model_dataset.time.values[time_id]
-        ]
+        timestamps[component] = model_dataset.time.dt.strftime('%Y-%m-%d %H:%M')
 
         lat = model_dataset['lat'].values
         lon = model_dataset['lon'].values
@@ -406,7 +403,11 @@ def find_symlog_params(data):
         linscale = qr_5 / (linthresh * np.log10(data_range))
 
     abs_max = 0.75 * np.nanmax(abs(data))
-    return dict(linthresh=linthresh, linscale=linscale, vmin=-abs_max, vmax=abs_max)
+
+    v_min = 0.0 if np.nanmin(data) > 0 else -abs_max
+    v_max = 0.0 if np.nanmax(data) < 0 else abs_max
+
+    return dict(linthresh=linthresh, linscale=linscale, vmin=v_min, vmax=v_max)
 
 
 def find_intersections(x, a, b, direction='all'):
@@ -1041,27 +1042,29 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
                                     frame=True, truncation=resolution)
     axes = axes.ravel()
 
-    # cs_limit = 0.65 * abs(dataset[variables].to_array().values).max()
-    cs_levels = 50
+    cs_levels = 100
 
     for m, (ax, varname) in enumerate(zip(axes, variables)):
         spectra = 1e3 * dataset[varname].values
 
-        # Create plots:
-        cs = ax.contourf(kappa, level, spectra,
-                         cmap=cmap, levels=cs_levels,
-                         norm=SymLogNorm(**find_symlog_params(spectra))
-                         )
+        smoothed_data = gaussian_filter(spectra, 0.25)
 
-        ax.contour(kappa, level, gaussian_filter(spectra, 1.2),
-                   color='black', linewidths=0.8, levels=[0, ])
+        # Create plots:
+        cs = ax.contourf(kappa, level, smoothed_data,
+                         cmap=cmap, levels=cs_levels,
+                         norm=SymLogNorm(**find_symlog_params(spectra)))
+
+        ax.contour(kappa, level, smoothed_data,
+                   color='black', linewidths=0.8, linestyles='solid',
+                   levels=[0, ], alpha=0.6)
 
         ax.set_ylim(y_limits)
         ax.set_ylabel(r'Pressure (hPa)')
 
         # add a colorbar to all axes
         cb = plt.colorbar(cs, ax=ax, orientation='vertical', pad=0.001, format="%.2f")
-        cb.ax.set_title(r"[$W / m^{2}$]", fontsize=14, loc='left', pad=15)
+        cb.ax.set_title(r"($\times 10^{3}~W m^{-2}$)", fontsize=11, loc='center', pad=10)
+        cb.ax.tick_params(labelsize=12)
 
     if model is not None:
         at = AnchoredText(model.upper(), prop=dict(size=15), frameon=True, loc='upper left')

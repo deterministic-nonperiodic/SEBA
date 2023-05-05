@@ -9,23 +9,23 @@ from xarray import Dataset, DataArray, open_dataset, open_mfdataset
 import constants as cn
 from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
-from tools import interpolate_1d, inspect_gridtype
-from tools import surface_mask, is_sorted  # , prepare_data
+from tools import interpolate_1d, inspect_gridtype, gradient_1d
+from tools import is_sorted, gaussian_lats_wts
 
 path_global_topo = "../data/topo_global_n1250m.nc"
 
 CF_variable_conventions = {
     "geopotential": {
         "standard_name": ("geop", "geopotential", "air_geopotential",),
-        "units": ('joule / kilogram',)
+        "units": ('joule / kilogram', 'm**2 s**-2')
     },
     "temperature": {
         "standard_name": ("t", "ta", "temp", "air_temperature", 'temperature'),
         "units": ('K', 'kelvin', 'Kelvin', 'degree_C')
     },
     "pressure": {
-        "standard_name": ("p", "air_pressure", "pressure"),
-        "units": ('Pa', 'hPa', 'mb', 'millibar')
+        "standard_name": ("p", "air_pressure", "pressure", "pressure_level"),
+        "units": ('Pa', 'hPa', 'mb', 'millibar', 'millibars')
     },
     "omega": {
         "standard_name": ('omega', 'lagrangian_tendency_of_air_pressure',
@@ -89,7 +89,7 @@ CF_coordinate_conventions = {
     },
     "level": {
         "standard_name": ('level', 'lev', 'zlev', 'eta', 'plev',
-                          'pressure', 'air_pressure', 'altitude',
+                          'pressure', 'pressure_level', 'air_pressure', 'altitude',
                           'depth', 'height', 'geopotential_height',
                           'height_above_geopotential_datum',
                           'height_above_mean_sea_level',
@@ -113,6 +113,9 @@ expected_units = {
     "vorticity": "1/s",
     "temperature": "K",
     "pressure": "Pa",
+    "ps": "Pa",
+    "ts": "K",
+    "level": "Pa",
     "omega": "Pa/s",
     "geopotential": "m**2 s**-2",
 }
@@ -125,6 +128,8 @@ expected_range = {
     "vorticity": [-10., 10.],
     "temperature": [120, 350.],
     "pressure": [0.0, 2000e2],
+    "ts": [120, 350.],
+    "ps": [0.0, 2000e2],
     "omega": [-100, 100],
     "geopotential": [0., ],
 }
@@ -193,43 +198,49 @@ class SebaDataset(Dataset):
             ds = other.copy()
         elif isinstance(other, DataArray):
             is_array = True
-            ds = other.to_dataset()
+            ds = other.to_dataset(promote_attrs=True)
         else:
             raise ValueError("Illegal type for parameter 'other'")
 
         # Check and convert the units of each variable
         for varname in ds.data_vars:
+
             var = ds[varname]
+
             if varname not in expected_units:
                 continue
 
+            # define expected units
             expected_unit = expected_units[varname]
 
+            # define variable units
             var_units = var.attrs.get("units")
+
             if var_units is None:
                 print(f"Warning: Units not found for variable {varname}")
 
                 if np.nanmax(var) <= expected_range[varname][1] and \
                         np.nanmin(var) >= expected_range[varname][0]:
-
-                    var_units = expected_unit
+                    # Update the units attribute of the variable
+                    ds[varname].attrs["units"] = expected_unit
                 else:
                     raise ValueError(f"Variable '{varname}' has no units and values are outside "
                                      f"admitted range: {expected_range[varname]}")
 
-            if var_units != expected_unit:
+            if not equivalent_units(var_units, expected_unit):
                 if compatible_units(var_units, expected_unit):
                     # Convert the values to the expected units
                     fixed_units = _parse_units(var_units)
-                    var.values = (var.values * fixed_units).to(_parse_units(
-                        expected_unit)).magnitude
 
+                    values = (var.values * fixed_units).to(_parse_units(expected_unit)).magnitude
+
+                    ds[varname] = (var.dims, values, var.attrs)
+
+                    # Update the units attribute of the variable
+                    ds[varname].attrs["units"] = expected_unit
                 else:
                     raise ValueError(f"Cannot convert {varname} units"
                                      f"{var_units} to {expected_unit}.")
-
-            # Update the units attribute of the variable
-            var.attrs["units"] = var_units
 
         if is_array:
             # get rid of extra coordinates and return original DataArray object
@@ -272,12 +283,20 @@ class SebaDataset(Dataset):
 
                         surface_var = surface_var.transpose('latitude', 'longitude')
 
+                        # check units
+                        surface_var = self.check_convert_units(surface_var)
+
                         # check dimensions match (not much precision needed), interpolate otherwise
-                        if not (np.allclose(surface_var.latitude, self.latitude, atol=1e-4)
-                                and np.allclose(surface_var.longitude, self.longitude,
-                                                atol=1e-4)):
+                        same_size = surface_var.latitude.size == self.latitude.size
+
+                        if not same_size or not np.allclose(surface_var.latitude,
+                                                            self.latitude, atol=1e-4):
+                            print(f'Interpolating surface data: {name}')
+
+                            # extrapolate missing values usually points near the poles
                             surface_var = surface_var.interp(latitude=self.latitude,
-                                                             longitude=self.longitude)
+                                                             longitude=self.longitude,
+                                                             kwargs={"fill_value": "extrapolate"})
                         # convert to masked array
                         surface_var = surface_var.to_masked_array()
 
@@ -312,8 +331,9 @@ class SebaDataset(Dataset):
 
         # If surface pressure is not found, it is approximated by the pressure
         # level closest to the surface. This is a fallback option for unmasked terrain.
-        if 'ps' not in self and hasattr(self, 'pressure'):
-            sfcp = np.broadcast_to(np.max(self.pressure) + 1e2, grid_shape)
+        if 'ps' not in self and 'pressure' in self:
+            pressure = self.check_convert_units(self.pressure)
+            sfcp = np.broadcast_to(np.max(pressure) + 1e2, grid_shape)
             self['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
             self['ps'].attrs['units'] = 'Pa'
 
@@ -331,19 +351,16 @@ class SebaDataset(Dataset):
 
         # Calculate mask to exclude extrapolated data below the surface (p >= ps).
         # beta should be computed just once
-        if hasattr(self, 'pressure') and hasattr(self, 'ps'):
-            mask = surface_mask(self.pressure.values, self.ps.values, smooth=False)
-            mask = DataArray(mask, dims=["latitude", "longitude", "level"])
-        else:
-            # mask all values as valid
-            mask = True
+        data = self[name]  # assume all values as valid
 
-        # Mask data pierced by the topography, if not already masked during interpolation.
-        data = self[name].where(mask, np.nan)
+        if 'pressure' in self and 'ps' in self:
+            # Mask data pierced by the topography, if not already masked during interpolation.
+            data = data.where(self.pressure < self.ps.broadcast_like(self.pressure), np.nan)
 
         # sort data north-south and starting at the surface
-        data = data.sortby([dim for dim in ["latitude", "level"]
-                            if dim in data.coords], ascending=False)
+        data = data.sortby(
+            [dim for dim in ["latitude", "level"] if dim in data.coords], ascending=False
+        )
 
         # Transpose dimensions for cleaner vectorized operations.
         # - moving dimensions 'lat' and 'lon' forward and 'levels' to last dimension
@@ -400,6 +417,41 @@ class SebaDataset(Dataset):
         data = data.sel({coord_name: coord_range}, method='nearest').diff(dim=coord_name)
 
         return data.squeeze(drop=True)
+
+    def gradient(self, variable=None, dim="level", order=6):
+        """ Differentiate along a given coordinate using high-order compact
+            finite difference scheme (Lele 1992).
+        """
+        if variable is None:
+            # create a copy and integrate the entire dataset.
+            data = self.copy()
+        elif isinstance(variable, (list, tuple)):
+            data = self[list(variable)]
+        elif variable in self:
+            data = self[variable].to_dataset(promote_attrs=True)
+        else:
+            raise ValueError(f"Variable {variable} not found in dataset!")
+
+        # Find vertical coordinate and sort 'coord_range' accordingly
+        coord = self.find_coordinate(coord_name=dim)
+        axis = tuple(data.dims).index(coord.name)
+
+        for name in data.data_vars:
+
+            var_attrs = data[name].attrs
+
+            data[name] = (data[name].dims, gradient_1d(data[name].values,
+                                                       coord.values,
+                                                       axis=axis, order=order))
+
+            # keep attrs
+            data[name].attrs.update(var_attrs)
+
+            if "units" in coord.attrs and "units" in var_attrs:
+                converted_units = _parse_units(var_attrs['units']) / _parse_units(coord.units)
+                data[name].attrs['units'] = str(converted_units.units)
+
+        return data
 
     def integrate_range(self, variable=None, dim="level", coord_range=None):
 
@@ -575,7 +627,8 @@ def is_standard(data, standard_name):
 
     var_units = var_attrs.get("units")
 
-    if var_units is not None:
+    if var_units:
+        # if variable has units enforce
         return has_name and var_units in cf_attrs["units"]
     else:
         return has_name
@@ -638,7 +691,7 @@ def _find_variable(dataset, variable_name, raise_notfound=True) -> Optional[Data
     return candidates[0]
 
 
-def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
+def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     """
         Parse input xarray dataset
 
@@ -706,11 +759,18 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
     dataset = SebaDataset(dataset).compute()
 
     # rename spatial coordinates to standard names: (level, latitude, longitude)
-    map_dims = {dataset.find_coordinate(name).name: name
-                for name in ("level", "longitude", "latitude")}
-    dataset = dataset.rename(map_dims)
+    new_dims = ("time", "level", "longitude", "latitude")
+    map_dims = {dataset.find_coordinate(name).name: name for name in new_dims}
+    dataset = dataset.rename(map_dims).set_index({v: v for v in new_dims})
+    # dataset.swap_dims({dataset.find_coordinate('time').name: 'time'})
 
-    dataset.swap_dims({dataset.find_coordinate('time').name: 'time'})
+    # check units for pressure vertical coordinate
+    if is_standard(dataset.level, "pressure") and hasattr(dataset.level, "units"):
+        # convert units
+        values = (dataset.level.values * _parse_units(dataset.level.units))
+        dataset = dataset.assign_coords({'level': values.to('Pa').magnitude})
+        # recover attributes
+        dataset.level.attrs.update(units='Pa', name='pressure', long_name='pressure_level')
 
     # find variables by name or candidates variables based on CF conventions
     data = {name_map[0]: dataset.find_variable(name_map, raise_notfound=True)
@@ -814,6 +874,19 @@ def parse_dataset(dataset, variables=None, surface_data=None, p_levels=None):
         data['geopotential'] = phi.transpose("time", "level", "latitude", "longitude")
         data['geopotential'].attrs['units'] = 'joule / kilogram'
 
+    # Inspect grid type based on the latitude sampling and interpolate if required
+    if data.latitude.size != data.longitude.size // 2:
+        gridtype = 'gaussian'
+
+        print(f'Interpolating to {gridtype} grid ...')
+        latitude, _ = gaussian_lats_wts(data.longitude.size // 2)
+
+        data = data.interp(latitude=latitude)
+    else:
+        gridtype, *_ = inspect_gridtype(data.latitude)
+
+    data.attrs.update(gridtype=gridtype)
+
     print("Data processing completed successfully!")
 
     # return dataset with proper variables and units (remove dask arrays)
@@ -864,7 +937,7 @@ def interpolate_pressure_levels(dataset, p_levels=None):
     if is_standard(levels, "pressure"):
         # If pressure was not found create a new variable 'pressure' from levels.
         if pressure is None:
-            dataset["pressure"] = levels
+            dataset["pressure"] = levels.astype(float)
 
         return dataset
 

@@ -12,7 +12,7 @@ from spectral_analysis import kappa_from_deg
 from spherical_harmonics import Spharmt
 from thermodynamics import exner_function, potential_temperature
 from thermodynamics import stability_parameter, vertical_velocity
-from tools import inspect_gridtype, prepare_data, transform_io
+from tools import prepare_data, transform_io
 from tools import rotate_vector, broadcast_1dto, gradient_1d
 
 # declare global read-only variables
@@ -97,8 +97,7 @@ class EnergyBudget:
         """
 
         # Parsing input dataset to search for required analysis fields.
-        data = parse_dataset(dataset, variables=variables, surface_data={'ps': ps, 'ts': None},
-                             p_levels=p_levels)
+        data = parse_dataset(dataset, variables=variables, p_levels=p_levels, ps=ps)
 
         # Get the size of every dimension. The analysis is performed over 3D slices of data
         # (lat, lon, pressure) by simply iterating over the temporal axis.
@@ -110,27 +109,11 @@ class EnergyBudget:
         # -----------------------------------------------------------------------------
         # Initialize a sphere object to perform the spectral transformations.
         # -----------------------------------------------------------------------------
-        # Inspect grid type based on the latitude sampling
-        self.gridtype, self.latitude, self.weights = inspect_gridtype(data.latitude)
-
-        # define the triangular truncation
-        if truncation is None:
-            self.truncation = self.nlat - 1
-        else:
-            self.truncation = int(truncation)
-
-            if self.truncation < 0 or self.truncation > self.nlat - 1:
-                raise ValueError(f'Truncation must be between 0 and {self.nlat - 1}')
-
-        # Create sphere object for spectral transforms
-        self.sphere = Spharmt(self.nlat, self.nlon, gridtype=self.gridtype,
-                              rsphere=rsphere, ntrunc=self.truncation)
+        self.sphere = Spharmt(self.nlat, self.nlon, ntrunc=truncation, rsphere=rsphere)
 
         # Compute scale factor for vector spectra: l (l + 1) / Re ** 2 = kappa ** -2
-        self.nlm = self.sphere.nlm
-
         scale = - self.sphere.rsphere * self.sphere.inv_lap
-        self.vector_scale = broadcast_1dto(scale, (self.nlm, self.samples, self.nlevels))
+        self.vector_scale = broadcast_1dto(scale, (self.sphere.nlm, self.samples, self.nlevels))
 
         # Create dictionary with name/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as SebaDataset
@@ -141,7 +124,7 @@ class EnergyBudget:
                           if name not in ['latitude', 'longitude']}
 
         # compute horizontal wavenumber (rad / meter)
-        self.kappa_h = kappa_from_deg(np.arange(self.truncation + 1, dtype=int))
+        self.kappa_h = kappa_from_deg(np.arange(self.sphere.truncation + 1, dtype=int))
 
         self.sp_coords['kappa'] = xr.IndexVariable('kappa', self.kappa_h,
                                                    attrs={'standard_name': 'wavenumber',
@@ -198,7 +181,7 @@ class EnergyBudget:
         self.wind_div, self.wind_rot = self.helmholtz()
 
         # Coriolis parameter (broadcast to the shape of the wind vector)
-        self.fc = broadcast_1dto(coriolis_parameter(self.latitude), self.wind.shape)
+        self.fc = broadcast_1dto(coriolis_parameter(data.latitude.values), self.wind.shape)
 
         # ------------------------------------------------------------------------------------------
         # Thermodynamics
@@ -232,7 +215,7 @@ class EnergyBudget:
 
             # Accumulate along spherical harmonic order (m) and return
             # spectrum as a function of spherical harmonic degree (l)
-            if data.shape[0] == self.nlm:
+            if data.shape[0] == self.sphere.nlm:
                 data = self.accumulate_order(data)
         else:
             coords = self.gp_coords
@@ -407,10 +390,10 @@ class EnergyBudget:
         vf_ape = self.ape_vertical_flux()
 
         # same as 'dke_vertical_flux_divergence'
-        vfd_dke = self.vertical_gradient(vf_dke)
+        vfd_dke = self.vertical_gradient(vf_dke, order=2)
 
         # same as 'ape_vertical_flux_divergence'
-        vfd_ape = self.vertical_gradient(vf_ape)
+        vfd_ape = self.vertical_gradient(vf_ape, order=2)
 
         # add data and metadata to vertical fluxes
         fluxes['pf_dke'] = self.add_field(pf_dke, units='Pa * ' + units,
@@ -570,7 +553,7 @@ class EnergyBudget:
         Computes the vertical vorticity and horizontal divergence
         """
         # Spectral coefficients of vertical vorticity and horizontal wind divergence.
-        vrt_spc, div_spc = self._compute_rotdiv(self.wind)
+        vrt_spc, div_spc = self._spectral_vrtdiv(self.wind)
 
         # transform back to grid-point space preserving mask
         vrt = self._inverse_transform(vrt_spc)
@@ -689,6 +672,10 @@ class EnergyBudget:
 
         return self.ganma * (advection_term + vertical_term / 2.0)
 
+    def geopotential_flux(self):
+        # Pressure flux (Eq.22)
+        return self._scalar_spectrum(self.div, self.phi)
+
     def pressure_flux(self):
         # Pressure flux (Eq.22)
         return - self._scalar_spectrum(self.omega, self.phi)
@@ -706,6 +693,11 @@ class EnergyBudget:
         ape_flux = self._scalar_spectrum(self.theta_prime, self.omega * self.theta_prime)
 
         return - self.ganma * ape_flux / 2.0
+
+    def pressure_flux_divergence(self):
+        # Approximation for the vertical pressure flux using mass continuity
+        # to avoid computing vertical gradients of spectral quantities.
+        return self.geopotential_flux() - self.conversion_ape_dke()
 
     def dke_vertical_flux_divergence(self):
         # Vertical flux divergence of Divergent kinetic energy.
@@ -804,7 +796,7 @@ class EnergyBudget:
         return self.sphere.synthesis(scalar_sp)
 
     @transform_io
-    def _compute_rotdiv(self, vector):
+    def _spectral_vrtdiv(self, vector):
         """
         Compute the spectral coefficients of vorticity and horizontal divergence
         of a vector field on the sphere.
@@ -841,10 +833,10 @@ class EnergyBudget:
 
         return scalar_gradient
 
-    def vertical_gradient(self, scalar, order=8):
+    def vertical_gradient(self, scalar, order=6):
         """
             Computes vertical gradient (∂φ/∂p) of a scalar function (φ) in pressure coordinates.
-            Using 8th-order compact finite difference scheme (Lele 1992). Contiguous masked
+            Using high-order compact finite difference scheme (Lele 1992). Contiguous masked
             regions are excluded from the calculation and the original scalar mask is recovered.
         """
         return gradient_1d(scalar, self.pressure, axis=-1, order=order)
@@ -873,7 +865,7 @@ class EnergyBudget:
         # scalar_advection = np.ma.sum(self.wind * self.horizontal_gradient(scalar), axis=0)
 
         # Spectral coefficients of the scalar flux divergence: ∇⋅(φ u)
-        scalar_divergence = self._compute_rotdiv(scalar * self.wind)[1]
+        scalar_divergence = self._spectral_vrtdiv(scalar * self.wind)[1]
 
         # back to grid-point space
         scalar_divergence = self._inverse_transform(scalar_divergence)
@@ -926,6 +918,7 @@ class EnergyBudget:
     def _scalar_spectrum(self, scalar_1, scalar_2=None):
         """
         Compute cross/spectrum of a scalar field as a function of spherical harmonic degree.
+        Augier and Lindborg (2013), Eq.9
         """
 
         # Compute the spectral coefficients of scalar_1
@@ -942,15 +935,16 @@ class EnergyBudget:
     def _vector_spectrum(self, vector_1, vector_2=None):
         """
         Compute cross/spectrum of two vector fields as a function of spherical harmonic degree.
+        Augier and Lindborg (2013), Eq.12
         """
 
         # Compute the spectral coefficients of the vorticity and divergence of vector_1
-        vector_sp1 = self._compute_rotdiv(vector_1)
+        vector_sp1 = self._spectral_vrtdiv(vector_1)
 
         if vector_2 is not None:
             assert vector_2.shape == vector_1.shape, "Rank mismatch between input vectors."
             # Compute the spectral coefficients of the vorticity and divergence of vector_2
-            vector_sp2 = self._compute_rotdiv(vector_2)
+            vector_sp2 = self._spectral_vrtdiv(vector_2)
         else:
             vector_sp2 = vector_sp1
 
@@ -982,8 +976,8 @@ class EnergyBudget:
         clm_shape = list(cs_lm.shape)
         nml_shape = clm_shape.pop(axis)
 
-        if hasattr(self, 'truncation'):
-            truncation = self.truncation + 1
+        if hasattr(self.sphere, 'truncation'):
+            truncation = self.sphere.truncation + 1
         else:
             truncation = numeric_tools.truncation(nml_shape)
 
@@ -1024,8 +1018,7 @@ class EnergyBudget:
             raise ValueError("Dimensions nlat and nlon must be in consecutive order.")
 
         if weights is None:
-            if hasattr(self, 'weights'):
-                weights = self.weights
+            weights = self.sphere.weights
         else:
             weights = np.asarray(weights)
 
@@ -1047,14 +1040,3 @@ class EnergyBudget:
         scalar_avg = self.representative_mean(scalar, lat_axis=0)
 
         return scalar_avg, scalar - scalar_avg
-
-    def _scalar_perturbation(self, scalar):
-        # Compute scalar perturbations in spectral space
-        # This does not work very well with masked data...
-        scalar_spc = self._spectral_transform(scalar)
-
-        # set mean coefficient (ls=ms=0) to 0.0 and invert transformation
-        mean_index = (self.sphere.order == 0) & (self.sphere.degree == 0)
-        scalar_spc[mean_index] = 0.0
-
-        return self._inverse_transform(scalar_spc)

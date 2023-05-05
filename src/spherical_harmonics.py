@@ -83,26 +83,30 @@ class Spharmt(object):
             specified then 'truncation=nlat-1' is used.
         :param gridtype: grid type
         """
-        if ntrunc is None:
-            ntrunc = nlat - 1
-
         # checking parameters
         if rsphere is None:
             self.rsphere = earth_radius
         elif type(rsphere) == int or type(rsphere) == float:
             self.rsphere = abs(rsphere)
         else:
-            raise ValueError('Illegal value of rsphere {} - must be positive'.format(rsphere))
+            raise ValueError(f'Illegal value of rsphere {rsphere} - must be positive')
 
         if nlon > 3:
             self.nlon = nlon
         else:
-            raise ValueError('Illegal value of nlon {} - must be at least 4'.format(nlon))
+            raise ValueError(f'Illegal value of nlon {nlon} - must be at least 4')
 
         if nlat > 2:
             self.nlat = nlat
         else:
-            raise ValueError('Illegal value of nlat {} - must be at least 3'.format(nlat))
+            raise ValueError(f'Illegal value of nlat {nlat} - must be at least 3')
+
+        if ntrunc is None:
+            ntrunc = nlat - 1
+        else:
+            ntrunc = int(ntrunc)
+            assert 0 < ntrunc <= nlat - 1, ValueError(
+                f'Truncation must be between 0 and {nlat - 1}')
 
         if gridtype.lower() not in ('regular', 'gaussian'):
             raise ValueError('Illegal value of gridtype {} - must be'
@@ -117,11 +121,16 @@ class Spharmt(object):
 
         if self.gridtype == 'regular':
             self.sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 0)
+            self.weights = self.sht.cos_theta
         else:
             # default to gaussian grid
             self.sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 0)
 
-        self.ntrunc = ntrunc
+            # create symmetrical weights from Legendre roots
+            weights = self.sht.gauss_wts()
+            self.weights = np.concatenate([weights, weights[::-1]])
+
+        self.truncation = ntrunc
         self.nlm = self.sht.nlm
         self.degree = self.sht.l
         self.order = self.sht.m
