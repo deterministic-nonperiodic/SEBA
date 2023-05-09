@@ -864,7 +864,7 @@ subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, nt, ns, np)
     double precision :: Rd, g
     double precision :: phi_bc, tbar
 
-    integer :: i, j, nc, kn
+    integer :: i, j, nc, kn, k
 
     double precision, intent(out) :: phi (nt, ns, np)
 
@@ -906,7 +906,13 @@ subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, nt, ns, np)
             ! Vertical integration for levels above the surface: d(phi)/d(log p) = - Rd * T(p)
             ! Integrating in log-pressure using a 4th-order Adams-Moulton linear multistep method.
             call adaptative_adams_moulton(phi(i, j, kn:np), phi_bc, &
-                    &                             -Rd * temp(i, j, kn:np), lnp(kn:np), nc)
+                    &                             - Rd * temp(i, j, kn:np), lnp(kn:np), nc)
+
+            ! Vertical integration for levels below the surface starting at p = ps.
+            if (kn > 1) then
+                call adaptative_adams_moulton(phi(i, j, kn:1:-1), phi(i, j, kn), &
+                        &                             - Rd * temp(i, j, kn:1:-1), lnp(kn:1:-1), kn)
+            end if
 
         end do
     end do

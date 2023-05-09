@@ -21,7 +21,7 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
 
     # Load dyamond dataset
-    model = 'ERA5'
+    model = 'ICON'
     resolution = 'n512'
     data_path = '../data/'
     # data_path = '/mnt/levante/energy_budget/test_data/'
@@ -34,16 +34,15 @@ if __name__ == '__main__':
     sfc_pres = dataset_sfc.pres_sfc
 
     # Create energy budget object
-    budget = EnergyBudget(file_names, ps=sfc_pres)
+    budget = EnergyBudget(file_names, ps=None)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
 
     layers = {
-        'Troposphere': [250e2, 500e2],
+        'Troposphere': [250e2, 450e2],
         'Stratosphere': [50e2, 250e2]
     }
-
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
@@ -129,13 +128,13 @@ if __name__ == '__main__':
 
     # Perform vertical integration along last axis
     layers = {
-        # 'Stratosphere': [50e2, 250e2],
-        'Free troposphere': [250e2, 500e2],
-        # 'Lower troposphere': [500e2, 850e2],
+        'Stratosphere': [20e2, 250e2],
+        'Free troposphere': [250e2, 450e2],
+        # 'Lower troposphere': [450e2, 950e2],
     }
 
     ke_limits = {
-        'Stratosphere': [-0.4, 0.4],
+        'Stratosphere': [-0.8, 0.8],
         'Free troposphere': [-0.5, 1.0],
         'Lower troposphere': [-1.0, 1.5],
     }
@@ -203,7 +202,7 @@ if __name__ == '__main__':
     # Load computed fluxes
     # ----------------------------------------------------------------------------------------------
     layers = {
-        'Free troposphere': [250e2, 500e2],
+        'Free troposphere': [250e2, 450e2],
         # 'Lower troposphere': [500e2, 850e2]
     }
 

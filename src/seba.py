@@ -181,8 +181,9 @@ class EnergyBudget:
         self.wind_div, self.wind_rot = self.helmholtz()
 
         # Coriolis parameter (broadcast to the shape of the wind vector)
-        self.fc = broadcast_1dto(coriolis_parameter(data.latitude.values), self.wind.shape)
+        self.fc = broadcast_1dto(coriolis_parameter(data.latitude.values), self.vrt.shape)
 
+        self.abs_vrt = self.vrt + self.fc
         # ------------------------------------------------------------------------------------------
         # Thermodynamics
         # ------------------------------------------------------------------------------------------
@@ -559,10 +560,7 @@ class EnergyBudget:
         vrt = self._inverse_transform(vrt_spc)
         div = self._inverse_transform(div_spc)
 
-        vrt = np.ma.masked_array(vrt, mask=self.mask, fill_value=0.0)
-        div = np.ma.masked_array(div, mask=self.mask, fill_value=0.0)
-
-        return vrt, div
+        return np.ma.masked_array([vrt, div], mask=[self.mask, self.mask], fill_value=0.0)
 
     # -------------------------------------------------------------------------------
     # Methods for computing spectral fluxes
@@ -576,16 +574,14 @@ class EnergyBudget:
         """
 
         # compute advection of the horizontal wind (using the rotational form)
-        advection_term = self._wind_advection() + self.div * self.wind / 2.0
+        advection = 2.0 * self._wind_advection() + self.div * self.wind
+        advection += self.omega * self.wind_shear
 
         # compute nonlinear spectral transfer related to horizontal advection
-        advective_flux = - self._vector_spectrum(self.wind, advection_term)
+        nonlinear_transfer = - self._vector_spectrum(self.wind, advection)
+        nonlinear_transfer += self._vector_spectrum(self.wind_shear, self.omega * self.wind)
 
-        # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transport = self._vector_spectrum(self.wind_shear, self.omega * self.wind)
-        vertical_transport -= self._vector_spectrum(self.wind, self.omega * self.wind_shear)
-
-        return advective_flux + vertical_transport / 2.0
+        return nonlinear_transfer / 2.0
 
     def rke_nonlinear_transfer(self):
         """
@@ -594,20 +590,18 @@ class EnergyBudget:
         :return:
             Spectrum of RKE transfer across scales
         """
+        # Advection by the rotational effect due to absolute vorticity
+        advection_rot = self.abs_vrt * rotate_vector(self.wind_rot)
+        advection_tot = self.abs_vrt * rotate_vector(self.wind) + self.omega * self.wind_shear
 
-        # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transfer = self._vector_spectrum(self.wind_shear, self.omega * self.wind_rot)
-        vertical_transfer -= self._vector_spectrum(self.wind_rot, self.omega * self.wind_shear)
+        # nonlinear rotational kinetic energy transfer
+        rke_transfer = -self._vector_spectrum(self.wind, advection_rot)
+        rke_transfer -= self._vector_spectrum(self.wind_rot, advection_tot)
 
-        # Rotational effect due to Coriolis
-        deformation = - self._vector_spectrum(self.wind_rot, self.fc * rotate_vector(self.wind))
-        deformation -= self._vector_spectrum(self.wind, self.fc * rotate_vector(self.wind_rot))
+        # add vertical transfer term
+        rke_transfer += self._vector_spectrum(self.wind_shear, self.omega * self.wind_rot)
 
-        # Relative vorticity term
-        deformation -= self._vector_spectrum(self.wind_rot, self.vrt * rotate_vector(self.wind))
-        deformation -= self._vector_spectrum(self.wind, self.vrt * rotate_vector(self.wind_rot))
-
-        return (vertical_transfer + deformation) / 2.0
+        return rke_transfer / 2.0
 
     def dke_nonlinear_transfer(self):
         """
@@ -617,37 +611,30 @@ class EnergyBudget:
 
         .. math:: T_{D}(l,m) + T_{R}(l,m) = T_{K}(l,m) + L(l,m)
 
+        This implementation is optimized to reduce the number of calls to "vector_spectrum"
+
         :return:
             Spectrum of DKE transfer across scales
         """
 
-        # Horizontal kinetic energy per unit mass in grid-point space
-        kinetic_energy = np.ma.sum(self.wind * self.wind, axis=0)
+        # Horizontal kinetic energy per unit mass in grid-point space scaled by 2
+        hke = np.ma.sum(self.wind * self.wind, axis=0)
 
-        # Horizontal gradient of horizontal kinetic energy
-        kinetic_energy_gradient = self.horizontal_gradient(kinetic_energy)
+        # Advection by the divergent wind in grid space
+        advection_div = self.horizontal_gradient(hke) + self.abs_vrt * rotate_vector(self.wind)
+        advection_div += self.omega * self.wind_shear
 
-        # compute nonlinear spectral transfer related to horizontal advection
-        advective_flux = - self._vector_spectrum(self.wind_div, kinetic_energy_gradient)
-        advective_flux -= self._vector_spectrum(self.wind, self.div * self.wind)
+        # Horizontal advection of absolute vorticity.
+        advection_vrt = self.div * self.wind + self.abs_vrt * rotate_vector(self.wind_div)
 
-        # This term seems to effectively cancel out after summing over all zonal wavenumber.
-        vertical_transfer = self._vector_spectrum(self.wind_shear, self.omega * self.wind_div)
-        vertical_transfer -= self._vector_spectrum(self.wind_div, self.omega * self.wind_shear)
+        # compute nonlinear spectral transfer related to advection by the divergent wind.
+        nonlinear_transfer = - self._vector_spectrum(self.wind_div, advection_div)
+        nonlinear_transfer -= self._vector_spectrum(self.wind, advection_vrt)
 
-        # cross product of vertical unit vector and horizontal winds
-        cross_wind = rotate_vector(self.wind)
-        cross_wdiv = rotate_vector(self.wind_div)
+        # add vertical transfer term
+        nonlinear_transfer += self._vector_spectrum(self.wind_shear, self.omega * self.wind_div)
 
-        # Coriolis effect
-        deformation = - self._vector_spectrum(self.wind_div, self.fc * cross_wind)
-        deformation -= self._vector_spectrum(self.wind, self.fc * cross_wdiv)
-
-        # Relative vorticity effect
-        deformation -= self._vector_spectrum(self.wind_div, self.vrt * cross_wind)
-        deformation -= self._vector_spectrum(self.wind, self.vrt * cross_wdiv)
-
-        return (advective_flux + vertical_transfer + deformation) / 2.0
+        return nonlinear_transfer / 2.0
 
     def ape_nonlinear_transfer(self):
         """
@@ -657,20 +644,18 @@ class EnergyBudget:
             Spherical harmonic coefficients of APE transfer across scales
         """
 
-        # compute horizontal advection of potential temperature
-        theta_advection = self._scalar_advection(self.theta_prime)
-        theta_advection += self.div * self.theta_prime / 2.0
-
-        # compute nonlinear spectral transfer related to horizontal advection
-        advection_term = - self._scalar_spectrum(self.theta_prime, theta_advection)
-
         # Compute vertical gradient of potential temperature perturbations
         theta_gradient = self.vertical_gradient(self.theta_prime)
 
-        vertical_term = self._scalar_spectrum(theta_gradient, self.omega * self.theta_prime)
-        vertical_term -= self._scalar_spectrum(self.theta_prime, self.omega * theta_gradient)
+        # compute horizontal advection of potential temperature
+        theta_advection = 2.0 * self._scalar_advection(self.theta_prime)
+        theta_advection += self.div * self.theta_prime + self.omega * theta_gradient
 
-        return self.ganma * (advection_term + vertical_term / 2.0)
+        # compute nonlinear spectral transfer related to horizontal advection
+        ape_transfer = - self._scalar_spectrum(self.theta_prime, theta_advection)
+        ape_transfer += self._scalar_spectrum(theta_gradient, self.omega * self.theta_prime)
+
+        return self.ganma * ape_transfer / 2.0
 
     def geopotential_flux(self):
         # Pressure flux (Eq.22)
@@ -711,6 +696,8 @@ class EnergyBudget:
 
     def conversion_ape_dke(self):
         # Conversion of Available Potential energy into kinetic energy (Eq. 19 of A&L)
+
+        # specific volume
         alpha = cn.Rd * self.temperature / self.pressure
 
         return - self._scalar_spectrum(self.omega, alpha)
@@ -825,10 +812,6 @@ class EnergyBudget:
 
         if np.ma.is_masked(scalar):
             # Recovering "ground-truth" masked gradient using: β ∇φ = ∇(β φ) - (β φ) ∇β.
-            # The exact form of the last term should be φ∇β instead of (β φ) ∇β, however the two
-            # formulas are equivalent in non-masked regions (β = 1).
-            # beta_gradient = self.sphere.getgrad((~scalar.mask).astype(float))
-            # scalar_gradient = scalar_gradient - beta_gradient * scalar
             scalar_gradient = np.ma.masked_array(scalar_gradient, mask=[scalar.mask, scalar.mask])
 
         return scalar_gradient
@@ -912,7 +895,6 @@ class EnergyBudget:
         ke_gradient = self.horizontal_gradient(kinetic_energy)
 
         # Horizontal advection of zonal and meridional wind components
-        # (components stored along the first dimension)
         return ke_gradient + self.vrt * rotate_vector(self.wind)
 
     def _scalar_spectrum(self, scalar_1, scalar_2=None):

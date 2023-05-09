@@ -5,12 +5,16 @@ from typing import Optional
 import numpy as np
 import pint
 from xarray import Dataset, DataArray, open_dataset, open_mfdataset
+from xarray import set_options
 
 import constants as cn
 from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
 from tools import interpolate_1d, inspect_gridtype, gradient_1d
 from tools import is_sorted, gaussian_lats_wts
+
+# Keep attributes after operations (why isn't this the default behaviour anyways...)
+set_options(keep_attrs=True)
 
 path_global_topo = "../data/topo_global_n1250m.nc"
 
@@ -143,7 +147,10 @@ cmd = re.compile(r'(?<=[A-Za-z)])(?![A-Za-z)])(?<![0-9\-][eE])(?<![0-9\-])(?=[0-
 
 
 def _parse_units(unit_str):
-    return UNITS_REG(cmd.sub('**', unit_str))
+    if isinstance(unit_str, (pint.Quantity, pint.Unit)):
+        return unit_str
+    else:
+        return UNITS_REG(cmd.sub('**', unit_str))
 
 
 def equivalent_units(unit_1, unit_2):
@@ -210,11 +217,11 @@ class SebaDataset(Dataset):
             if varname not in expected_units:
                 continue
 
-            # define expected units
-            expected_unit = expected_units[varname]
-
             # define variable units
             var_units = var.attrs.get("units")
+
+            # define expected units
+            expected_unit = expected_units[varname]
 
             if var_units is None:
                 print(f"Warning: Units not found for variable {varname}")
@@ -223,6 +230,7 @@ class SebaDataset(Dataset):
                         np.nanmin(var) >= expected_range[varname][0]:
                     # Update the units attribute of the variable
                     ds[varname].attrs["units"] = expected_unit
+                    var_units = expected_unit
                 else:
                     raise ValueError(f"Variable '{varname}' has no units and values are outside "
                                      f"admitted range: {expected_range[varname]}")
@@ -239,14 +247,14 @@ class SebaDataset(Dataset):
                     # Update the units attribute of the variable
                     ds[varname].attrs["units"] = expected_unit
                 else:
-                    raise ValueError(f"Cannot convert {varname} units"
-                                     f"{var_units} to {expected_unit}.")
+                    raise ValueError(f"Cannot convert {varname} incompatible units"
+                                     f"{var_units} to {expected_unit}!")
 
         if is_array:
             # get rid of extra coordinates and return original DataArray object
-            ds = ds.to_array().squeeze('variable').drop_vars('variable')
-
-        return ds
+            return ds.to_array().squeeze('variable').drop_vars('variable')
+        else:
+            return ds
 
     def add_surface_data(self, surface_data=None):
 
@@ -268,12 +276,12 @@ class SebaDataset(Dataset):
                 if name in surface_data and is_standard(surface_data[name], name):
 
                     surface_var = surface_data[name]
-
+                    surface_var_attrs = {}
                     if isinstance(surface_var, DataArray):
 
                         # inputs are DataArray
                         if 'time' in surface_var.dims:
-                            surface_var = surface_var.mean('time')
+                            surface_var = surface_var.mean('time', keep_attrs=True)
 
                         # Renaming spatial coordinates. Raise error if no coordinate
                         # is consistent with latitude and longitude standards.
@@ -285,6 +293,7 @@ class SebaDataset(Dataset):
 
                         # check units
                         surface_var = self.check_convert_units(surface_var)
+                        surface_var_attrs = surface_var.attrs
 
                         # check dimensions match (not much precision needed), interpolate otherwise
                         same_size = surface_var.latitude.size == self.latitude.size
@@ -310,8 +319,8 @@ class SebaDataset(Dataset):
 
                         # create DataArray and assign to dataset
                         surface_var = DataArray(surface_var, name=name,
-                                                dims=("latitude", "longitude"))
-
+                                                dims=("latitude", "longitude"),
+                                                attrs=surface_var_attrs)
                     else:
                         raise ValueError(f'Illegal type for surface variable {name}! '
                                          f'If given it must be one of [xr.DataArray, np.ndarray].')
@@ -319,7 +328,7 @@ class SebaDataset(Dataset):
                     self[name] = surface_var
             else:
                 if 'time' in surface_var.dims:
-                    surface_var = surface_var.mean('time')
+                    surface_var = surface_var.mean('time', keep_attrs=True)
 
                 # Surface data must be exactly one dimension less than the total number of
                 # dimensions in dataset (Not sure if this is a good enough condition!?)
@@ -339,7 +348,7 @@ class SebaDataset(Dataset):
 
         return self
 
-    def get_field(self, name, default=None):
+    def get_field(self, name, default=None, masked=True):
         """ Returns a field in dataset after processing to be used by seba.EnergyBudget:
             - Exclude extrapolated data below the surface (p >= ps).
             - Ensure latitude axis is oriented north-to-south.
@@ -353,9 +362,10 @@ class SebaDataset(Dataset):
         # beta should be computed just once
         data = self[name]  # assume all values as valid
 
-        if 'pressure' in self and 'ps' in self:
-            # Mask data pierced by the topography, if not already masked during interpolation.
-            data = data.where(self.pressure < self.ps.broadcast_like(self.pressure), np.nan)
+        if masked:
+            if 'pressure' in self and 'ps' in self:
+                # Mask data pierced by the topography, if not already masked during interpolation.
+                data = data.where(self.pressure < self.ps.broadcast_like(self.pressure), np.nan)
 
         # sort data north-south and starting at the surface
         data = data.sortby(
