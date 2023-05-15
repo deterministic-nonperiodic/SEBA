@@ -320,7 +320,7 @@ class EnergyBudget:
         cdr_c = self.conversion_dke_rke_coriolis()
 
         # Total conversion from divergent to rotational kinetic energy.
-        cdr = cdr_w + cdr_v + cdr_c
+        c_dke_rke = cdr_w + cdr_v + cdr_c
 
         # Compute cumulative nonlinear spectral energy fluxes
         pi_rke = self.rke_nonlinear_transfer()
@@ -358,7 +358,7 @@ class EnergyBudget:
                                          long_name='conversion from divergent to rotational '
                                                    'kinetic energy due to the coriolis effect')
 
-        fluxes['cdr'] = self.add_field(cdr, units=units, standard_name='conversion_dke_rke',
+        fluxes['cdr'] = self.add_field(c_dke_rke, units=units, standard_name='conversion_dke_rke',
                                        long_name='conversion from divergent to '
                                                  'rotational kinetic energy')
 
@@ -423,6 +423,27 @@ class EnergyBudget:
                                            standard_name='vertical_ape_flux_divergence',
                                            long_name='vertical flux divergence'
                                                      ' of available potential energy')
+
+        fluxes['vfd_tot'] = self.add_field(vfd_dke + vfd_ape, units=units,
+                                           standard_name='total_vertical_flux_divergence',
+                                           long_name='total vertical flux divergence')
+
+        # Compute energy dissipation assuming quasi-stationary atmospheric state.
+        dis_rke = - (pi_rke + c_dke_rke)
+        dis_dke = - (pi_dke + c_ape_dke - c_dke_rke + vfd_dke)
+
+        fluxes['dis_rke'] = self.add_field(dis_rke, units=units,
+                                           standard_name='rke_dissipation',
+                                           long_name='dissipation of rotational kinetic energy')
+
+        fluxes['dis_dke'] = self.add_field(dis_dke, units=units,
+                                           standard_name='dke_dissipation',
+                                           long_name='dissipation of divergent kinetic energy')
+
+        fluxes['dis_hke'] = self.add_field(dis_rke + dis_dke, units=units,
+                                           standard_name='hke_dissipation',
+                                           long_name='dissipation of horizontal kinetic energy')
+
         return fluxes
 
     def get_ke_tendency(self, tendency, name=None):
@@ -565,7 +586,7 @@ class EnergyBudget:
     # -------------------------------------------------------------------------------
     # Methods for computing spectral fluxes
     # -------------------------------------------------------------------------------
-    def ke_nonlinear_transfer(self):
+    def hke_nonlinear_transfer(self):
         """
         Kinetic energy spectral transfer due to nonlinear interactions after
         Augier and Lindborg (2013), Eq.A2
@@ -578,10 +599,10 @@ class EnergyBudget:
         advection += self.omega * self.wind_shear
 
         # compute nonlinear spectral transfer related to horizontal advection
-        nonlinear_transfer = - self._vector_spectrum(self.wind, advection)
-        nonlinear_transfer += self._vector_spectrum(self.wind_shear, self.omega * self.wind)
+        hke_transfer = - self._vector_spectrum(self.wind, advection)
+        hke_transfer += self._vector_spectrum(self.wind_shear, self.omega * self.wind)
 
-        return nonlinear_transfer / 2.0
+        return hke_transfer / 2.0
 
     def rke_nonlinear_transfer(self):
         """
@@ -628,13 +649,13 @@ class EnergyBudget:
         advection_vrt = self.div * self.wind + self.abs_vrt * rotate_vector(self.wind_div)
 
         # compute nonlinear spectral transfer related to advection by the divergent wind.
-        nonlinear_transfer = - self._vector_spectrum(self.wind_div, advection_div)
-        nonlinear_transfer -= self._vector_spectrum(self.wind, advection_vrt)
+        dke_transfer = - self._vector_spectrum(self.wind_div, advection_div)
+        dke_transfer -= self._vector_spectrum(self.wind, advection_vrt)
 
         # add vertical transfer term
-        nonlinear_transfer += self._vector_spectrum(self.wind_shear, self.omega * self.wind_div)
+        dke_transfer += self._vector_spectrum(self.wind_shear, self.omega * self.wind_div)
 
-        return nonlinear_transfer / 2.0
+        return dke_transfer / 2.0
 
     def ape_nonlinear_transfer(self):
         """

@@ -12,6 +12,7 @@ from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
 from tools import interpolate_1d, inspect_gridtype, gradient_1d
 from tools import is_sorted, gaussian_lats_wts
+from visualization import fluxes_spectra_by_levels, energy_spectra_by_levels
 
 # Keep attributes after operations (why isn't this the default behaviour anyways...)
 set_options(keep_attrs=True)
@@ -54,12 +55,12 @@ CF_variable_conventions = {
     },
     'divergence': {
         'standard_name': ('div', 'sd', 'divergence', 'horizontal divergence',
-                          "horizontal_divergence", "wind_divergence"),
+                          "horizontal_divergence", "wind_divergence", "divergence_of_wind"),
         'units': ("s-1", "s**-1", "1/s")
     },
     'vorticity': {
         'standard_name': ('vrt', 'svo', 'vor', 'vorticity', 'vertical vorticity',
-                          "vertical_vorticity", "wind_vorticity"),
+                          "vertical_vorticity", "wind_vorticity", "atmosphere_relative_vorticity"),
         'units': ("s-1", "s**-1", "1/s")
     },
     'ts': {
@@ -548,6 +549,24 @@ class SebaDataset(Dataset):
         # Assign dimension before sorting (cumsum drops coordinates for some reason!)
         return data.assign_coords({dim: coordinate[::-1]}).sortby(dim)
 
+    def visualize_fluxes(self, **kwargs):
+
+        if kwargs.get('layers') is None:
+            fluxes_spectra_by_levels(self, **kwargs)
+        else:
+            layers = kwargs.pop('layers')
+            for level, prange in layers.items():
+                fluxes_spectra_by_levels(self, layers={level: prange}, **kwargs)
+
+    def visualize_energy(self, **kwargs):
+
+        if kwargs.get('layers') is None:
+            energy_spectra_by_levels(self, **kwargs)
+        else:
+            layers = kwargs.pop('layers')
+            for level, prange in layers.items():
+                energy_spectra_by_levels(self, layers={level: prange}, **kwargs)
+
 
 def get_coordinate_names(dataset):
     """
@@ -622,6 +641,13 @@ def reindex_coordinate(coord, data):
     return coord.reindex({coord.name: data})
 
 
+def _parse_name(name):
+    if isinstance(name, str):
+        return name.lower()
+    else:
+        return None
+
+
 def is_standard(data, standard_name):
     # check if a DataArray is standard CF variable
     if not isinstance(data, (DataArray, Dataset)):
@@ -631,9 +657,9 @@ def is_standard(data, standard_name):
 
     cf_attrs = CF_variable_conventions[standard_name]
 
-    has_name = np.any([var_attrs.get(name) in cf_attrs["standard_name"]
+    has_name = np.any([_parse_name(var_attrs.get(name)) in cf_attrs["standard_name"]
                        for name in ["name", "standard_name", "long_name"]]) or \
-               data.name in cf_attrs["standard_name"]
+               _parse_name(data.name) in cf_attrs["standard_name"]
 
     var_units = var_attrs.get("units")
 

@@ -173,7 +173,8 @@ def stability_parameter(pressure, theta, vertical_axis=0):
     ddp_theta = gradient_1d(theta, pressure, axis=vertical_axis)
 
     ganma = - cn.Rd * exner_function(pressure) / (pressure * ddp_theta)
-
+    # # remove unstable and neutral profiles
+    # ganma[ddp_theta <= 0] = 0.0
     return ganma
 
 

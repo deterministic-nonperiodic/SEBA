@@ -25,7 +25,7 @@ plt.style.use('default')
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
           'text.usetex': True, 'font.size': 14,
-          'legend.title_fontsize': 12,
+          'legend.title_fontsize': 15,
           'font.family': 'serif', 'font.weight': 'normal'}
 
 plt.rcParams.update(params)
@@ -117,26 +117,57 @@ parula = LinearSegmentedColormap.from_list('parula', cm_data)
 
 BWG = LinearSegmentedColormap.from_list('BWG', colorcet.CET_D13)
 
-DATA_KEYMAP = {
+VARIABLE_KEYMAP = {
+    'hke': r'$E_K$',
+    'rke': r'$E_R$',
+    'dke': r'$E_D$',
+    'vke': r'$E_w$',
+    'ape': r'$E_A$',
     'pi_hke': r'$\Pi_K$',
     'pi_dke': r'$\Pi_D$',
     'pi_rke': r'$\Pi_R$',
     'pi_ape': r'$\Pi_A$',
-    'cdr': r'$C_{D \rightarrow R}$',
-    'cdr_w': r'$C_{D \rightarrow R}^{w}$',
-    'cdr_v': r'$C_{D \rightarrow R}^{\zeta}$',
-    'cdr_c': r'$C_{D \rightarrow R}^{C}$',
-    'cad': r'$C_{A \rightarrow D}$',
-    'vf_dke': r'$F_{D\uparrow}$',
-    'vfd_dke': r'$\partial_{p}F_{D\uparrow}$',
-    'vfd_dke_est': r'$\partial_{p}F_{D\uparrow}$',
-    'vf_ape': r'$F_{A\uparrow}$',
-    'vfd_ape': r'$\partial_{p}F_{A\uparrow}$',
+    'cdr': r'$\mathcal{C}_{D \rightarrow R}$',
+    'cdr_w': r'$\mathcal{C}_{D \rightarrow R}^{\omega}$',
+    'cdr_v': r'$\mathcal{C}_{D \rightarrow R}^{\zeta}$',
+    'cdr_c': r'$\mathcal{C}_{D \rightarrow R}^{f}$',
+    'cad': r'$\mathcal{C}_{A \rightarrow D}$',
+    'vf_dke': r'$\mathcal{F}_{D\uparrow}$',
+    'vfd_dke': r'$\partial_{p}\mathcal{F}_{D\uparrow}$',
+    'vfd_tot': r'$\mathcal{F}_{\uparrow}(p_b) - \mathcal{F}_{\uparrow}(p_t)$',
+    'vf_ape': r'$\mathcal{F}_{A\uparrow}$',
+    'vfd_ape': r'$\partial_{p}\mathcal{F}_{A\uparrow}$',
     'uw_vf': r'$\rho\overline{u^{\prime}w^{\prime}}$',
     'vw_vf': r'$\rho\overline{v^{\prime}w^{\prime}}$',
     'gw_vf': r'$\overline{u^{\prime}w^{\prime}}$ + $\overline{v^{\prime}w^{\prime}}$',
-    'dke_dl_vf': r'$\partial_{\kappa}(\partial_{p}F_{D\uparrow})$',
-    'dcdr_dl': r'$\partial_{\kappa} C_{D \rightarrow R}$',
+    'dke_dl_vf': r'$\partial_{\kappa}(\partial_{p}\mathcal{F}_{D\uparrow})$',
+    'dcdr_dl': r'$\partial_{\kappa} \mathcal{C}_{D \rightarrow R}$',
+    'dis_rke': r'$\mathcal{D}_R$',
+    'dis_dke': r'$\mathcal{D}_D$',
+    'dis_hke': r'$\mathcal{D}_K$'
+}
+
+LINES_KEYMAP = {
+    'hke': ('black', 'solid', 1.5),
+    'rke': ('red', 'dashed', 1.5),
+    'dke': ('green', 'dashed', 1.5),
+    'vke': ('black', '-.', 1.5),
+    'ape': ('navy', 'solid', 1.5),
+    'pi_hke': ('red', 'solid', 2.0),
+    'pi_dke': ('green', 'solid', 1.6),
+    'pi_rke': ('red', 'solid', 1.6),
+    'pi_ape': ('navy', 'solid', 2.0),
+    'cdr': ('cyan', 'dashed', 2.0),
+    'cdr_w': ('black', '-.', 1.6),
+    'cdr_v': ('red', '-.', 1.6),
+    'cdr_c': ('green', '-.', 1.6),
+    'cad': ('green', 'dashed', 2.0),
+    'vfd_dke': ('magenta', '-.', 1.6),
+    'vfd_tot': ('magenta', '-.', 1.6),
+    'vfd_ape': ('blue', '-.', 1.6),
+    'dis_rke': ('blue', '-.', 1.6),
+    'dis_dke': ('blue', '-.', 1.6),
+    'dis_hke': ('blue', '-.', 1.6),
 }
 
 map_layers = ['BlueMarble_NextGeneration', 'VIIRS_CityLights_2012',
@@ -523,8 +554,8 @@ def transform_spectra(s):
 
 
 def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_label=None,
-                        lambda_lines=None, y_scale='log', base=10, ax_titles=None,
-                        frame=True, truncation='n1024', figure_size=5.5, **figure_kwargs):
+                        lambda_lines=None, y_scale='log', base=10, ax_titles=None, aligned=True,
+                        frame=True, truncation='n1024', figure_size=None, **figure_kwargs):
     """Creates a figure template for spectral line plots
 
     :param n_rows: number of rows in figure
@@ -537,6 +568,7 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     :param frame: draw frame on ax titles
     :param lambda_lines: positions to draw vertical lines
     :param ax_titles: title to display on the left corner of each axis
+    :param aligned:
     :param truncation: spectral truncation
     :param figure_size:
     :param figure_kwargs: additional keyword arguments to pass to plt.figure()
@@ -579,11 +611,17 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     else:
         ax_titles = list(ax_titles)
 
-    reduced_size = 0.92 * figure_size
-    aspect = reduced_size if n_cols > 2 else figure_size
+    if figure_size is None:
+        figure_size = (5.5, 5.5)
+    elif isinstance(figure_size, (tuple, list)):
+        pass
+    else:
+        reduced_size = 0.92 * float(figure_size)
+        aspect = reduced_size if n_cols > 2 else figure_size
+        figure_size = (aspect * n_cols, figure_size * n_rows)
 
     fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols,
-                             figsize=(aspect * n_cols, figure_size * n_rows),
+                             figsize=figure_size,
                              constrained_layout=True, **figure_kwargs)
 
     if n_rows * n_cols == 1:
@@ -621,10 +659,10 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
             ax.axvspan(np.max(kappa_lines), x_limits[1], alpha=0.15, color='gray')
 
         # Align left ytick labels:
-        for label in ax.yaxis.get_ticklabels():
-            label.set_horizontalalignment('left')
-
-        ax.yaxis.set_tick_params(pad=33)
+        if aligned:
+            for label in ax.yaxis.get_ticklabels():
+                label.set_horizontalalignment('left')
+            ax.yaxis.set_tick_params(pad=32)
 
         # set y label only for left most panels
         if not (m % n_cols):
@@ -645,8 +683,9 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
 
         if m < n_cols:  # upper boundary only
             secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
+            secax.xaxis.set_major_formatter(ScalarFormatter())
 
-            secax.set_xlabel('{} wavelength '.format(prefix) + r'$[km]$', fontsize=14, labelpad=5)
+            secax.set_xlabel('{} wavelength '.format(prefix) + r'$(km)$', fontsize=14, labelpad=5)
 
     return fig, axes
 
@@ -655,7 +694,7 @@ def reference_slopes(ax, k_scales, magnitude, slopes, name='horizontal'):
     # Function for adding reference slopes to spectral plot
 
     if name == 'horizontal':
-        s_scales = [r"$\kappa^{{{0}}}$".format(s) for s in slopes]
+        s_scales = [r"$l^{{{0}}}$".format(s) for s in slopes]
     else:
         s_scales = [r"$m^{{{0}}}$".format(s) for s in slopes]
 
@@ -678,329 +717,20 @@ def reference_slopes(ax, k_scales, magnitude, slopes, name='horizontal'):
                     verticalalignment='top', fontsize=13)
 
 
-def spectral_fluxes_by_models(dataset, models=None, varname='Eh', compensate=False,
-                              leg_loc='best', leg_box=None, resolution='n1024',
-                              y_limits=None, fig_name='test.png'):
-    if models is None:
-        models = dataset.keys()
+def _parse_varname(varname):
+    # parser variable names and return the corresponding line properties
 
-    ax_titles = ['{}'.format(model.upper()) for model in models]
-
-    colors = color_sequences['DarkMint'][7][1:]
-
-    if y_limits is None:
-        y_limits = [1e-10, 1e2]
-
-    if compensate:
-        y_label = r'Compensated energy ($\times\kappa^{5/3}$)'
+    if varname in VARIABLE_KEYMAP:
+        color, style, width = LINES_KEYMAP[varname]
+        label = VARIABLE_KEYMAP[varname]
+    elif "+" in varname:
+        color, style, width = 'black', 'solid', 2
+        label = VARIABLE_KEYMAP[varname.split('+')[0]].split('_')[0] + r'=$ '
+        label += r' $+$ '.join([VARIABLE_KEYMAP[name] for name in varname.split('+')])
     else:
-        y_label = r'Kinetic energy $[m^2/s^2]$'
+        raise ValueError(f'Unknown variable name: {varname}.')
 
-    if varname == 'Ew':
-
-        x_scales = [kappa_from_lambda(np.linspace(2800, 600, 2)),
-                    kappa_from_lambda(np.linspace(300, 60, 2))]
-        scale_st = ['-1', '1/3']
-        scale_mg = [8.0e-7, 2.5e-4]
-
-    elif varname == 'Eh':
-
-        x_scales = [kappa_from_lambda(np.linspace(3000, 600, 2)),
-                    kappa_from_lambda(np.linspace(300, 50, 2))]
-        scale_st = ['-3', '-5/3']
-        scale_mg = [2.5e-6, 0.1e-2]
-
-    else:
-        raise ValueError('Wrong variable name')
-
-    # get coordinates
-    height = dataset['height']
-    kappa = dataset['kappa']
-
-    # -----------------------------------------------------------------------------------
-    # Visualization of Kinetic energy and Available potential energy
-    # -----------------------------------------------------------------------------------
-    n = len(models)
-    cols = 2 if not n % 2 else n
-    rows = max(1, n // cols)
-
-    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, y_limits=y_limits,
-                                    y_label=y_label, y_scale='log', ax_titles=ax_titles,
-                                    frame=False, truncation=resolution)
-    axes = axes.ravel()
-
-    for m, (ax, model) in enumerate(zip(axes, models)):
-        for i, level in enumerate(height):
-            spectra, e_sel, e_seu = transform_spectra(dataset[model][varname][:, i])
-
-            # Create plots:
-            label = "{:>2d}".format(np.round(level).astype(int))
-
-            ax.fill_between(kappa, e_seu, e_sel, color='gray', interpolate=False, alpha=0.1)
-
-            ax.plot(kappa, spectra, lw=1.5, color=colors[i],
-                    label=label, linestyle='solid', alpha=1.0)
-
-        # plot reference slopes
-        reference_slopes(ax, x_scales, scale_mg, scale_st)
-
-    axes[0].legend(title='Altitude [km]', loc=leg_loc, frameon=False,
-                   bbox_to_anchor=leg_box, fontsize=14, ncol=2)
-
-    plt.show()
-
-    fig.savefig(os.path.join('../figures', fig_name), dpi=300)
-    plt.close(fig)
-
-
-def spectra_models_by_levels(dataset, models=None, varname='Eh',
-                             leg_loc='best', leg_box=None, resolution='n1024',
-                             y_limits=None, fig_name='test.png'):
-    if models is None:
-        models = dataset.keys()
-
-    colors = color_sequences['models'][4]
-
-    if y_limits is None:
-        y_limits = [1e-10, 1e2]
-
-    if varname == 'Ew':
-
-        x_scales = [kappa_from_lambda(np.linspace(2800, 600, 2)),
-                    kappa_from_lambda(np.linspace(300, 60, 2))]
-        scale_st = [['-1', '1/3'], ['2/3', '1/3']]
-        scale_mg = [[6.5e-7, 3.e-4], [1.6e-3, 0.36e-3]]
-
-    elif varname == 'Eh':
-
-        x_scales = [kappa_from_lambda(np.linspace(3000, 600, 2)),
-                    kappa_from_lambda(np.linspace(300, 50, 2))]
-        scale_st = ['-3', '-5/3']
-        scale_mg = [2.5e-6, 0.1e-2]
-
-    else:
-        raise ValueError('Wrong variable name')
-
-    # get coordinates
-    height = dataset['height']
-    kappa = dataset['kappa']
-
-    y_label = r'Kinetic energy $[m^2/s^2]$'
-    layers = ['Troposphere', 'Stratosphere']
-    ax_titles = [layers[np.round(lv).astype(int) > 15.0] + ' (z ~{:>2d} km)'.format(int(lv))
-                 for lv in height]
-
-    # -----------------------------------------------------------------------------------
-    # Visualization of Kinetic energy and Available potential energy
-    # -----------------------------------------------------------------------------------
-    cols = max(1, len(height))
-
-    fig, axes = spectra_base_figure(n_rows=1, n_cols=cols, y_limits=y_limits,
-                                    y_label=y_label, y_scale='log', ax_titles=ax_titles,
-                                    frame=True, truncation=resolution)
-
-    for i, (ax, level) in enumerate(zip(axes, height)):
-        for m, model in enumerate(models):
-            model_data = dataset[model][varname]
-            # compute mean and standard deviation
-            spectra, e_sel, e_seu = transform_spectra(model_data[:, i])
-
-            # Create plots:
-            label = model.upper()
-
-            ax.fill_between(kappa, e_seu, e_sel, color='gray', interpolate=False, alpha=0.1)
-
-            ax.plot(kappa, spectra, lw=1.25, color=colors[m],
-                    label=label, linestyle='solid', alpha=1.0)
-
-        # plot reference slopes
-        if varname == 'Ew':
-            level_id = level > 15.0
-        else:
-            level_id = slice(None)
-
-        reference_slopes(ax, x_scales, scale_mg[level_id], scale_st[level_id])
-
-    axes[0].legend(loc=leg_loc, bbox_to_anchor=leg_box,
-                   frameon=False, fontsize=14, ncol=1)
-
-    plt.show()
-
-    fig.savefig(os.path.join('../figures', fig_name), dpi=300)
-    plt.close(fig)
-
-
-def kinetic_energy_components(dataset, dataset_igws=None, dataset_rows=None, models=None,
-                              show_helmholtz=True, leg_loc='best', leg_box=None,
-                              resolution='n1024', y_limits=None, fig_name='test.png'):
-    if models is None:
-        models = dataset.keys()
-
-    colors = color_sequences['models'][4]
-
-    if y_limits is None:
-        y_limits = [1e-10, 1e2]
-
-    x_scales = [kappa_from_lambda(np.linspace(3500, 800, 2)),
-                kappa_from_lambda(np.linspace(300, 50, 2))]
-    scale_st = ['-3', '-5/3']
-    scale_mg = [2.5e-6, 0.1e-2]
-
-    # get coordinates
-    height = dataset['height']
-    kappa = dataset['kappa']
-
-    show_igws = dataset_igws is not None
-    show_rows = dataset_rows is not None
-
-    if show_igws:
-        kappa_ig = dataset_igws['kappa']
-    else:
-        kappa_ig = kappa
-
-    y_label = r'Kinetic energy $[m^2/s^2]$'
-
-    ax_titles = []
-
-    for level in height:
-        for model in models:
-            ax_title = '{} ~ {:>2d} km'.format(model.upper(), np.round(level).astype(int))
-            ax_titles.append(ax_title)
-
-    # -----------------------------------------------------------------------------------
-    # Visualization of Kinetic energy and Helmholtz decomposition
-    # -----------------------------------------------------------------------------------
-    rows = max(1, len(height))
-    cols = max(1, len(models))
-
-    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, y_limits=y_limits,
-                                    y_label=y_label, y_scale='log', ax_titles=ax_titles,
-                                    truncation=resolution)
-
-    for i, level in enumerate(height):
-        for m, model in enumerate(models):
-
-            ax = axes[i, m]
-            # compute mean and standard deviation
-            eh_spectra, eh_sel, eh_seu = transform_spectra(dataset[model]['Eh'][:, i])
-
-            # Create plots:
-            ax.fill_between(kappa, eh_seu, eh_sel, color='gray',
-                            interpolate=False, alpha=0.1)
-
-            ax.plot(kappa, eh_spectra, lw=1.4, color='k',
-                    label=r'$E_h$', linestyle='solid', alpha=1.0)
-
-            if 'Ew' in dataset[model].keys():
-                ew_spectra, ew_sel, ew_seu = transform_spectra(dataset[model]['Ew'][:, i])
-
-                ax.fill_between(kappa, ew_seu, ew_sel, color='gray',
-                                interpolate=False, alpha=0.1)
-
-                ax.plot(kappa, ew_spectra, lw=1.4, color='k',
-                        label=r'$E_w$', linestyle='dashed', alpha=1.0)
-
-            tr_spectra, tr_sel, tr_seu = transform_spectra(dataset[model]['Er'][:, i])
-            td_spectra, td_sel, td_seu = transform_spectra(dataset[model]['Ed'][:, i])
-
-            ax.fill_between(kappa, tr_seu, tr_sel, color='gray',
-                            interpolate=False, alpha=0.1)
-            ax.plot(kappa, tr_spectra, lw=1., color=colors[0],
-                    label=r'$E_{r}$', linestyle='solid', alpha=1.0)
-
-            ax.fill_between(kappa, td_seu, td_sel, color='gray',
-                            interpolate=False, alpha=0.1)
-            ax.plot(kappa, td_spectra, lw=1., color=colors[2],
-                    label=r'$E_{d}$', linestyle='solid', alpha=1.0)
-
-            # crossing scales: intersections between rotational and divergent kinetic energies
-            kappa_cross, spectra_cross = find_intersections(kappa, td_spectra, tr_spectra,
-                                                            direction='increasing')
-            # plot IGW components
-            ig_spectra = None
-            ro_spectra = None
-            if show_igws:
-                ig_spectra, ig_sel, ig_seu = transform_spectra(dataset_igws[model]['Eh'][:, i])
-
-                ax.fill_between(kappa_ig, ig_seu, ig_sel,
-                                color='gray', interpolate=False, alpha=0.1)
-                ax.plot(kappa_ig, ig_spectra, lw=1.4, color='k',
-                        label=r'$E_{IG_{h}}$', linestyle='dashed', alpha=1.0)
-
-                if show_helmholtz:
-                    mr_spectra, mr_sel, mr_seu = transform_spectra(dataset_igws[model]['Er'][:, i])
-                    md_spectra, md_sel, md_seu = transform_spectra(dataset_igws[model]['Ed'][:, i])
-
-                    ax.fill_between(kappa_ig, mr_seu, mr_sel,
-                                    color='gray', interpolate=False, alpha=0.1)
-                    ax.plot(kappa_ig, mr_spectra, lw=1.2, color=colors[0],
-                            label=r'$E_{IG_{r}}$', linestyle='dashed', alpha=1.0)
-
-                    ax.fill_between(kappa_ig, md_seu, md_sel,
-                                    color='gray', interpolate=False, alpha=0.1)
-                    ax.plot(kappa_ig, md_spectra, lw=1.2, color=colors[2],
-                            label=r'$E_{IG_{d}}$', linestyle='dashed', alpha=1.0)
-
-            if show_rows:
-                ro_spectra, ro_sel, ro_seu = transform_spectra(dataset_rows[model]['Eh'][:, i])
-
-                ax.fill_between(kappa_ig, ro_seu, ro_sel,
-                                color='gray', interpolate=False, alpha=0.1)
-                ax.plot(kappa_ig, ro_spectra, lw=1.4, color='red',
-                        label=r'$E_{RO_{h}}$', linestyle='dashed', alpha=1.0)
-
-                if show_helmholtz:
-                    mr_spectra, mr_sel, mr_seu = transform_spectra(dataset_rows[model]['Er'][:, i])
-                    md_spectra, md_sel, md_seu = transform_spectra(dataset_rows[model]['Ed'][:, i])
-
-                    ax.fill_between(kappa_ig, mr_seu, mr_sel,
-                                    color='gray', interpolate=False, alpha=0.1)
-                    ax.plot(kappa_ig, mr_spectra, lw=1.2, color=colors[0],
-                            label=r'$E_{RO_{r}}$', linestyle='dashed', alpha=1.0)
-
-                    ax.fill_between(kappa_ig, md_seu, md_sel,
-                                    color='gray', interpolate=False, alpha=0.1)
-                    ax.plot(kappa_ig, md_spectra, lw=1.2, color=colors[2],
-                            label=r'$E_{RO_{d}}$', linestyle='dashed', alpha=1.0)
-
-            if kappa_cross is None:
-                # crossing scales: intersections between rotational and divergent kinetic energies
-                kappa_cross, spectra_cross = find_intersections(kappa_ig, ig_spectra, ro_spectra,
-                                                                direction='increasing')
-            # take first of multiple crossings
-            if not np.isscalar(kappa_cross):
-                kappa_cross = kappa_cross[0]
-                spectra_cross = spectra_cross[0]
-
-            # ignore crossing scales below effective resolution
-            if kappa_cross > kappa_from_lambda(40.):
-                kappa_cross_pos = -60
-            else:
-                kappa_cross_pos = 4
-
-            # vertical lines denoting crossing scales
-            if not np.isnan(kappa_cross):
-                ax.vlines(x=kappa_cross, ymin=0., ymax=spectra_cross,
-                          color='black', linewidth=0.8, linestyle='dashed', alpha=0.6)
-
-                # Scale is defined as half-wavelength
-                lc = int(kappa_from_lambda(kappa_cross) / 2.0)
-                ax.annotate(r'$L_{c}$' + '~ {:d} km'.format(lc),
-                            xy=(kappa_cross, y_limits[0]), xycoords='data',
-                            xytext=(kappa_cross_pos, 20.), textcoords='offset points',
-                            color='black', fontsize=9, horizontalalignment='left',
-                            verticalalignment='top')
-
-            # plot reference slopes
-            reference_slopes(ax, x_scales, scale_mg, scale_st)
-
-    axes[0, 0].legend(loc=leg_loc, bbox_to_anchor=leg_box,
-                      ncol=2, frameon=False, fontsize=14)
-
-    plt.show()
-
-    fig.savefig(os.path.join('../figures', fig_name), dpi=300)
-    plt.close(fig)
+    return dict(label=label, lw=width, color=color, linestyle=style)
 
 
 def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=False,
@@ -1009,7 +739,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
     if variables is None:
         variables = list(dataset.data_vars)
 
-    ax_titles = [DATA_KEYMAP[name] for name in variables]
+    ax_titles = [VARIABLE_KEYMAP[name] for name in variables]
 
     if y_limits is None:
         y_limits = [1000., 100.]
@@ -1076,21 +806,20 @@ def fluxes_slices_by_models(dataset, model=None, variables=None, compensate=Fals
     plt.close(fig)
 
 
-def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=False,
+def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                              resolution='n1024', x_limits=None, y_limits=None,
-                             fig_name='test.png'):
+                             fig_name=None):
+    if model is None:
+        model = ''
+
     if variables is None:
         variables = list(dataset.data_vars)
 
-    ax_titles = [DATA_KEYMAP[name] for name in variables]
+    if layers is None:
+        layers = {'': [20e2, 950e2]}
 
     if y_limits is None:
-        y_limits = [1e-10, 1e2]
-
-    if compensate:
-        y_label = r'Compensated energy ($\times\kappa^{5/3}$)'
-    else:
-        y_label = r'Kinetic energy $[m^2/s^2]$'
+        y_limits = {'': [-1.5, 1.5]}
 
     # get coordinates
     kappa = 1e3 * dataset['kappa']
@@ -1098,32 +827,151 @@ def fluxes_spectra_by_models(dataset, model=None, variables=None, compensate=Fal
     # -----------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # -----------------------------------------------------------------------------------
-    n = len(variables)
-    cols = 2 if not n % 2 else n
-    rows = max(1, n // cols)
+    n = len(layers)
+    rows = 2 if not n % 2 else n
+    cols = max(1, n // rows)
+
+    legend_cols = 1 + int(len(variables) > 6)
 
     fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits,
-                                    y_limits=y_limits, figure_size=4.5,
-                                    y_label=y_label, y_scale='linear', ax_titles=ax_titles,
-                                    frame=True, truncation=resolution)
+                                    y_limits=None, figure_size=(7.5, 5.8), aligned=False,
+                                    y_label=r'Cumulative energy flux ($W~m^{-2}$)',
+                                    y_scale='linear', ax_titles=None, frame=False,
+                                    truncation=resolution)
     axes = axes.ravel()
+    indicator = 'abcdefghijklmn'
 
-    for m, (ax, varname) in enumerate(zip(axes, variables)):
-        spectra = 1e3 * dataset[varname].values
-        label = DATA_KEYMAP[varname]
+    for m, (level, prange) in enumerate(layers.items()):
 
-        # Create plots:
-        ew_spectra, ew_sel, ew_seu = transform_spectra(spectra)
+        data = dataset.integrate_range(coord_range=prange).mean(dim='time')
 
-        ax.fill_between(kappa, ew_seu, ew_sel, color='gray', interpolate=False, alpha=0.1)
+        for varname in variables:
+            spectra = np.sum([data[name] for name in varname.split('+')], axis=0)
 
-        ax.plot(kappa, ew_spectra, lw=1.4, color='k', label=label, linestyle='dashed', alpha=1.0)
+            axes[m].plot(kappa, spectra, **_parse_varname(varname))
 
-    if model is not None:
-        at = AnchoredText(model.upper(), prop=dict(size=15), frameon=True, loc='upper left')
-        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
-        axes[0].add_artist(at)
+        axes[m].axhline(y=0.0, xmin=0, xmax=1, color='gray',
+                        linewidth=1.2, linestyle='dashed', alpha=0.5)
+
+        axes[m].set_ylim(*y_limits[level])
+
+        prange_str = [int(1e-2 * p) for p in sorted(prange)[::-1]]
+        axes[m].legend(title=r"{} ({:4d} - {:4d} hPa)".format(level, *prange_str),
+                       loc='upper right', fontsize=14, ncol=legend_cols)
+
+        art = AnchoredText(f"({indicator[m]}) " + model.upper(),
+                           prop=dict(size=20), frameon=False, loc='upper left')
+        art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
+        axes[m].add_artist(art)
 
     plt.show()
-    fig.savefig(fig_name, dpi=300)
+
+    if fig_name is not None:
+        fig.savefig(fig_name, dpi=300)
+
+    plt.close(fig)
+
+
+def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
+                             resolution='n1024', x_limits=None, y_limits=None,
+                             fig_name=None):
+    if model is None:
+        model = ''
+
+    if variables is None:
+        variables = ['hke', 'rke', 'dke', 'vke', 'ape']
+
+    if layers is None:
+        layers = {'': [20e2, 950e2]}
+
+    if y_limits is None:
+        y_limits = {name: [1e-5, 5e7] for name in layers.keys()}
+
+    x_scales = [kappa_from_lambda(np.linspace(3500, 800, 2)),
+                kappa_from_lambda(np.linspace(500, 100, 2))]
+    scale_st = ['-3', '-5/3']
+    scale_mg = [2.5e-4, 0.1]
+
+    # get coordinates
+    kappa = 1e3 * dataset['kappa']
+
+    # -----------------------------------------------------------------------------------
+    # Visualization of Kinetic energy and Available potential energy
+    # -----------------------------------------------------------------------------------
+    n = len(layers)
+    rows = 2 if not n % 2 else n
+    cols = max(1, n // rows)
+
+    legend_cols = 1 + int(len(variables) > 3)
+
+    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits,
+                                    y_limits=None, figure_size=(7.0, 5.8), aligned=True,
+                                    y_label=r'Energy ($J~m^{-2}$)',
+                                    y_scale='log', ax_titles=None, frame=False,
+                                    truncation=resolution)
+    axes = axes.ravel()
+    indicator = 'abcdefghijklmn'
+
+    for m, (level, prange) in enumerate(layers.items()):
+
+        data = dataset.integrate_range(coord_range=prange)
+
+        for varname in variables:
+            # compute mean and standard deviation
+            spectra, spectra_sel, spectra_seu = mean_confidence_interval(data[varname].values,
+                                                                         confidence=0.95, axis=0)
+
+            # plot confidence interval
+            axes[m].fill_between(kappa, spectra_seu, spectra_sel,
+                                 color='gray', interpolate=False, alpha=0.1)
+
+            axes[m].plot(kappa, spectra, **_parse_varname(varname))
+
+        # crossing scales: intersections between rotational and divergent kinetic energies
+        kappa_c, spectra_c = find_intersections(kappa.values,
+                                                data['rke'].mean('time').values,
+                                                data['dke'].mean('time').values,
+                                                direction='decreasing')
+
+        # take first of multiple crossings
+        if not np.isscalar(kappa_c):
+            kappa_c, spectra_c = kappa_c[0], spectra_c[0]
+
+        # vertical lines denoting crossing scales
+        if not np.isnan(kappa_c):
+            axes[m].vlines(x=kappa_c, ymin=0., ymax=spectra_c,
+                           color='black', linewidth=0.8,
+                           linestyle='dashed', alpha=0.6)
+
+            if kappa_c > kappa_from_lambda(40.):
+                kappa_c_pos = -60
+            else:
+                kappa_c_pos = 4
+
+            # Scale is defined as half-wavelength
+            axes[m].annotate(r'$L_{c}$' + '~ {:d} km'.format(int(kappa_from_lambda(kappa_c))),
+                             xy=(kappa_c, y_limits[level][0]), xycoords='data',
+                             xytext=(kappa_c_pos, 20.), textcoords='offset points',
+                             color='black', fontsize=9, horizontalalignment='left',
+                             verticalalignment='top')
+
+        # plot reference slopes
+        reference_slopes(axes[m], x_scales, scale_mg, scale_st)
+
+        axes[m].set_ylim(*y_limits[level])
+
+        prange_str = [int(1e-2 * p) for p in sorted(prange)[::-1]]
+        axes[m].legend(title=r"{} ({:4d} - {:4d} hPa)".format(level, *prange_str),
+                       loc='upper right', fontsize=14, ncol=legend_cols)
+
+        art = AnchoredText(f"({indicator[m]}) " + model.upper(),
+                           prop=dict(size=20), frameon=False, loc='upper left')
+        art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
+        axes[m].add_artist(art)
+
+    plt.show()
+
+    if fig_name is not None:
+        fig.savefig(fig_name, dpi=300)
+
     plt.close(fig)

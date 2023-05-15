@@ -109,7 +109,7 @@ if __name__ == '__main__':
                        truncation=None, legfunc='stored', axes=(1, 2, 3), sample_axis=0)
 
     # Testing AEB
-    Tk = AEB.ke_nonlinear_transfer()
+    Tk = AEB.hke_nonlinear_transfer()
     Ta = AEB.ape_nonlinear_transfer()
     Cka = AEB.energy_conversion()
 
