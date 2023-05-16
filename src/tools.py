@@ -899,3 +899,111 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
             var_interp = np.swapaxes(np.swapaxes(var_interp, 0, axis)[::-1], 0, axis)
 
         yield var_interp
+
+
+def find_intersections(x, a, b, direction='all'):
+    """Calculate the best estimate of intersection.
+
+    Calculates the best estimates of the intersection of two y-value
+    data sets that share a common x-value set.
+
+    Parameters
+    ----------
+    x : array-like
+        1-dimensional array of numeric x-values
+    a : array-like
+        1-dimensional array of y-values for line 1
+    b : array-like
+        1-dimensional array of y-values for line 2
+    direction : string
+        specifies direction of crossing. 'all', 'increasing' (a becoming greater than b),
+        or 'decreasing' (b becoming greater than a).
+
+    Returns
+    -------
+        A tuple (x, y) of array-like with the x and y coordinates of the
+        intersections of the lines.
+    """
+    if np.isscalar(a):
+        a = np.full_like(b, a)
+    elif np.isscalar(b):
+        b = np.full_like(a, b)
+    else:
+        assert a.size == b.size, "Arrays 'a' and 'b' must be the same size"
+
+    assert x.size == a.size, "Array 'coords' must be the same size as 'a' and 'b'"
+
+    # Find the index of the points just before the intersection(s)
+    nearest_idx = np.argwhere(np.diff(np.sign(a - b))).ravel()
+    next_idx = nearest_idx + 1
+
+    # Determine the sign of the change
+    sign_change = np.sign(a[next_idx] - b[next_idx])
+
+    # x-values around each intersection
+    _, x0 = _next_non_masked_element(x, nearest_idx)
+    _, x1 = _next_non_masked_element(x, next_idx)
+
+    # y-values around each intersection for the first line
+    _, a0 = _next_non_masked_element(a, nearest_idx)
+    _, a1 = _next_non_masked_element(a, next_idx)
+
+    # y-values around each intersection for the second line
+    _, b0 = _next_non_masked_element(b, nearest_idx)
+    _, b1 = _next_non_masked_element(b, next_idx)
+
+    # Calculate the x-intersection.
+    delta_y0 = a0 - b0
+    delta_y1 = a1 - b1
+    intersect_x = (delta_y1 * x0 - delta_y0 * x1) / (delta_y1 - delta_y0)
+
+    # Calculate the y-intersection of the lines.
+    intersect_y = ((intersect_x - x0) / (x1 - x0)) * (a1 - a0) + a0
+
+    # Make a mask based on the direction of sign change desired
+    if direction == 'increasing':
+        mask = sign_change > 0
+    elif direction == 'decreasing':
+        mask = sign_change < 0
+    elif direction == 'all':
+        return intersect_x, intersect_y
+    else:
+        raise ValueError('Unknown option for direction: {0}'.format(str(direction)))
+
+    # get intersections
+    intersect_x, intersect_y = intersect_x[mask], intersect_y[mask]
+
+    if len(intersect_x) == 0:
+        intersect_x = intersect_y = np.nan
+    elif len(x) == 1:
+        intersect_x = intersect_x[0]
+        intersect_y = intersect_y[0]
+
+    return intersect_x, intersect_y
+
+
+def _next_non_masked_element(x, idx):
+    """Return the next non-masked element of a masked array.
+
+    If an array is masked, return the next non-masked element (if the given index is masked).
+    If no other unmasked points are after the given masked point, returns none.
+
+    Parameters
+    ----------
+    x : array-like
+        1-dimensional array of numeric values
+    idx : integer
+        index of requested element
+
+    Returns
+    -------
+        Index of next non-masked element and next non-masked element
+    """
+    try:
+        next_idx = idx + x[idx:].mask.argmin()
+        if np.ma.is_masked(x[next_idx]):
+            return None, None
+        else:
+            return next_idx, x[next_idx]
+    except (AttributeError, TypeError, IndexError):
+        return idx, x[idx]

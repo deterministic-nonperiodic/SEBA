@@ -30,6 +30,8 @@ def kappa_from_deg(ls, linear=False):
         of a sphere of radius Re using the Jeans formula.
         κ = sqrt[l(l + 1)] / Re ~ l / Re  for l>>1
     """
+    ls = np.asarray(ls)
+
     num = ls if linear else np.sqrt(ls * (ls + 1.0))
     return num / cn.earth_radius
 
@@ -46,12 +48,14 @@ def deg_from_lambda(lb):
     """
         Returns wavelength from spherical harmonics degree (ls)
     """
+    lb = np.asarray(lb)
+
     deg = np.sqrt(0.25 + (2.0 * np.pi * cn.earth_radius / lb) ** 2)
     return np.floor(deg - 0.5).astype(int)
 
 
 def kappa_from_lambda(lb):
-    return 2.0 * np.pi / lb
+    return 2.0 * np.pi / np.asarray(lb)
 
 
 def triangular_truncation(nspc):

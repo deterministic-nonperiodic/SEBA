@@ -12,10 +12,11 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.colors import SymLogNorm
 from matplotlib.offsetbox import AnchoredText
 from matplotlib.ticker import ScalarFormatter, FixedLocator
-from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import gaussian_filter
 from sklearn.preprocessing import MinMaxScaler
 
 from spectral_analysis import kappa_from_deg, kappa_from_lambda
+from tools import find_intersections
 
 # from scipy.signal import find_peaks
 
@@ -169,10 +170,6 @@ LINES_KEYMAP = {
     'dis_dke': ('blue', '-.', 1.6),
     'dis_hke': ('blue', '-.', 1.6),
 }
-
-map_layers = ['BlueMarble_NextGeneration', 'VIIRS_CityLights_2012',
-              'Reference_Features', 'Sea_Surface_Temp_Blended', 'MODIS_Terra_Aerosol',
-              'Coastlines', 'BlueMarble_ShadedRelief', 'BlueMarble_ShadedRelief_Bathymetry']
 
 crs = ccrs.PlateCarree()
 
@@ -433,111 +430,12 @@ def find_symlog_params(data):
         qr_5 = np.nanpercentile(data, [5, 95]).ptp()  # / 2.0
         linscale = qr_5 / (linthresh * np.log10(data_range))
 
-    abs_max = 0.75 * np.nanmax(abs(data))
+    abs_max = 0.65 * np.nanmax(abs(data))
 
     v_min = 0.0 if np.nanmin(data) > 0 else -abs_max
     v_max = 0.0 if np.nanmax(data) < 0 else abs_max
 
     return dict(linthresh=linthresh, linscale=linscale, vmin=v_min, vmax=v_max)
-
-
-def find_intersections(x, a, b, direction='all'):
-    """Calculate the best estimate of intersection.
-
-    Calculates the best estimates of the intersection of two y-value
-    data sets that share a common x-value set.
-
-    Parameters
-    ----------
-    x : array-like
-        1-dimensional array of numeric x-values
-    a : array-like
-        1-dimensional array of y-values for line 1
-    b : array-like
-        1-dimensional array of y-values for line 2
-    direction : string
-        specifies direction of crossing. 'all', 'increasing' (a becoming greater than b),
-        or 'decreasing' (b becoming greater than a).
-
-    Returns
-    -------
-        A tuple (x, y) of array-like with the x and y coordinates of the
-        intersections of the lines.
-    """
-    if np.isscalar(a):
-        a = np.full_like(b, a)
-    elif np.isscalar(b):
-        b = np.full_like(a, b)
-    else:
-        assert a.size == b.size, "Arrays 'a' and 'b' must be the same size"
-
-    assert x.size == a.size, "Array 'coords' must be the same size as 'a' and 'b'"
-
-    # Find the index of the points just before the intersection(s)
-    nearest_idx = np.argwhere(np.diff(np.sign(a - b))).ravel()
-    next_idx = nearest_idx + 1
-
-    # Determine the sign of the change
-    sign_change = np.sign(a[next_idx] - b[next_idx])
-
-    # x-values around each intersection
-    _, x0 = _next_non_masked_element(x, nearest_idx)
-    _, x1 = _next_non_masked_element(x, next_idx)
-
-    # y-values around each intersection for the first line
-    _, a0 = _next_non_masked_element(a, nearest_idx)
-    _, a1 = _next_non_masked_element(a, next_idx)
-
-    # y-values around each intersection for the second line
-    _, b0 = _next_non_masked_element(b, nearest_idx)
-    _, b1 = _next_non_masked_element(b, next_idx)
-
-    # Calculate the x-intersection.
-    delta_y0 = a0 - b0
-    delta_y1 = a1 - b1
-    intersect_x = (delta_y1 * x0 - delta_y0 * x1) / (delta_y1 - delta_y0)
-
-    # Calculate the y-intersection of the lines.
-    intersect_y = ((intersect_x - x0) / (x1 - x0)) * (a1 - a0) + a0
-
-    # Make a mask based on the direction of sign change desired
-    if direction == 'increasing':
-        mask = sign_change > 0
-    elif direction == 'decreasing':
-        mask = sign_change < 0
-    elif direction == 'all':
-        return intersect_x, intersect_y
-    else:
-        raise ValueError('Unknown option for direction: {0}'.format(str(direction)))
-
-    return intersect_x[mask], intersect_y[mask]
-
-
-def _next_non_masked_element(x, idx):
-    """Return the next non-masked element of a masked array.
-
-    If an array is masked, return the next non-masked element (if the given index is masked).
-    If no other unmasked points are after the given masked point, returns none.
-
-    Parameters
-    ----------
-    x : array-like
-        1-dimensional array of numeric values
-    idx : integer
-        index of requested element
-
-    Returns
-    -------
-        Index of next non-masked element and next non-masked element
-    """
-    try:
-        next_idx = idx + x[idx:].mask.argmin()
-        if np.ma.is_masked(x[next_idx]):
-            return None, None
-        else:
-            return next_idx, x[next_idx]
-    except (AttributeError, TypeError, IndexError):
-        return idx, x[idx]
 
 
 def mean_confidence_interval(data, confidence=0.95, axis=0):
@@ -555,7 +453,8 @@ def transform_spectra(s):
 
 def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_label=None,
                         lambda_lines=None, y_scale='log', base=10, ax_titles=None, aligned=True,
-                        frame=True, truncation='n1024', figure_size=None, **figure_kwargs):
+                        frame=True, truncation='n1024', figure_size=None, shared_ticks=True,
+                        **figure_kwargs):
     """Creates a figure template for spectral line plots
 
     :param n_rows: number of rows in figure
@@ -571,6 +470,7 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     :param aligned:
     :param truncation: spectral truncation
     :param figure_size:
+    :param shared_ticks: always share y/x ticks for multiple subplots.
     :param figure_kwargs: additional keyword arguments to pass to plt.figure()
     :return: fig, axes
     """
@@ -638,7 +538,7 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
 
         # axes title as annotation
         if ax_titles is not None:
-            at = AnchoredText(ax_titles[m], prop=dict(size=15), frameon=frame, loc='upper right', )
+            at = AnchoredText(ax_titles[m], prop=dict(size=15), frameon=frame, loc='upper right')
             at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
             ax.add_artist(at)
 
@@ -662,30 +562,31 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
         if aligned:
             for label in ax.yaxis.get_ticklabels():
                 label.set_horizontalalignment('left')
-            ax.yaxis.set_tick_params(pad=32)
+            ax.yaxis.set_tick_params(pad=30)
 
         # set y label only for left most panels
         if not (m % n_cols):
             ax.set_ylabel(y_label, fontsize=15)
         else:
-            ax.axes.get_yaxis().set_visible(False)
+            if shared_ticks:
+                ax.axes.get_yaxis().set_visible(False)
 
         if m >= n_cols * (n_rows - 1):  # lower boundary only
-
-            if 'm' not in truncation:
-                ax.xaxis.set_major_formatter(ScalarFormatter())
-                ax.set_xticks(1e3 * kappa_from_deg(xticks))
-                ax.set_xticklabels(xticks)
-
             ax.set_xlabel('{} wavenumber'.format(prefix), fontsize=14, labelpad=4)
         else:
-            ax.axes.get_xaxis().set_visible(False)
+            if shared_ticks:
+                ax.axes.get_xaxis().set_visible(False)
+
+        # set lower x ticks
+        ax.xaxis.set_major_formatter(ScalarFormatter())
+        ax.set_xticks(1e3 * kappa_from_deg(xticks))
+        ax.set_xticklabels(xticks)
 
         if m < n_cols:  # upper boundary only
             secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
             secax.xaxis.set_major_formatter(ScalarFormatter())
 
-            secax.set_xlabel('{} wavelength '.format(prefix) + r'$(km)$', fontsize=14, labelpad=5)
+            secax.set_xlabel('{} wavelength '.format(prefix) + r'/ $km$', fontsize=14, labelpad=5)
 
     return fig, axes
 
@@ -717,7 +618,7 @@ def reference_slopes(ax, k_scales, magnitude, slopes, name='horizontal'):
                     verticalalignment='top', fontsize=13)
 
 
-def _parse_varname(varname):
+def _parse_variable(varname):
     # parser variable names and return the corresponding line properties
 
     if varname in VARIABLE_KEYMAP:
@@ -819,7 +720,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         layers = {'': [20e2, 950e2]}
 
     if y_limits is None:
-        y_limits = {'': [-1.5, 1.5]}
+        y_limits = {name: [-1.5, 1.5] for name in layers.keys()}
 
     # get coordinates
     kappa = 1e3 * dataset['kappa']
@@ -828,16 +729,17 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     # Visualization of Kinetic energy and Available potential energy
     # -----------------------------------------------------------------------------------
     n = len(layers)
-    rows = 2 if not n % 2 else n
-    cols = max(1, n // rows)
+    cols = 2 if not n % 2 else n
+    rows = max(1, n // cols)
 
     legend_cols = 1 + int(len(variables) > 6)
 
-    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits,
-                                    y_limits=None, figure_size=(7.5, 5.8), aligned=False,
-                                    y_label=r'Cumulative energy flux ($W~m^{-2}$)',
+    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols,
+                                    figure_size=(cols * 7.0, rows * 5.8),
+                                    x_limits=x_limits, y_limits=None, aligned=False,
+                                    y_label=r'Cumulative energy flux / $W ~ m^{-2}$',
                                     y_scale='linear', ax_titles=None, frame=False,
-                                    truncation=resolution)
+                                    truncation=resolution, shared_ticks=False)
     axes = axes.ravel()
     indicator = 'abcdefghijklmn'
 
@@ -848,7 +750,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         for varname in variables:
             spectra = np.sum([data[name] for name in varname.split('+')], axis=0)
 
-            axes[m].plot(kappa, spectra, **_parse_varname(varname))
+            axes[m].plot(kappa, spectra, **_parse_variable(varname))
 
         axes[m].axhline(y=0.0, xmin=0, xmax=1, color='gray',
                         linewidth=1.2, linestyle='dashed', alpha=0.5)
@@ -859,10 +761,16 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         axes[m].legend(title=r"{} ({:4d} - {:4d} hPa)".format(level, *prange_str),
                        loc='upper right', fontsize=14, ncol=legend_cols)
 
-        art = AnchoredText(f"({indicator[m]}) " + model.upper(),
-                           prop=dict(size=20), frameon=False, loc='upper left')
-        art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
+        art = AnchoredText(f"({indicator[m]})",
+                           loc='lower left', prop=dict(size=20), frameon=False,
+                           bbox_to_anchor=(-0.1, 1.0), bbox_transform=axes[m].transAxes)
+        art.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         axes[m].add_artist(art)
+
+    art = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='lower left',
+                       bbox_to_anchor=(-0.02, 0.865), bbox_transform=axes[0].transAxes)
+    art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
+    axes[0].add_artist(art)
 
     plt.show()
 
@@ -887,8 +795,12 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     if y_limits is None:
         y_limits = {name: [1e-5, 5e7] for name in layers.keys()}
 
-    x_scales = [kappa_from_lambda(np.linspace(3500, 800, 2)),
-                kappa_from_lambda(np.linspace(500, 100, 2))]
+    if isinstance(resolution, str):
+        mesoscale_limits = 1e3 * kappa_from_deg([100, float(resolution.split('n')[-1]) / 2.0])
+    else:
+        mesoscale_limits = kappa_from_lambda(np.linspace(480, 100, 2))
+
+    x_scales = [kappa_from_lambda(np.linspace(3500, 600, 2)), mesoscale_limits]
     scale_st = ['-3', '-5/3']
     scale_mg = [2.5e-4, 0.1]
 
@@ -899,16 +811,18 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     # Visualization of Kinetic energy and Available potential energy
     # -----------------------------------------------------------------------------------
     n = len(layers)
-    rows = 2 if not n % 2 else n
-    cols = max(1, n // rows)
+    cols = 2 if not n % 2 else n
+    rows = max(1, n // cols)
 
     legend_cols = 1 + int(len(variables) > 3)
 
-    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits,
-                                    y_limits=None, figure_size=(7.0, 5.8), aligned=True,
-                                    y_label=r'Energy ($J~m^{-2}$)',
-                                    y_scale='log', ax_titles=None, frame=False,
-                                    truncation=resolution)
+    fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, shared_ticks=False,
+                                    figure_size=(cols * 6.25, rows * 5.8),
+                                    x_limits=x_limits, y_limits=None, aligned=True,
+                                    y_label=r'Energy / $J ~ m^{-2}$',
+                                    y_scale='log', ax_titles=None,
+                                    frame=False, truncation=resolution)
+
     axes = axes.ravel()
     indicator = 'abcdefghijklmn'
 
@@ -925,7 +839,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
             axes[m].fill_between(kappa, spectra_seu, spectra_sel,
                                  color='gray', interpolate=False, alpha=0.1)
 
-            axes[m].plot(kappa, spectra, **_parse_varname(varname))
+            axes[m].plot(kappa, spectra, **_parse_variable(varname))
 
         # crossing scales: intersections between rotational and divergent kinetic energies
         kappa_c, spectra_c = find_intersections(kappa.values,
@@ -933,9 +847,9 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                                                 data['dke'].mean('time').values,
                                                 direction='decreasing')
 
-        # take first of multiple crossings
-        if not np.isscalar(kappa_c):
-            kappa_c, spectra_c = kappa_c[0], spectra_c[0]
+        # take median of multiple crossings
+        kappa_c = np.median(kappa_c)
+        spectra_c = np.median(spectra_c)
 
         # vertical lines denoting crossing scales
         if not np.isnan(kappa_c):
@@ -964,10 +878,16 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         axes[m].legend(title=r"{} ({:4d} - {:4d} hPa)".format(level, *prange_str),
                        loc='upper right', fontsize=14, ncol=legend_cols)
 
-        art = AnchoredText(f"({indicator[m]}) " + model.upper(),
-                           prop=dict(size=20), frameon=False, loc='upper left')
-        art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
+        art = AnchoredText(f"({indicator[m]})",
+                           loc='lower left', prop=dict(size=20), frameon=False,
+                           bbox_to_anchor=(-0.14, 1.0), bbox_transform=axes[m].transAxes)
+        art.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         axes[m].add_artist(art)
+
+    art = AnchoredText(model.upper(), prop=dict(size=20), frameon=False, loc='lower left',
+                       bbox_to_anchor=(-0.02, 0.865), bbox_transform=axes[0].transAxes)
+    art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
+    axes[0].add_artist(art)
 
     plt.show()
 

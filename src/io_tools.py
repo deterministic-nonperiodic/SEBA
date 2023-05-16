@@ -12,7 +12,9 @@ from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
 from tools import interpolate_1d, inspect_gridtype, gradient_1d
 from tools import is_sorted, gaussian_lats_wts
-from visualization import fluxes_spectra_by_levels, energy_spectra_by_levels
+from visualization import energy_spectra_by_levels
+from visualization import fluxes_slices_by_models
+from visualization import fluxes_spectra_by_levels
 
 # Keep attributes after operations (why isn't this the default behaviour anyways...)
 set_options(keep_attrs=True)
@@ -549,23 +551,17 @@ class SebaDataset(Dataset):
         # Assign dimension before sorting (cumsum drops coordinates for some reason!)
         return data.assign_coords({dim: coordinate[::-1]}).sortby(dim)
 
+    # ---------------------------------------------------------------------------------------------
+    # Visualization methods
+    # ---------------------------------------------------------------------------------------------
     def visualize_fluxes(self, **kwargs):
-
-        if kwargs.get('layers') is None:
-            fluxes_spectra_by_levels(self, **kwargs)
-        else:
-            layers = kwargs.pop('layers')
-            for level, prange in layers.items():
-                fluxes_spectra_by_levels(self, layers={level: prange}, **kwargs)
+        fluxes_spectra_by_levels(self, **kwargs)
 
     def visualize_energy(self, **kwargs):
+        energy_spectra_by_levels(self, **kwargs)
 
-        if kwargs.get('layers') is None:
-            energy_spectra_by_levels(self, **kwargs)
-        else:
-            layers = kwargs.pop('layers')
-            for level, prange in layers.items():
-                energy_spectra_by_levels(self, layers={level: prange}, **kwargs)
+    def visualize_slices(self, **kwargs):
+        fluxes_slices_by_models(self, **kwargs)
 
 
 def get_coordinate_names(dataset):

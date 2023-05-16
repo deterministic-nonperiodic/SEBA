@@ -30,7 +30,7 @@ if __name__ == '__main__':
     p_levels = np.linspace(1000e2, 10e2, 21)
 
     # Create energy budget object
-    budget = EnergyBudget(file_names, p_levels=p_levels, jobs=1)
+    budget = EnergyBudget(file_names, p_levels=p_levels)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
