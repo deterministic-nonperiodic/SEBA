@@ -710,12 +710,15 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         layers = {'': [10e2, 1000e2]}
 
     if y_limits is None:
-        y_limits = {name: [7e-5, 6e7] for name in layers.keys()}
+        y_limits = {name: [7e-5, 3e7] for name in layers.keys()}
 
     # get coordinates
     kappa = 1e3 * dataset['kappa'].values
 
-    mesoscale = 1e3 * kappa_from_deg([80, kappa.size - 1])
+    degree_max = 2 * kappa.size - 1
+    degree_eff = int(degree_max / 3)
+    # mesoscale reference slope goes from 100 to the effective wavenumber
+    mesoscale = 1e3 * kappa_from_deg([100, degree_eff])
 
     x_scales = [kappa_from_lambda(np.linspace(3500, 650, 2)), mesoscale]
     scale_st = ['-3', '-5/3']
@@ -735,7 +738,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                                     x_limits=x_limits, y_limits=None, aligned=True,
                                     y_label=r'Energy density / $J ~ m^{-2}$',
                                     y_scale='log', ax_titles=None,
-                                    frame=False, truncation=kappa.size)
+                                    frame=False, truncation=degree_max)
 
     axes = axes.ravel()
     indicator = 'abcdefghijklmn'
@@ -771,10 +774,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                            color='black', linewidth=0.8,
                            linestyle='dashed', alpha=0.6)
 
-            if kappa_c > kappa_from_lambda(40.):
-                kappa_c_pos = -60
-            else:
-                kappa_c_pos = 2
+            kappa_c_pos = [2, -60][kappa_c > kappa_from_lambda(40)]
 
             # Scale is defined as half-wavelength
             axes[m].annotate(r'$L_{c}\sim$' + '{:d} km'.format(int(kappa_from_lambda(kappa_c))),
@@ -828,7 +828,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
     # get coordinates
     kappa = 1e3 * dataset['kappa'].values
-
+    degree_max = 2 * kappa.size - 1
     # -----------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # -----------------------------------------------------------------------------------
@@ -843,7 +843,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                                     x_limits=x_limits, y_limits=None, aligned=False,
                                     y_label=r'Cumulative energy flux / $W ~ m^{-2}$',
                                     y_scale='linear', ax_titles=None, frame=False,
-                                    truncation=kappa.size, shared_ticks=False)
+                                    truncation=degree_max, shared_ticks=False)
     axes = axes.ravel()
     indicator = 'abcdefghijklmn'
 
@@ -858,6 +858,27 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
         axes[m].axhline(y=0.0, xmin=0, xmax=1, color='gray',
                         linewidth=1.2, linestyle='dashed', alpha=0.5)
+
+        # compute energy injection scale (scale at which PI_HKE crosses zero with positive slope)
+        kappa_in, _ = find_intersections(kappa, data['pi_hke'].values, 0.0, direction='increasing')
+
+        if not np.isscalar(kappa_in):
+            kappa_in = kappa_in[-1]
+
+        # vertical lines denoting crossing scales
+        if not np.isnan(kappa_in):
+            axes[m].vlines(x=kappa_in, ymin=y_limits[level][0], ymax=0.0,
+                           color='black', linewidth=0.8,
+                           linestyle='dashed', alpha=0.6)
+
+            kappa_in_pos = [2, -60][kappa_in > kappa_from_lambda(40)]
+
+            # Scale is defined as half-wavelength
+            axes[m].annotate(r'$L_{in}\sim$' + '{:d} km'.format(int(kappa_from_lambda(kappa_in))),
+                             xy=(kappa_in, y_limits[level][0]), xycoords='data',
+                             xytext=(kappa_in_pos, 20.), textcoords='offset points',
+                             color='black', fontsize=9, horizontalalignment='left',
+                             verticalalignment='top')
 
         axes[m].set_ylim(*y_limits[level])
 

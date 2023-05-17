@@ -975,9 +975,6 @@ def find_intersections(x, a, b, direction='all'):
 
     if len(intersect_x) == 0:
         intersect_x = intersect_y = np.nan
-    elif len(x) == 1:
-        intersect_x = intersect_x[0]
-        intersect_y = intersect_y[0]
 
     return intersect_x, intersect_y
 
