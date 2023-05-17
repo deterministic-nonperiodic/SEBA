@@ -1,6 +1,6 @@
 import warnings
 
-from src.seba import EnergyBudget
+from seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
@@ -22,7 +22,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [50e2, 250e2]}
+    layers = {'Troposphere': [250e2, 450e2], 'Stratosphere': [50e2, 250e2]}
 
     figure_name = f'../figures/papers/{model}_energy_spectra_{resolution}.pdf'
 
@@ -31,14 +31,13 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    # get nonlinear energy fluxes. Compute time-averaged cumulative fluxes
     dataset_fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa')
 
     # Perform vertical integration along last axis
     layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [20e2, 250e2]}
 
-    y_limits = {'Stratosphere': [-0.8, 0.8],
-                'Free troposphere': [-0.5, 1.0],
+    y_limits = {'Stratosphere': [-0.6, 1.0],
+                'Free troposphere': [-0.6, 1.0],
                 'Lower troposphere': [-1.0, 1.5]}
 
     figure_name = f'../figures/papers/{model}_energy_fluxes_{resolution}.pdf'
@@ -46,8 +45,7 @@ if __name__ == '__main__':
     dataset_fluxes.visualize_fluxes(model=model,
                                     variables=['pi_hke+pi_ape', 'pi_hke',
                                                'pi_ape', 'cad', 'cdr', 'vfd_tot'],
-                                    layers=layers, y_limits=y_limits,
-                                    resolution='n1024', fig_name=figure_name)
+                                    layers=layers, y_limits=y_limits, fig_name=figure_name)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
@@ -61,8 +59,7 @@ if __name__ == '__main__':
     dataset_fluxes.visualize_fluxes(model=model,
                                     variables=['pi_dke+pi_rke', 'pi_rke', 'pi_dke',
                                                'dis_hke', 'cdr', 'cdr_w', 'cdr_v', 'cdr_c'],
-                                    layers=layers, y_limits=y_limits,
-                                    resolution='n1024', fig_name=figure_name)
+                                    layers=layers, y_limits=y_limits, fig_name=figure_name)
 
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
@@ -70,5 +67,4 @@ if __name__ == '__main__':
     figure_name = f'../figures/papers/{model}_fluxes_section_{resolution}.pdf'
 
     dataset_fluxes.visualize_slices(model=None, variables=['cdr', 'vfd_dke'],
-                                    resolution='n1024', y_limits=[1000., 100.],
-                                    fig_name=figure_name)
+                                    y_limits=[1000., 100.], fig_name=figure_name)

@@ -1,9 +1,9 @@
 import numpy as np
 import xarray as xr
 
-from src.io_tools import parse_dataset
-from src.seba import EnergyBudget
-from src.visualization import fluxes_slices_by_models
+from seba.io_tools import parse_dataset
+from seba.seba import EnergyBudget
+from seba.visualization import fluxes_slices_by_models
 
 if __name__ == '__main__':
 

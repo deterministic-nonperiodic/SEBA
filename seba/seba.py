@@ -866,16 +866,16 @@ class EnergyBudget:
             advection: `np.ndarray`
                 Array containing the advection of a scalar field.
         """
-        # scalar_advection = np.ma.sum(self.wind * self.horizontal_gradient(scalar), axis=0)
+        # Same as but faster than: np.ma.sum(self.wind * self.horizontal_gradient(scalar), axis=0)
 
         # Spectral coefficients of the scalar flux divergence: ∇⋅(φ u)
-        scalar_divergence = self._spectral_vrtdiv(scalar * self.wind)[1]
+        scalar_flux_divergence = self._spectral_vrtdiv(scalar * self.wind)[1]
 
         # back to grid-point space
-        scalar_divergence = self._inverse_transform(scalar_divergence)
+        scalar_flux_divergence = self._inverse_transform(scalar_flux_divergence)
 
         # recover scalar advection: u⋅∇φ = ∇⋅(φu) - δφ
-        scalar_advection = scalar_divergence - self.div * scalar
+        scalar_advection = scalar_flux_divergence - self.div * scalar
 
         return scalar_advection
 

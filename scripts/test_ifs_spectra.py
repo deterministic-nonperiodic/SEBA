@@ -4,12 +4,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from numpy.core.numeric import normalize_axis_index
-
-from src.seba import EnergyBudget
-from src.spectral_analysis import kappa_from_lambda, kappa_from_deg
-from src.spectral_analysis import triangular_truncation
-from src.tools import search_nn_index, getspecindx
-from src.visualization import spectra_base_figure, reference_slopes
+from seba.seba import EnergyBudget
+from seba.spectral_analysis import kappa_from_lambda, kappa_from_deg
+from seba.spectral_analysis import triangular_truncation
+from seba.tools import search_nn_index, getspecindx
+from seba.visualization import spectra_base_figure, reference_slopes
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',

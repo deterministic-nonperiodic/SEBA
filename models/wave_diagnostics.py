@@ -3,9 +3,8 @@ import warnings
 import numpy as np
 from scipy import stats
 from scipy.integrate import cumulative_trapezoid
-
-from src.kinematics import coriolis_parameter
-from src.spectral_analysis import kappa_from_deg
+from seba.kinematics import coriolis_parameter
+from seba.spectral_analysis import kappa_from_deg
 
 warnings.filterwarnings('ignore')
 

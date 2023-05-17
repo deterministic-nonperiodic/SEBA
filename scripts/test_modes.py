@@ -3,10 +3,9 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import ScalarFormatter
-
-from src.seba import EnergyBudget
-from src.spectral_analysis import kappa_from_deg, kappa_from_lambda
-from src.visualization import AnchoredText, fluxes_slices_by_models
+from seba.seba import EnergyBudget
+from seba.spectral_analysis import kappa_from_deg, kappa_from_lambda
+from seba.visualization import AnchoredText, fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',

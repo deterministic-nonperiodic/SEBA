@@ -4,13 +4,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from matplotlib.ticker import ScalarFormatter
-
 # from constants import cp
-from src.seba import EnergyBudget
-from src.spectral_analysis import kappa_from_deg, kappa_from_lambda
-from src.tools import cumulative_flux
-from src.visualization import AnchoredText
-from src.visualization import fluxes_slices_by_models
+from seba.seba import EnergyBudget
+from seba.spectral_analysis import kappa_from_deg, kappa_from_lambda
+from seba.tools import cumulative_flux
+from seba.visualization import AnchoredText
+from seba.visualization import fluxes_slices_by_models
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',

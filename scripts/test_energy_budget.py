@@ -3,10 +3,9 @@ import numpy as np
 import xarray as xr
 from AtmosphericEnergyBudget import EnergyBudget
 from _spherepack import onedtotwod
+from seba.spectral_analysis import spectrum
+from seba.tools import kappa_from_deg
 from sklearn import preprocessing
-
-from src.spectral_analysis import spectrum
-from src.tools import kappa_from_deg
 
 
 def create_fractal_noise(samples, ny, nx, slopes=None, amplitude=1.0):

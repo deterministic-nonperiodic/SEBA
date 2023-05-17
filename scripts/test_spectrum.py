@@ -5,8 +5,7 @@ import numpy as np
 import pyshtools as pysh
 import spharm
 import xarray as xr
-
-from src.seba import EnergyBudget
+from seba.seba import EnergyBudget
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',

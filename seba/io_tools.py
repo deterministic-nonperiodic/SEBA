@@ -551,9 +551,9 @@ class SebaDataset(Dataset):
         # Assign dimension before sorting (cumsum drops coordinates for some reason!)
         return data.assign_coords({dim: coordinate[::-1]}).sortby(dim)
 
-    # ---------------------------------------------------------------------------------------------
-    # Visualization methods
-    # ---------------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------
+    # Functions for visualizing of energy spectra and spectral fluxes
+    # ----------------------------------------------------------------------------------------------
     def visualize_fluxes(self, **kwargs):
         fluxes_spectra_by_levels(self, **kwargs)
 

@@ -4,9 +4,8 @@ from datetime import date
 
 import numpy as np
 import xarray as xr
+from seba.seba import EnergyBudget
 from tqdm import tqdm
-
-from src.seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
