@@ -40,7 +40,7 @@ def _process_model(model, resolution, date_time):
     # - Nonlinear energy transfers for DKE and RKE
     # - Energy conversion terms APE --> DKE and DKE --> RKE
     # - Vertical pressure and turbulent fluxes
-    fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa')
+    fluxes = budget.cumulative_energy_fluxes().cumulative_sum(dim='kappa')
 
     # Compute spectral energy diagnostics
     fluxes['rke'], fluxes['dke'], fluxes['hke'] = budget.horizontal_kinetic_energy()

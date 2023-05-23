@@ -2,10 +2,9 @@ import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pyshtools as pysh
-import spharm
 import xarray as xr
-from seba.seba import EnergyBudget
+
+from seba import EnergyBudget
 
 params = {'xtick.labelsize': 'medium',
           'ytick.labelsize': 'medium',
@@ -15,24 +14,6 @@ plt.rcParams['legend.title_fontsize'] = 14
 plt.rcParams.update(params)
 
 warnings.filterwarnings('ignore')
-
-
-def sh_cross_spectrum(grid1, grid2):
-    nlat, nlon, *extra_dims = grid1.shape
-
-    grid1 = grid1.reshape((nlat, nlon, -1))
-    grid2 = grid2.reshape((nlat, nlon, -1))
-
-    clm_sqd = np.empty((nlat, grid1.shape[-1]))
-
-    for ix in range(clm_sqd.shape[-1]):
-        clm_1 = pysh.SHGrid.from_array(grid1[..., ix], grid='GLQ').expand()
-        clm_2 = pysh.SHGrid.from_array(grid2[..., ix], grid='GLQ').expand()
-
-        clm_sqd[:, ix] = clm_1.compute_spectra(clm_2, convention='power')
-
-    return clm_sqd.reshape((nlat,) + tuple(extra_dims))
-
 
 if __name__ == '__main__':
 
@@ -67,7 +48,6 @@ if __name__ == '__main__':
         'wind': ('vector', r'Horizontal kinetic energy  $(m^{2}~s^{-2})$')
     }
     pressure = 1e-2 * budget.pressure
-    lats, weights_gs = spharm.gaussian_lats_wts(budget.nlat)
 
     n_cols = len(variables)
     fig, axes = plt.subplots(nrows=1, ncols=n_cols, figsize=(n_cols * 5, 10.0),
@@ -83,11 +63,11 @@ if __name__ == '__main__':
             # The global average of the dot product of two vectors must equal the sum
             # of the vectors' cross-spectrum along all spherical harmonic degrees.
             data_sqd = np.sum(data ** 2, axis=0)
-            data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
+            data_gs = budget.representative_mean(data_sqd).mean(0)
             data_sp = budget.accumulate_order(budget._vector_spectrum(data))
         else:
             data_sqd = data ** 2
-            data_gs = budget.representative_mean(data_sqd, weights=weights_gs).mean(0)
+            data_gs = budget.representative_mean(data_sqd).mean(0)
             data_sp = budget.accumulate_order(budget._scalar_spectrum(data))
 
         # sum over all spherical harmonic degrees

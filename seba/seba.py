@@ -202,7 +202,7 @@ class EnergyBudget:
     # ------------------------------------------------------------------------------------------
     # Helper function for adding metadata to fields and convert to DataArray
     # ------------------------------------------------------------------------------------------
-    def add_field(self, data, name=None, gridtype='spectral', **attributes):
+    def add_field(self, data, name=None, gridtype='spectral', is_flux=True, **attributes):
         """
             Add metadata and export variables as xr.DataArray
         """
@@ -217,7 +217,7 @@ class EnergyBudget:
             # Accumulate along spherical harmonic order (m) and return
             # spectrum as a function of spherical harmonic degree (l)
             if data.shape[0] == self.sphere.nlm:
-                data = self.accumulate_order(data)
+                data = self.accumulate_order(data, as_flux=is_flux)
         else:
             coords = self.gp_coords
             dims = ['latitude', 'longitude', 'time', 'level']
@@ -247,17 +247,20 @@ class EnergyBudget:
         hke = rke + dke
 
         #  create dataset
-        rke = self.add_field(rke, 'rke', gridtype='spectral', units='m**2 s**-2',
+        rke = self.add_field(rke, 'rke', is_flux=False,
+                             gridtype='spectral', units='m**2 s**-2',
                              standard_name='rotational_kinetic_energy',
                              long_name='horizontal kinetic energy'
                                        ' of the non-divergent wind')
 
-        dke = self.add_field(dke, 'dke', gridtype='spectral', units='m**2 s**-2',
+        dke = self.add_field(dke, 'dke', is_flux=False,
+                             gridtype='spectral', units='m**2 s**-2',
                              standard_name='divergent_kinetic_energy',
                              long_name='horizontal kinetic energy'
                                        ' of the non-rotational wind')
 
-        hke = self.add_field(hke, 'hke', gridtype='spectral', units='m**2 s**-2',
+        hke = self.add_field(hke, 'hke', is_flux=False,
+                             gridtype='spectral', units='m**2 s**-2',
                              standard_name='horizontal_kinetic_energy',
                              long_name='horizontal kinetic energy')
 
@@ -272,26 +275,26 @@ class EnergyBudget:
         else:
             w_wind = vertical_velocity(self.omega, self.temperature, self.pressure)
 
-        kinetic_energy = self._scalar_spectrum(w_wind) / 2.0
+        vke = self._scalar_spectrum(w_wind) / 2.0
 
         #  create dataset
-        kinetic_energy = self.add_field(kinetic_energy, 'vke',
-                                        gridtype='spectral', units='m**2 s**-2',
-                                        standard_name='vertical_kinetic_energy',
-                                        long_name='vertical kinetic energy')
-        return kinetic_energy
+        vke = self.add_field(vke, 'vke', is_flux=False,
+                             gridtype='spectral', units='m**2 s**-2',
+                             standard_name='vertical_kinetic_energy',
+                             long_name='vertical kinetic energy')
+        return vke
 
     def available_potential_energy(self):
         """
         Total available potential energy after Augier and Lindborg (2013), Eq.10
         """
-        potential_energy = self.ganma * self._scalar_spectrum(self.theta_prime) / 2.0
+        ape = self.ganma * self._scalar_spectrum(self.theta_prime) / 2.0
 
-        potential_energy = self.add_field(potential_energy, 'ape',
-                                          gridtype='spectral', units='m**2 s**-2',
-                                          standard_name='available_potential_energy',
-                                          long_name='available potential energy')
-        return potential_energy
+        ape = self.add_field(ape, 'ape', is_flux=False,
+                             gridtype='spectral', units='m**2 s**-2',
+                             standard_name='available_potential_energy',
+                             long_name='available potential energy')
+        return ape
 
     def energy_diagnostics(self):
         """
@@ -304,7 +307,7 @@ class EnergyBudget:
 
         return SebaDataset(xr.merge([rke, dke, hke, vke, ape], compat="no_conflicts"))
 
-    def nonlinear_energy_fluxes(self):
+    def cumulative_energy_fluxes(self):
         """
         Computes each term in spectral energy budget and return as xr.DataArray objects.
         """
@@ -956,7 +959,7 @@ class EnergyBudget:
 
         return self.vector_scale * spectrum.real
 
-    def accumulate_order(self, cs_lm, axis=0):
+    def accumulate_order(self, cs_lm, as_flux=False, axis=0):
         """Accumulates over spherical harmonic order and returns
            spectrum as a function of spherical harmonic degree.
 
@@ -968,6 +971,8 @@ class EnergyBudget:
         ----------
         cs_lm : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
             contains the cross-spectrum of a set of spherical harmonic coefficients.
+        as_flux: bool, default False,
+            whether to accumulate as a flux0like quantity
         axis : int, optional
             axis of the spectral coefficients
         Returns
@@ -988,7 +993,10 @@ class EnergyBudget:
         cs_lm = np.moveaxis(cs_lm, axis, 0).reshape((nml_shape, -1))
 
         # Compute spectrum as a function of spherical harmonic degree (total wavenumber).
-        spectrum = numeric_tools.accumulate_order(cs_lm, truncation)
+        if as_flux:
+            spectrum = numeric_tools.cumulative_flux(cs_lm, truncation)
+        else:
+            spectrum = numeric_tools.accumulate_order(cs_lm, truncation)
 
         # back to original shape
         spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)

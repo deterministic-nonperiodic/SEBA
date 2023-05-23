@@ -1,20 +1,26 @@
 import warnings
 
+import xarray as xr
+
 from seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     # Load dyamond dataset
-    model = 'ERA5'
-    resolution = '025deg'
+    model = 'ICON'
+    resolution = 'n1024'
     data_path = '../data/'
 
-    date_time = '20200128'
+    date_time = '20[0]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
-    # Create energy budget object. Set the truncation
-    budget = EnergyBudget(file_names, truncation=480)
+    # load earth topography and surface pressure
+    dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
+    sfc_pres = dataset_sfc.pres_sfc
+
+    # Create energy budget object
+    budget = EnergyBudget(file_names, ps=sfc_pres)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
@@ -31,14 +37,12 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    dataset_fluxes = budget.nonlinear_energy_fluxes().cumulative_sum(dim='kappa')
+    dataset_fluxes = budget.cumulative_energy_fluxes()
 
     # Perform vertical integration along last axis
     layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [20e2, 250e2]}
 
-    y_limits = {'Stratosphere': [-0.6, 1.0],
-                'Free troposphere': [-0.6, 1.0],
-                'Lower troposphere': [-1.0, 1.5]}
+    y_limits = {'Free troposphere': [-0.5, 1.2], 'Stratosphere': [-0.5, 1.2]}
 
     figure_name = f'../figures/papers/{model}_energy_fluxes_{resolution}.pdf'
 
@@ -53,13 +57,13 @@ if __name__ == '__main__':
     figure_name = f'../figures/papers/{model}_hke_fluxes_{resolution}.pdf'
 
     layers = {'Free troposphere': [250e2, 450e2], 'Lower troposphere': [500e2, 850e2]}
-    y_limits = {'Free troposphere': [-0.8, 0.8], 'Lower troposphere': [-0.8, 0.8]}
+    y_limits = {'Free troposphere': [-0.4, 0.4], 'Lower troposphere': [-0.4, 0.4]}
 
     # perform vertical integration
-    dataset_fluxes.visualize_fluxes(model=model,
+    dataset_fluxes.visualize_fluxes(model=model, show_injection=True,
                                     variables=['pi_dke+pi_rke', 'pi_rke', 'pi_dke',
-                                               'dis_hke', 'cdr', 'cdr_w', 'cdr_v', 'cdr_c'],
-                                    layers=layers, y_limits=y_limits, fig_name=figure_name)
+                                               'cdr', 'cdr_w', 'cdr_v'], layers=layers,
+                                    y_limits=y_limits, fig_name=figure_name)
 
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section

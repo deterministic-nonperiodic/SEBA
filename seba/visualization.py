@@ -1,24 +1,18 @@
-import os
 import warnings
 from functools import reduce
 
-import cartopy.crs as ccrs
 import colorcet
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as stats
-import xarray as xr
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.colors import SymLogNorm
 from matplotlib.offsetbox import AnchoredText
-from matplotlib.ticker import ScalarFormatter, FixedLocator
+from matplotlib.ticker import ScalarFormatter
 from scipy.ndimage import gaussian_filter
-from sklearn.preprocessing import MinMaxScaler
 
 from spectral_analysis import kappa_from_deg, kappa_from_lambda, lambda_from_deg
 from tools import find_intersections
-
-# from scipy.signal import find_peaks
 
 warnings.filterwarnings('ignore')
 plt.style.use('default')
@@ -158,7 +152,7 @@ LINES_KEYMAP = {
     'pi_dke': ('green', 'solid', 1.6),
     'pi_rke': ('red', 'solid', 1.6),
     'pi_ape': ('navy', 'solid', 2.0),
-    'cdr': ('cyan', 'dashed', 2.0),
+    'cdr': ('blue', 'dashed', 2.0),
     'cdr_w': ('black', '-.', 1.6),
     'cdr_v': ('red', '-.', 1.6),
     'cdr_c': ('green', '-.', 1.6),
@@ -168,232 +162,27 @@ LINES_KEYMAP = {
     'vfd_ape': ('blue', '-.', 1.6),
     'dis_rke': ('blue', '-.', 1.6),
     'dis_dke': ('blue', '-.', 1.6),
-    'dis_hke': ('blue', '-.', 1.6),
-}
-
-crs = ccrs.PlateCarree()
-
-locations = {
-    'southpole': (-90, 140.7),
-    'northpole': (90, -57),
-    'northincl': (65, -75.),
-    'goes': (10, -65.),
-}
-
-name_conv_models = {
-    'nwp2.5': 'icon 2.5 km',
-    'ifs4': 'ifs 4 km',
-    'geos3': 'geos 3 km',
-    'nicam3': 'nicam 3 km',
-}
-
-comp_names = {
-    'RO': 'ROS',
-    'IG': 'IGW'
+    'dis_hke': ('cyan', '-.', 1.6),
 }
 
 
-def wind_speed(u, v):
-    return np.sqrt(u * u + v * v)
+def minmax_scaler(x, feature_range=None, axis=0):
+    x = np.moveaxis(x, axis, 0)
 
+    rs_msg = "Unknown type for 'feature_range'. "
+    rs_msg += "Expecting a 2-tuple or list containing the min/max of the resulting scaled data."
 
-def normalize(x, min_x=-1, max_x=1):
-    return min_x + (max_x - min_x) * (x - np.nanmin(x)) / x.ptp()
-
-
-def global_map(lon, lat, data, wind=None, titles=None, data_name='', time_str='', units='',
-               data_range=None,
-               cmap='viridis', central_proj=None, gridtype='regular'):
-    shape = np.shape(data)
-
-    if titles is None:
-        titles = shape[0] * ['']
-
-    if central_proj is None:
-        central_proj = (90, 10.0)
-
-    # Geostationary extent
-    central_lat, central_lon = central_proj  # 45
-
-    semi_major = 6378137.0
-    semi_minor = 6356752.31414
-
-    globe = ccrs.Globe(semimajor_axis=semi_major,
-                       semiminor_axis=semi_minor,
-                       flattening=1.0e-30)
-
-    projection = ccrs.Orthographic(central_longitude=central_lon,
-                                   central_latitude=central_lat,
-                                   globe=globe)
-
-    crs_map = ccrs.PlateCarree(central_longitude=180, globe=globe)
-    crs_wind = ccrs.RotatedPole(pole_latitude=90, pole_longitude=180)
-
-    # 0.6 * 15. / 0.75
-    fig = plt.figure(figsize=(10.2, 6.), constrained_layout=True)
-
-    if data_range is None:
-        data_range = {key: np.percentile(value, [1., 99.])
-                      for key, value in data.items()}
-
-    # -------------------------------------------------------------------------
-    # Using the Orthographic projection centered at the poles
-    # -------------------------------------------------------------------------
-    indicator = 'abcdefghijklmn'
-    for i, (component, var) in enumerate(data.items()):
-
-        ax_id = int('1' + str(len(data)) + str(i + 1))
-
-        ax = fig.add_subplot(ax_id, projection=projection)
-
-        at = AnchoredText(comp_names[component], prop=dict(size=15),
-                          frameon=False, loc='upper left', borderpad=1.)
-        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
-        ax.add_artist(at)
-
-        at = AnchoredText("({})".format(indicator[i]), prop=dict(size=16),
-                          frameon=False, loc='upper right', borderpad=1.)
-        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
-        ax.add_artist(at)
-
-        gl = ax.gridlines(ccrs.PlateCarree(),
-                          draw_labels=False,
-                          linestyle="--", linewidth=0.2,
-                          color='gray', zorder=2)
-        # Manipulate latitude and longitude grid-line numbers and spacing
-        gl.ylocator = FixedLocator(np.arange(-90, 90, 30))
-        gl.xlocator = FixedLocator(np.arange(-180, 180, 30))
-
-        # Plot the image
-        if gridtype == 'irregular':
-
-            img = ax.tricontourf(lon, lat, var, levels=14, alpha=0.9,
-                                 vmin=data_range[component][0], vmax=data_range[component][1],
-                                 transform=crs_map, interpolation='bilinear', cmap=cmap)
-
-        else:
-
-            img = ax.imshow(var, vmin=data_range[component][0], vmax=data_range[component][1],
-                            transform=crs_map, interpolation='bilinear',
-                            origin='upper', cmap=cmap, alpha=0.9)
-
-        cb = plt.colorbar(img, ax=ax, orientation='horizontal',
-                          aspect=10, pad=0.015, fraction=0.15, shrink=0.75)
-        cb.ax.tick_params(labelsize=9)
-        cb.ax.set_title(data_name + ' ' + units, fontsize=12)
-
-        # add streamplot of wind vector
-        if component == 'RO' and (wind is not None):
-            u, v = wind[component]
-            ax.streamplot(lon, lat, u, v, linewidth=0.28, arrowsize=0.6,
-                          density=2.25, color='w', transform=crs_wind)
-
-        # Add coastlines, borders and gridlines
-        ax.coastlines(resolution='50m', color='k', linewidth=0.25, alpha=0.6)
-
-        ax_title = ' '.join([titles, 4 * ' ', time_str, 'UTC'])
-        at = AnchoredText(ax_title, prop=dict(size=14),
-                          frameon=False, loc='upper center', borderpad=-2.)
-        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
-        ax.add_artist(at)
-
-    plt.show()
-    return fig
-
-
-def generate_global_maps(model,
-                         variable=None, components=None, level=None, skip=1,
-                         location='southpole', time_range=None):
-    if time_range is None:
-        time_range = [None, ]
-
-    if variable is None:
-        variable = 'wind'
-
-    if components is None:
-        components = ['RO', 'IG']
-
-    variable_names = {
-        'wind': 'Horizontal wind speed',
-        'ua': 'Zonal wind',
-        'va': 'Meridional wind',
-        'wa': 'Vertical velocity',
-        'ta': 'Temperature'
-    }
-    variable_units = {'wind': r'(m/s)', 'ua': r'(m/s)', 'va': r'(m/s)',
-                      'wa': r'($\times 10^{-2}$ m/s)', 'ta': r'(K)'}
-
-    fig_title = '{}  {} km'.format(model, int(level))
-
-    time_id = slice(None)
-
-    model_data = {}
-    model_wind = {}
-    timestamps = {}
-    coordinates = {}
-    for component in components:
-
-        print('Retrieving data from ', component)
-
-        base_path = '/media/yanm/Data/DYAMOND/data/'
-        file_names = os.path.join(base_path, '{}_{}_wind_202002*_n256.nc'.format(model, component))
-
-        model_dataset = xr.open_mfdataset(file_names)
-        model_dataset = model_dataset.sel(time=slice(*time_range))
-
-        # Create a list with timestamps
-        timestamps[component] = model_dataset.time.dt.strftime('%Y-%m-%d %H:%M')
-
-        lat = model_dataset['lat'].values
-        lon = model_dataset['lon'].values
-        height = 1.0e-3 * model_dataset['height'].values
-
-        coordinates[component] = (lat, lon, height)
-
-        level_id = np.argmin(abs(height - level))
-        dims = (time_id, slice(level_id, level_id + 1)) + 2 * (slice(None, None, skip),)
-
-        u = model_dataset['ua'].values[dims]
-        v = model_dataset['va'].values[dims]
-
-        model_wind[component] = np.stack([u, v])
-
-        # create dataset
-        if variable == 'wind':
-            model_data[component] = wind_speed(u, v)
-        elif variable in ['ua', 'va', 'wa']:
-            model_data[component] = model_dataset[variable].values[dims]
-            if variable == 'wa':
-                model_data[component] *= 1e2
-        else:
-            raise ValueError('Wrong variable name')
-
-    if variable == 'wind':
-        colormap = BWG  # 'rainbow' # CET_L20
-    elif variable in ['ua', 'va', 'wa']:
-        colormap = BWG
+    if feature_range is None:
+        feature_range = (0, 1)
+    elif isinstance(feature_range, (list, tuple)):
+        assert len(feature_range) == 2, ValueError(rs_msg)
+        feature_range = sorted(feature_range)
     else:
-        colormap = parula
+        raise ValueError(rs_msg)
 
-    data_range = {key: np.percentile(value, [1., 99.]) for key, value in model_data.items()}
+    scale = (feature_range[1] - feature_range[0]) / (np.nanmax(x, axis=0) - np.nanmin(x, axis=0))
 
-    # Create maps
-    for i, timestamp in enumerate(timestamps['IG']):
-        wind = {'RO': model_wind['RO'][:, i].squeeze()}
-        data = {c: model_data[c][i].squeeze() for c in components}
-
-        lat, lon, height = coordinates['IG']
-
-        fig = global_map(lon, lat, data, wind=wind, data_range=data_range,
-                         titles=fig_title, data_name=variable_names[variable],
-                         units=variable_units[variable],
-                         time_str=timestamp, cmap=colormap,
-                         central_proj=locations[location])
-
-        fig.savefig(
-            'figures/animation/{}_{}_{}km_{}_comparison_{:04d}.pdf'.format(
-                model, variable, int(level), timestamp.split(' ')[0], i + 45), dpi=300)
-        plt.close(fig)
+    return np.moveaxis(feature_range[0] + scale * (x - np.nanmin(x, axis=0)), 0, axis)
 
 
 def find_symlog_params(data):
@@ -411,8 +200,7 @@ def find_symlog_params(data):
     data_range = np.ptp(data)
 
     # Scale the data to the range [0, 1] using MinMaxScaler
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
+    scaled_data = minmax_scaler(data.ravel(), feature_range=(0, 1))
 
     # Find the value of linthresh that separates the linear and logarithmic parts
     # We want the linear part to be as large as possible while still excluding the
@@ -769,7 +557,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         spectra_c = np.median(spectra_c)
 
         # vertical lines denoting crossing scales
-        if not np.isnan(kappa_c):
+        if not np.isnan(kappa_c).all():
             axes[m].vlines(x=kappa_c, ymin=0., ymax=spectra_c,
                            color='black', linewidth=0.8,
                            linestyle='dashed', alpha=0.6)
@@ -813,7 +601,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
 
 def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
-                             x_limits=None, y_limits=None, fig_name=None):
+                             show_injection=False, x_limits=None, y_limits=None, fig_name=None):
     if model is None:
         model = ''
 
@@ -839,7 +627,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     legend_cols = 1 + int(len(variables) >= 6)
 
     fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols,
-                                    figure_size=(cols * 6.8, rows * 5.8),
+                                    figure_size=(cols * 6.4, rows * 5.8),
                                     x_limits=x_limits, y_limits=None, aligned=False,
                                     y_label=r'Cumulative energy flux / $W ~ m^{-2}$',
                                     y_scale='linear', ax_titles=None, frame=False,
@@ -859,26 +647,32 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         axes[m].axhline(y=0.0, xmin=0, xmax=1, color='gray',
                         linewidth=1.2, linestyle='dashed', alpha=0.5)
 
-        # compute energy injection scale (scale at which PI_HKE crosses zero with positive slope)
-        kappa_in, _ = find_intersections(kappa, data['pi_hke'].values, 0.0, direction='increasing')
+        if show_injection:
+            # compute energy injection scale (PI_HKE crosses zero with positive slope)
+            kappa_in, _ = find_intersections(kappa, data['pi_hke'].values, 0.0,
+                                             direction='increasing')
 
-        if not np.isscalar(kappa_in):
-            kappa_in = kappa_in[-1]
+            # select the closest point to the largest wavenumber
+            if not np.isscalar(kappa_in):
+                kappa_in = kappa_in[kappa_in < 0.9 * kappa.max()]
+                if len(kappa_in) > 0:
+                    kappa_in = kappa_in[-1]
 
-        # vertical lines denoting crossing scales
-        if not np.isnan(kappa_in):
-            axes[m].vlines(x=kappa_in, ymin=y_limits[level][0], ymax=0.0,
-                           color='black', linewidth=0.8,
-                           linestyle='dashed', alpha=0.6)
+            # vertical lines denoting crossing scales
+            if not np.isnan(kappa_in).all():
+                axes[m].vlines(x=kappa_in, ymin=y_limits[level][0], ymax=0.0,
+                               color='black', linewidth=0.8,
+                               linestyle='dashed', alpha=0.6)
 
-            kappa_in_pos = [2, -60][kappa_in > kappa_from_lambda(40)]
+                kappa_in_pos = [2, -60][kappa_in > kappa_from_lambda(40)]
 
-            # Scale is defined as half-wavelength
-            axes[m].annotate(r'$L_{in}\sim$' + '{:d} km'.format(int(kappa_from_lambda(kappa_in))),
-                             xy=(kappa_in, y_limits[level][0]), xycoords='data',
-                             xytext=(kappa_in_pos, 20.), textcoords='offset points',
-                             color='black', fontsize=9, horizontalalignment='left',
-                             verticalalignment='top')
+                # Scale is defined as half-wavelength
+                axes[m].annotate(r'$L_{in}\sim$' + '{:d} km'.format(
+                    int(kappa_from_lambda(kappa_in))),
+                                 xy=(kappa_in, y_limits[level][0]), xycoords='data',
+                                 xytext=(kappa_in_pos, 20.), textcoords='offset points',
+                                 color='black', fontsize=9, horizontalalignment='left',
+                                 verticalalignment='top')
 
         axes[m].set_ylim(*y_limits[level])
 
