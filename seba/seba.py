@@ -11,7 +11,7 @@ from kinematics import coriolis_parameter
 from spectral_analysis import kappa_from_deg
 from spherical_harmonics import Spharmt
 from thermodynamics import exner_function, potential_temperature
-from thermodynamics import stability_parameter, vertical_velocity
+from thermodynamics import lorenz_parameter, vertical_velocity
 from tools import prepare_data, transform_io
 from tools import rotate_vector, broadcast_1dto, gradient_1d
 
@@ -20,7 +20,7 @@ _global_attrs = {'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
                  'institution': 'Max Planck Institute for Meteorology',
                  'title': 'Spectral Energy Budget of the Atmosphere',
                  'history': date.today().strftime('Created on %c'),
-                 'references': ''}
+                 'references': '', 'Conventions': 'CF-1.6'}
 
 
 class EnergyBudget:
@@ -145,24 +145,25 @@ class EnergyBudget:
         # create wind array from masked wind components (preserving mask)
         self.wind = np.ma.stack((data.get_field('u_wind'), data.get_field('v_wind')))
 
-        # compute thermodynamic quantities from masked temperature
-        self.temperature = data.get_field('temperature')
+        # compute thermodynamic quantities. Using unmasked temperature field if possible
+        # Using masked temperature causes issues computing the spectral transfers of APE,
+        # as well as neutral stratification close to the surface resulting in singular APE.
+        self.temperature = data.get_field('temperature', masked=False)
 
         # ------------------------------------------------------------------------------------------
-        # Infer data mask for spectral corrections due to missing data. Here, β is
-        # the terrain mask containing 0 for levels satisfying p >= ps and 1 otherwise.
+        # Infer data mask for spectral corrections due to missing data. Here, β(lat, lon, p)
+        # is a heavy side function the terrain mask containing 0 for levels satisfying p >= ps
+        # and 1 otherwise (Boer 1982).
         # ------------------------------------------------------------------------------------------
         # define data mask once for consistency
         self.mask = self.omega.mask
-
-        # binary array with 0 for points below the surface and 1 otherwise.
         self.beta = (~self.mask).astype(float)
 
         # Compute fraction of valid points at every level for Spectral Mode-Coupling Correction
         # same as the power-spectrum of the mask integrated along spherical harmonic degree. This
         # approximation is not accurate for big masked regions, the proper approach is to
         # compute the inverse of the Mode-Coupling matrix for many realizations of masked
-        # power spectra (see Cooray et al. 2012), however this is computationally too expensive!
+        # power spectra (e.g., Cooray et al. 2012), however this is computationally too expensive!
         self.beta_correction = 1.0 / self.representative_mean(self.beta)
 
         # ------------------------------------------------------------------------------------------
@@ -178,11 +179,16 @@ class EnergyBudget:
         self.wind_shear = self.vertical_gradient(self.wind)
 
         # Perform Helmholtz decomposition
-        self.wind_div, self.wind_rot = self.helmholtz()
+        self.wind_rot, self.wind_div = self.helmholtz()
+
+        # Horizontal gradient of kinetic energy per unit mass in physical space
+        hke = np.ma.sum(self.wind * self.wind, axis=0) / 2.0
+        self.hke_gradient = self.horizontal_gradient(hke)
 
         # Coriolis parameter (broadcast to the shape of the wind vector)
         self.fc = broadcast_1dto(coriolis_parameter(data.latitude.values), self.vrt.shape)
 
+        # Absolute vorticity
         self.abs_vrt = self.vrt + self.fc
         # ------------------------------------------------------------------------------------------
         # Thermodynamics
@@ -194,15 +200,13 @@ class EnergyBudget:
         # above the ground (representative mean) and the perturbations.
         self.theta_avg, self.theta_prime = self._split_mean_perturbation(self.theta)
 
-        # Parameter ganma to convert from temperature variance to APE
-        # theta_grad = self.representative_mean(self.vertical_gradient(self.theta))
-        # self.ganma = - cn.Rd * self.exner / (self.pressure * theta_grad)
-        self.ganma = stability_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
+        # Lorenz's stability parameter 'ganma' used to convert from temperature variance to APE
+        self.ganma = lorenz_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
 
-    # ------------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------
     # Helper function for adding metadata to fields and convert to DataArray
-    # ------------------------------------------------------------------------------------------
-    def add_field(self, data, name=None, gridtype='spectral', is_flux=True, **attributes):
+    # ----------------------------------------------------------------------------------------------
+    def add_field(self, data, name=None, gridtype='spectral', cumulative_flux=True, **attrs):
         """
             Add metadata and export variables as xr.DataArray
         """
@@ -217,7 +221,7 @@ class EnergyBudget:
             # Accumulate along spherical harmonic order (m) and return
             # spectrum as a function of spherical harmonic degree (l)
             if data.shape[0] == self.sphere.nlm:
-                data = self.accumulate_order(data, as_flux=is_flux)
+                data = self.cumulative_spectrum(data, cumulative_flux=cumulative_flux)
         else:
             coords = self.gp_coords
             dims = ['latitude', 'longitude', 'time', 'level']
@@ -226,8 +230,8 @@ class EnergyBudget:
         array = xr.DataArray(data=data, name=name, dims=dims, coords=coords)
 
         # add attributes to variable
-        attributes.update(gridtype=gridtype)
-        array.attrs.update(attributes)
+        attrs.update(gridtype=gridtype)
+        array.attrs.update(attrs)
 
         return array.transpose('time', 'level', ...)
 
@@ -247,19 +251,19 @@ class EnergyBudget:
         hke = rke + dke
 
         #  create dataset
-        rke = self.add_field(rke, 'rke', is_flux=False,
+        rke = self.add_field(rke, 'rke', cumulative_flux=False,
                              gridtype='spectral', units='m**2 s**-2',
                              standard_name='rotational_kinetic_energy',
                              long_name='horizontal kinetic energy'
                                        ' of the non-divergent wind')
 
-        dke = self.add_field(dke, 'dke', is_flux=False,
+        dke = self.add_field(dke, 'dke', cumulative_flux=False,
                              gridtype='spectral', units='m**2 s**-2',
                              standard_name='divergent_kinetic_energy',
                              long_name='horizontal kinetic energy'
                                        ' of the non-rotational wind')
 
-        hke = self.add_field(hke, 'hke', is_flux=False,
+        hke = self.add_field(hke, 'hke', cumulative_flux=False,
                              gridtype='spectral', units='m**2 s**-2',
                              standard_name='horizontal_kinetic_energy',
                              long_name='horizontal kinetic energy')
@@ -278,7 +282,7 @@ class EnergyBudget:
         vke = self._scalar_spectrum(w_wind) / 2.0
 
         #  create dataset
-        vke = self.add_field(vke, 'vke', is_flux=False,
+        vke = self.add_field(vke, 'vke', cumulative_flux=False,
                              gridtype='spectral', units='m**2 s**-2',
                              standard_name='vertical_kinetic_energy',
                              long_name='vertical kinetic energy')
@@ -290,7 +294,7 @@ class EnergyBudget:
         """
         ape = self.ganma * self._scalar_spectrum(self.theta_prime) / 2.0
 
-        ape = self.add_field(ape, 'ape', is_flux=False,
+        ape = self.add_field(ape, 'ape', cumulative_flux=False,
                              gridtype='spectral', units='m**2 s**-2',
                              standard_name='available_potential_energy',
                              long_name='available potential energy')
@@ -366,23 +370,23 @@ class EnergyBudget:
                                                  'rotational kinetic energy')
 
         fluxes['pi_rke'] = self.add_field(pi_rke, units=units, standard_name='nonlinear_rke_flux',
-                                          long_name='spectral transfer of rotational'
-                                                    ' kinetic energy')
+                                          long_name='nonlinear spectral transfer of rotational '
+                                                    'kinetic energy')
 
         fluxes['pi_dke'] = self.add_field(pi_dke, units=units, standard_name='nonlinear_dke_flux',
-                                          long_name='spectral transfer of divergent'
-                                                    ' kinetic energy')
+                                          long_name='nonlinear spectral transfer of divergent '
+                                                    'kinetic energy')
 
         fluxes['pi_hke'] = self.add_field(pi_rke + pi_dke, units=units,
                                           standard_name='nonlinear_hke_flux',
-                                          long_name='spectral transfer of kinetic energy')
+                                          long_name='nonlinear spectral transfer of kinetic energy')
 
         fluxes['pi_ape'] = self.add_field(pi_ape, units=units, standard_name='nonlinear_ape_flux',
-                                          long_name='spectral transfer of available'
+                                          long_name='nonlinear spectral transfer of available'
                                                     ' potential energy')
 
         fluxes['lc'] = self.add_field(lc_ke, units=units, standard_name='coriolis_transfer',
-                                      long_name='coriolis linear transfer')
+                                      long_name='linear coriolis transfer')
 
         # ------------------------------------------------------------------------------------------
         # Cumulative vertical fluxes of divergent kinetic energy
@@ -553,25 +557,20 @@ class EnergyBudget:
         irrotational and non-divergent components.
 
         Returns:
-            uchi, vchi, upsi, vpsi:
-            zonal and meridional components of divergent and
-            rotational wind components respectively.
+            upsi, vpsi, uchi, vchi:
+            zonal and meridional components of the rotational and divergent winds.
         """
 
         # streamfunction and velocity potential
         psi_grid, chi_grid = self.streamfunction_potential(self.wind)
 
-        # Compute non-rotational components from streamfunction
-        chi_grad = self.horizontal_gradient(chi_grid)
-
         # Compute non-divergent components from velocity potential
-        psi_grad = self.horizontal_gradient(psi_grid)
+        rot_wind = rotate_vector(self.horizontal_gradient(psi_grid))
 
-        # apply mask to computed gradients
-        chi_grad = np.ma.masked_array(chi_grad, mask=self.wind.mask, fill_value=0.0)
-        psi_grad = np.ma.masked_array(psi_grad, mask=self.wind.mask, fill_value=0.0)
+        # Compute non-rotational components from streamfunction
+        div_wind = self.horizontal_gradient(chi_grid)
 
-        return chi_grad, rotate_vector(psi_grad)
+        return rot_wind, div_wind
 
     def vorticity_divergence(self):
         """
@@ -581,10 +580,19 @@ class EnergyBudget:
         vrt_spc, div_spc = self._spectral_vrtdiv(self.wind)
 
         # transform back to grid-point space preserving mask
-        vrt = self._inverse_transform(vrt_spc)
-        div = self._inverse_transform(div_spc)
+        vrt = self._inverse_transform(vrt_spc, mask=self.mask)
+        div = self._inverse_transform(div_spc, mask=self.mask)
 
-        return np.ma.masked_array([vrt, div], mask=[self.mask, self.mask], fill_value=0.0)
+        return vrt, div
+
+    def get_divergence(self, vector, mask=None):
+        """
+        Computes the horizontal divergence of a vector field on the sphere
+        """
+        # Spectral coefficients of horizontal wind divergence.
+        _, div_spc = self._spectral_vrtdiv(vector)
+
+        return self._inverse_transform(div_spc, mask=mask)
 
     # -------------------------------------------------------------------------------
     # Methods for computing spectral fluxes
@@ -640,12 +648,8 @@ class EnergyBudget:
         :return:
             Spectrum of DKE transfer across scales
         """
-
-        # Horizontal kinetic energy per unit mass in grid-point space scaled by 2
-        hke = np.ma.sum(self.wind * self.wind, axis=0)
-
         # Advection by the divergent wind in grid space
-        advection_div = self.horizontal_gradient(hke) + self.abs_vrt * rotate_vector(self.wind)
+        advection_div = 2.0 * self.hke_gradient + self.abs_vrt * rotate_vector(self.wind)
         advection_div += self.omega * self.wind_shear
 
         # Horizontal advection of absolute vorticity.
@@ -664,6 +668,7 @@ class EnergyBudget:
         """
         Available potential energy spectral transfer due to nonlinear interactions
         after Augier and Lindborg (2013), Eq.A3
+
         :return:
             Spherical harmonic coefficients of APE transfer across scales
         """
@@ -671,18 +676,23 @@ class EnergyBudget:
         # Compute vertical gradient of potential temperature perturbations
         theta_gradient = self.vertical_gradient(self.theta_prime)
 
-        # compute horizontal advection of potential temperature
+        # compute advection of potential temperature perturbation
         theta_advection = 2.0 * self._scalar_advection(self.theta_prime)
         theta_advection += self.div * self.theta_prime + self.omega * theta_gradient
 
-        # compute nonlinear spectral transfer related to horizontal advection
+        # compute nonlinear spectral transfer due to horizontal advection
         ape_transfer = - self._scalar_spectrum(self.theta_prime, theta_advection)
         ape_transfer += self._scalar_spectrum(theta_gradient, self.omega * self.theta_prime)
 
+        # correction
+        # ape_avg = self.wind * self.theta_prime ** 2
+        # ape_transfer[0] += self.representative_mean(self.get_divergence(ape_avg))
         return self.ganma * ape_transfer / 2.0
 
     def geopotential_flux(self):
-        # Pressure flux (Eq.22)
+        # The geopotential flux should equal the pressure flux plus the APE to DKE conversion
+        # Can be used to calculate the vertical pressure flux indirectly to avoid vertical
+        # gradients of spectral coefficients.
         return self._scalar_spectrum(self.div, self.phi)
 
     def pressure_flux(self):
@@ -799,12 +809,18 @@ class EnergyBudget:
         return self.sphere.analysis(scalar)
 
     @transform_io
-    def _inverse_transform(self, scalar_sp):
+    def _inverse_transform(self, scalar_sp, mask=None):
         """
         Compute a scalar function on the sphere from spherical harmonic coefficients.
         Wrapper around 'spectogrd' to process inputs and run in parallel.
         """
-        return self.sphere.synthesis(scalar_sp)
+        scalar = self.sphere.synthesis(scalar_sp)
+
+        # apply mask if needed
+        if np.ma.is_mask(mask) and np.shape(mask) == scalar.shape:
+            scalar = np.ma.masked_array(scalar, mask=mask, fill_value=0.0)
+
+        return scalar
 
     @transform_io
     def _spectral_vrtdiv(self, vector):
@@ -834,11 +850,10 @@ class EnergyBudget:
         # Compute horizontal gradient on grid-point space
         scalar_gradient = self.sphere.getgrad(scalar)
 
-        if np.ma.is_masked(scalar):
-            # Recovering "ground-truth" masked gradient using: β ∇φ = ∇(β φ) - (β φ) ∇β.
-            scalar_gradient = np.ma.masked_array(scalar_gradient, mask=[scalar.mask, scalar.mask])
+        # Recovering masked regions.
+        mask = self.mask if not np.ma.is_masked(scalar) else scalar.mask
 
-        return scalar_gradient
+        return np.ma.masked_array(scalar_gradient, mask=[mask, mask], fill_value=0.0)
 
     def vertical_gradient(self, scalar, order=6):
         """
@@ -875,7 +890,7 @@ class EnergyBudget:
         scalar_flux_divergence = self._spectral_vrtdiv(scalar * self.wind)[1]
 
         # back to grid-point space
-        scalar_flux_divergence = self._inverse_transform(scalar_flux_divergence)
+        scalar_flux_divergence = self._inverse_transform(scalar_flux_divergence, mask=scalar.mask)
 
         # recover scalar advection: u⋅∇φ = ∇⋅(φu) - δφ
         scalar_advection = scalar_flux_divergence - self.div * scalar
@@ -911,15 +926,8 @@ class EnergyBudget:
                 Array containing the zonal and meridional components of advection
         """
 
-        # Horizontal kinetic energy per unit mass in grid-point space
-        kinetic_energy = np.ma.sum(self.wind ** 2, axis=0) / 2.0
-
-        # Horizontal gradient of the horizontal kinetic energy
-        # (components stored along the first dimension)
-        ke_gradient = self.horizontal_gradient(kinetic_energy)
-
         # Horizontal advection of zonal and meridional wind components
-        return ke_gradient + self.vrt * rotate_vector(self.wind)
+        return self.hke_gradient + self.vrt * rotate_vector(self.wind)
 
     def _scalar_spectrum(self, scalar_1, scalar_2=None):
         """
@@ -959,9 +967,11 @@ class EnergyBudget:
 
         return self.vector_scale * spectrum.real
 
-    def accumulate_order(self, cs_lm, as_flux=False, axis=0):
+    def cumulative_spectrum(self, cs_lm, cumulative_flux=False, mask_correction=True, axis=0):
         """Accumulates over spherical harmonic order and returns
-           spectrum as a function of spherical harmonic degree.
+           spectrum as a function of spherical harmonic degree. The resulting spectrum can be
+           converted to cumulative flux if required, i.e, adding the values corresponding to
+           all wavenumbers n >= l for each l.
 
         Signature
         ---------
@@ -971,8 +981,11 @@ class EnergyBudget:
         ----------
         cs_lm : ndarray, shape ((ntrunc+1)*(ntrunc+2)/2, ...)
             contains the cross-spectrum of a set of spherical harmonic coefficients.
-        as_flux: bool, default False,
-            whether to accumulate as a flux0like quantity
+        cumulative_flux: bool, default False,
+            whether to accumulate as a flux-like quantity
+        mask_correction: bool,
+            When true, a correction is applied to the power spectrum to eliminate
+            the masking effects
         axis : int, optional
             axis of the spectral coefficients
         Returns
@@ -993,16 +1006,16 @@ class EnergyBudget:
         cs_lm = np.moveaxis(cs_lm, axis, 0).reshape((nml_shape, -1))
 
         # Compute spectrum as a function of spherical harmonic degree (total wavenumber).
-        if as_flux:
-            spectrum = numeric_tools.cumulative_flux(cs_lm, truncation)
-        else:
-            spectrum = numeric_tools.accumulate_order(cs_lm, truncation)
+        spectrum = numeric_tools.cumulative_spectrum(cs_lm, truncation, flux_form=cumulative_flux)
 
         # back to original shape
         spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)
 
         # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
-        return self.beta_correction * spectrum
+        if mask_correction:
+            spectrum *= self.beta_correction
+
+        return spectrum
 
     def representative_mean(self, scalar, weights=None, lat_axis=None):
         """

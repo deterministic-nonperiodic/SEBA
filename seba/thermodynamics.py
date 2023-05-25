@@ -167,7 +167,7 @@ def static_stability(pressure, temperature, vertical_axis=0):
     return - cn.Rd * (temperature / pressure) * ddp_theta
 
 
-def stability_parameter(pressure, theta, vertical_axis=0):
+def lorenz_parameter(pressure, theta, vertical_axis=0):
     # Static stability parameter ganma to convert from temperature variance to APE
     # using d(theta)/d(ln p) gives smoother gradients at the top/bottom boundaries.
     ddp_theta = gradient_1d(theta, pressure, axis=vertical_axis)
@@ -290,6 +290,6 @@ def brunt_vaisala_squared(pressure, temperature, vertical_axis=0):
     theta = potential_temperature(pressure, temperature)
 
     # compute the stability parameter
-    gamma = stability_parameter(pressure, theta, vertical_axis=vertical_axis)
+    gamma = lorenz_parameter(pressure, theta, vertical_axis=vertical_axis)
 
     return (cn.g / theta) ** 2 / gamma

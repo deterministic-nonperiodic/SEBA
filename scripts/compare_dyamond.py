@@ -1,3 +1,4 @@
+import os
 import warnings
 
 import xarray as xr
@@ -15,20 +16,23 @@ if __name__ == '__main__':
     date_time = '20[0]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
-    # load earth topography and surface pressure
-    dataset_sfc = xr.open_dataset(data_path + 'ICON_sfcp_{}.nc'.format(resolution))
-    sfc_pres = dataset_sfc.pres_sfc
+    # load surface pressure if given externally
+    sfc_file = data_path + '{}_sfcp_{}.nc'.format('ICON', resolution)
+    if os.path.exists(sfc_file):
+        sfc_pres = xr.open_dataset(sfc_file).get('pres_sfc')
+    else:
+        print("No surface pressure file found!")
+        sfc_pres = None
 
     # Create energy budget object
     budget = EnergyBudget(file_names, ps=sfc_pres)
 
-    # Compute diagnostics
-    dataset_energy = budget.energy_diagnostics()
-
     # ----------------------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    layers = {'Troposphere': [250e2, 450e2], 'Stratosphere': [50e2, 250e2]}
+    dataset_energy = budget.energy_diagnostics()
+
+    layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [50e2, 250e2]}
 
     figure_name = f'../figures/papers/{model}_energy_spectra_{resolution}.pdf'
 
@@ -66,9 +70,9 @@ if __name__ == '__main__':
                                     y_limits=y_limits, fig_name=figure_name)
 
     # ---------------------------------------------------------------------------------------
-    # Visualize fluxes cross section
+    # Visualize fluxes cross sections
     # ---------------------------------------------------------------------------------------
     figure_name = f'../figures/papers/{model}_fluxes_section_{resolution}.pdf'
 
-    dataset_fluxes.visualize_slices(model=None, variables=['cdr', 'vfd_dke'],
-                                    y_limits=[1000., 100.], fig_name=figure_name)
+    dataset_fluxes.visualize_slices(variables=['cdr', 'vfd_dke'], y_limits=[1000., 100.],
+                                    fig_name=figure_name)

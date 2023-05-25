@@ -148,13 +148,15 @@ end subroutine twodtooned
 !===================================================================================================
 
 !===================================================================================================
-subroutine accumulate_order(spectrum, cs_lm, ntrunc, nspc, ns)
+subroutine cumulative_spectrum(spectrum, cs_lm, ntrunc, nspc, ns, flux_form)
     ! input-output parameters
     implicit none
 
     integer, intent(in) :: ntrunc, nspc, ns
     double complex, intent(in) :: cs_lm     (nspc, ns)
     double precision, intent(out) :: spectrum  (ntrunc, ns)
+    logical, intent(in) :: flux_form
+
     ! lcal variables
     double complex :: scaled_cs (ntrunc, ntrunc, ns)
     integer :: ln
@@ -173,41 +175,15 @@ subroutine accumulate_order(spectrum, cs_lm, ntrunc, nspc, ns)
         spectrum(ln, :) = real(sum(scaled_cs(1:ln, ln, :), dim = 1))
     enddo
 
-    return
-end subroutine accumulate_order
-!===================================================================================================
-
-!===================================================================================================
-subroutine cumulative_flux(spectrum, cs_lm, ntrunc, nspc, ns)
-    ! input-output parameters
-    implicit none
-
-    integer, intent(in) :: ntrunc, nspc, ns
-    double complex, intent(in) :: cs_lm     (nspc, ns)
-    double precision, intent(out) :: spectrum  (ntrunc, ns)
-    ! lcal variables
-    double complex :: scaled_cs (ntrunc, ntrunc, ns)
-    integer :: ln, n
-
-    ! Reshape the spectral coefficients to matrix form (2, ntrunc, ntrunc, ...)
-    call onedtotwod(scaled_cs, cs_lm, ntrunc, nspc, ns)
-
-    ! Scale non-symmetric coefficients (ms != 1) by two
-    scaled_cs(2:ntrunc, :, :) = 2.0 * scaled_cs(2:ntrunc, :, :)
-
-    ! Initialize array for the 1D energy/power spectrum shaped (truncation, ...)
-    spectrum = 0.0
-
-    ! Compute spectrum as a function of total wavenumber: SUM Cml(m <= l), and accumulate
-    ! for all wavenumbers n >= l afterwards.
-    do ln = 1, ntrunc
-        do n = ln, ntrunc
-            spectrum(ln, :) = spectrum(ln, :) + real(sum(scaled_cs(1:n, n, :), dim = 1))
-        end do
-    enddo
+    ! Convert to spectral flux by accumulating for all wavenumbers n >= l for each degree l.
+    if (flux_form) then
+        do ln = 1, ntrunc
+            spectrum(ln, :) = sum(spectrum(ln:ntrunc, :), dim = 1)
+        enddo
+    end if
 
     return
-end subroutine cumulative_flux
+end subroutine cumulative_spectrum
 !===================================================================================================
 
 !===================================================================================================
@@ -224,12 +200,15 @@ subroutine cross_spectrum(spectrum, clm_1, clm_2, ntrunc, nspc, ns)
 
     ! lcal variables
     double complex :: clm_cs   (nspc, ns)
+    logical :: flux_form
+
+    flux_form = .false.
 
     ! Compute cross spectrum in (m, l) space
     clm_cs = clm_1 * conjg(clm_2)
 
     ! Compute spectrum as a function of total wavenumber: SUM Cml(m <= l).
-    call accumulate_order(spectrum, clm_cs, ntrunc, nspc, ns)
+    call cumulative_spectrum(spectrum, clm_cs, ntrunc, nspc, ns, flux_form)
 
     return
 end subroutine cross_spectrum

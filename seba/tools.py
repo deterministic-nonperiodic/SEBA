@@ -793,7 +793,7 @@ def gradient_1d(scalar, x=None, axis=-1, order=6):
         scalar_grad = numeric_tools.gradient(scalar, dx[0], order=order, mask=mask_index)
 
         # apply mask back to array
-        scalar_grad = np.ma.masked_array(scalar_grad, mask=scalar_mask)
+        scalar_grad = np.ma.masked_array(scalar_grad, mask=scalar_mask, fill_value=0.0)
         scalar_grad = np.moveaxis(scalar_grad.reshape(scalar_shape), 0, axis)
     else:
         # Using numpy implementation of second-order finite differences for irregular grids

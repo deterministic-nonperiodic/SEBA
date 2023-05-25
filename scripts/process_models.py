@@ -1,15 +1,16 @@
-import os.path
+import os
 import warnings
 from datetime import date
 
-import numpy as np
 import xarray as xr
-from seba.seba import EnergyBudget
 from tqdm import tqdm
+
+from seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
-DATA_PATH = "../data/"  # '/mnt/levante/energy_budget/test_data/'
+DATA_PATH = "../data/"
+OUTPUT_PATH = "../data/"
 
 
 def _process_model(model, resolution, date_time):
@@ -20,19 +21,16 @@ def _process_model(model, resolution, date_time):
 
     file_names = DATA_PATH + f'{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc'
 
-    file_name = f'{model}_atm_3d_tend_{resolution}_gps_{date_time}.nc'
-    dataset_tnd = xr.open_mfdataset(DATA_PATH + file_name)
-
-    sfc_file = DATA_PATH + '{}_sfcp_{}_{}.nc'.format(model, date_time, resolution)
+    # load surface pressure if given externally
+    sfc_file = DATA_PATH + '{}_sfcp_{}.nc'.format(model, resolution)
     if os.path.exists(sfc_file):
-        dset_sfc = xr.open_dataset(sfc_file)
-        sfcp = dset_sfc.get('pres_sfc')
+        sfc_pres = xr.open_dataset(sfc_file).get('pres_sfc')
     else:
         print("No surface pressure file found!")
-        sfcp = None
+        sfc_pres = None
 
-    # Create energy budget object
-    budget = EnergyBudget(file_names, ps=sfcp, jobs=1)
+    # Initialize energy budget
+    budget = EnergyBudget(file_names, ps=sfc_pres)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
@@ -40,91 +38,37 @@ def _process_model(model, resolution, date_time):
     # - Nonlinear energy transfers for DKE and RKE
     # - Energy conversion terms APE --> DKE and DKE --> RKE
     # - Vertical pressure and turbulent fluxes
-    fluxes = budget.cumulative_energy_fluxes().cumulative_sum(dim='kappa')
+    dataset = budget.cumulative_energy_fluxes()
 
-    # Compute spectral energy diagnostics
-    fluxes['rke'], fluxes['dke'], fluxes['hke'] = budget.horizontal_kinetic_energy()
-
-    fluxes['ape'] = budget.available_potential_energy()
-    fluxes['vke'] = budget.vertical_kinetic_energy()
-
-    # ----------------------------------------------------------------------------------------------
-    # Combine results into a dataset and export to netcdf
-    # ----------------------------------------------------------------------------------------------
-    fluxes.attrs.clear()  # clear global attributes
-
-    attrs = {'Conventions': 'CF-1.6',
-             'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
-             'institution': 'Max Planck Institute for Meteorology',
-             'title': '{}: Spectral Energy Budget of the Atmosphere.'.format(model.upper()),
-             'history': date.today().strftime('Created on %c'),
-             'references': ''}
-    fluxes.attrs.update(attrs)
-
-    fluxes.to_netcdf("../data/energy_budget/{}_energy_fluxes_{}.nc".format(model, suffix))
-    fluxes.close()
+    # Compute spectral energy diagnostics and combine with fluxes
+    dataset['rke'], dataset['dke'], dataset['hke'] = budget.horizontal_kinetic_energy()
+    dataset['ape'] = budget.available_potential_energy()
+    dataset['vke'] = budget.vertical_kinetic_energy()
 
     # ----------------------------------------------------------------------------------------------
-    # Compute APE tendency from parameterized processes
+    # Export dataset to netcdf file
     # ----------------------------------------------------------------------------------------------
-    ape_tendencies = []
-    tendecies = ['ddt_temp_dyn', 'ddt_temp_radlw', 'ddt_temp_radsw',
-                 'ddt_temp_rad', 'ddt_temp_conv', 'ddt_temp_vd',
-                 'ddt_temp_gwd', 'ddt_temp_turb', 'ddt_temp_gscp']
-
-    for name in tendecies:
-
-        pname = name.split('_')[-1].lower()
-        tend_grid = dataset_tnd.get(name)
-        if tend_grid is not None:
-            ape_tendencies.append(budget.get_ape_tendency(tend_grid, name="ddt_ape_" + pname))
-
-    # ----------------------------------------------------------------------------------------------
-    # Compute APE tendency from parameterized processes
-    # ----------------------------------------------------------------------------------------------
-    ke_tendencies = []
-    tendecies = ['ddt_*_conv', 'ddt_*_vd', 'ddt_*_gwd', 'ddt_*_turb']
-
-    for name in tendecies:
-
-        pname = name.split('_')[-1].lower()
-
-        tend_u_grid = dataset_tnd.get(name.replace("*", "u"))
-        tend_v_grid = dataset_tnd.get(name.replace("*", "v"))
-
-        if tend_u_grid is not None:
-            tend_grid = np.moveaxis(np.array([tend_u_grid.values,
-                                              tend_v_grid.values]), (1, 2), (-2, -1))
-
-            ke_tendency = budget.get_ke_tendency(tend_grid)
-
-            ke_tendency = budget.add_field(ke_tendency, "ddt_ke_" + pname,
-                                           gridtype='spectral', units='W m**-2')
-
-            ke_tendencies.append(ke_tendency)
-
-    dataset_tnd.close()
-    # ----------------------------------------------------------------------------------------------
-    # Combine results into a dataset and export to netcdf
-    # ----------------------------------------------------------------------------------------------
-    dataset = xr.merge(ape_tendencies + ke_tendencies, compat="no_conflicts")
-    dataset.attrs.clear()  # clear global attributes
-    attrs = {'Conventions': 'CF-1.6',
-             'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
-             'institution': 'Max Planck Institute for Meteorology',
-             'title': '{}: Parameterized Spectral Energy Fluxes.'.format(model.upper()),
-             'history': date.today().strftime('Created on %c'),
-             'references': ''}
+    attrs = {  # update dataset name and creation date/time
+        'title': '{}: Spectral Energy Budget of the Atmosphere.'.format(model.upper()),
+        'history': date.today().strftime('Created on %c')
+    }
     dataset.attrs.update(attrs)
 
-    dataset.to_netcdf(
-        DATA_PATH + "/energy_budget/{}_physics_tendencies_{}.nc".format(model, suffix))
+    dataset.to_netcdf(os.path.join(OUTPUT_PATH, f"{model}_energy_fluxes_{suffix}.nc"))
     dataset.close()
 
 
-if __name__ == '__main__':
+def main():
+    # Processing models
+    for i in tqdm(range(20, 30), desc="Computing ERA5 spectral energy fluxes"):
+        _process_model(model='ERA5', resolution='025deg', date_time='202001{:02d}'.format(i))
 
-    for i in tqdm(range(6), desc="Computing spectral energy fluxes"):
-        date_id = '20{:d}'.format(i)
-        _process_model(model='IFS', resolution='n512', date_time=date_id)
-        _process_model(model='ICON', resolution='n512', date_time=date_id)
+    for i in tqdm(range(40), desc="Computing IFS spectral energy fluxes"):
+        _process_model(model='IFS', resolution='n1024', date_time='2{:02d}'.format(i))
+
+    for i in tqdm(range(20, 30), desc="Computing ICON spectral energy fluxes"):
+        _process_model(model='ICON', resolution='n1024', date_time='202001{:02d}*'.format(i))
+
+
+if __name__ == '__main__':
+    main()

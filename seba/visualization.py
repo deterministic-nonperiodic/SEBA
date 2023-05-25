@@ -1,7 +1,6 @@
 import warnings
 from functools import reduce
 
-import colorcet
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as stats
@@ -26,90 +25,11 @@ plt.rcParams.update(params)
 plt.rcParams["axes.prop_cycle"] = plt.cycler("color", plt.cm.tab10.colors)
 plt.rcParams['text.latex.preamble'] = [r"\usepackage{amsmath}"]
 
-# global variables
-color_sequences = {
-    "models": {
-        4: ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', ],
-        8: ['#377eb8', '#e41a1c', '#4daf4a', '#984ea3', '#ff7f00', '#ffff33', '#a65628', '#f781bf'],
-    },
-    "mint": {
-        2: ["#e4f1e1", "#0d585f"],
-        3: ["#e4f1e1", "#63a6a0", "#0d585f"],
-        4: ["#e4f1e1", "#89c0b6", "#448c8a", "#0d585f"],
-        5: ["#E4F1E1", "#9CCDC1", "#63A6A0", "#337F7F", "#0D585F"],
-        6: ["#E4F1E1", "#abd4c7", "#7ab5ad", "#509693", "#2c7778", "#0d585f"],
-        7: ["#e4f1e1", "#b4d9cc", "#89c0b6", "#63a6a0", "#448c8a", "#287274", "#0d585f"]
-    },
-    "DarkMint": {
-        2: ("#d2fbd4", "#123f5a"),
-        3: ("#d2fbd4", "#559c9e", "#123f5a"),
-        4: ("#d2fbd4", "#7bbcb0", "#3a7c89", "#123f5a"),
-        5: ("#d2fbd4", "#8eccb9", "#559c9e", "#2b6c7f", "#123f5a"),
-        6: ("#d2fbd4", "#9cd5be", "#6cafa9", "#458892", "#266377", "#123f5a"),
-        7: ("#d2fbd4", "#a5dbc2", "#7bbcb0", "#559c9e", "#3a7c89", "#235d72", "#123f5a")
-    },
-}
+# load colormaps
+with open('../data/cet_d13.cm', 'r') as cfile:
+    cet_d13 = cfile.read().split('\n')
 
-cm_data = [[0.2081, 0.1663, 0.5292], [0.2116238095, 0.1897809524, 0.5776761905],
-           [0.212252381, 0.2137714286, 0.6269714286], [0.2081, 0.2386, 0.6770857143],
-           [0.1959047619, 0.2644571429, 0.7279], [0.1707285714, 0.2919380952,
-                                                  0.779247619],
-           [0.1252714286, 0.3242428571, 0.8302714286],
-           [0.0591333333, 0.3598333333, 0.8683333333], [0.0116952381, 0.3875095238,
-                                                        0.8819571429],
-           [0.0059571429, 0.4086142857, 0.8828428571],
-           [0.0165142857, 0.4266, 0.8786333333], [0.032852381, 0.4430428571,
-                                                  0.8719571429],
-           [0.0498142857, 0.4585714286, 0.8640571429],
-           [0.0629333333, 0.4736904762, 0.8554380952], [0.0722666667, 0.4886666667,
-                                                        0.8467],
-           [0.0779428571, 0.5039857143, 0.8383714286],
-           [0.079347619, 0.5200238095, 0.8311809524], [0.0749428571, 0.5375428571,
-                                                       0.8262714286],
-           [0.0640571429, 0.5569857143, 0.8239571429],
-           [0.0487714286, 0.5772238095, 0.8228285714], [0.0343428571, 0.5965809524,
-                                                        0.819852381], [0.0265, 0.6137, 0.8135],
-           [0.0238904762, 0.6286619048,
-            0.8037619048], [0.0230904762, 0.6417857143, 0.7912666667],
-           [0.0227714286, 0.6534857143, 0.7767571429], [0.0266619048, 0.6641952381,
-                                                        0.7607190476],
-           [0.0383714286, 0.6742714286, 0.743552381],
-           [0.0589714286, 0.6837571429, 0.7253857143],
-           [0.0843, 0.6928333333, 0.7061666667], [0.1132952381, 0.7015, 0.6858571429],
-           [0.1452714286, 0.7097571429, 0.6646285714], [0.1801333333, 0.7176571429,
-                                                        0.6424333333],
-           [0.2178285714, 0.7250428571, 0.6192619048],
-           [0.2586428571, 0.7317142857, 0.5954285714], [0.3021714286, 0.7376047619,
-                                                        0.5711857143],
-           [0.3481666667, 0.7424333333, 0.5472666667],
-           [0.3952571429, 0.7459, 0.5244428571], [0.4420095238, 0.7480809524,
-                                                  0.5033142857],
-           [0.4871238095, 0.7490619048, 0.4839761905],
-           [0.5300285714, 0.7491142857, 0.4661142857], [0.5708571429, 0.7485190476,
-                                                        0.4493904762],
-           [0.609852381, 0.7473142857, 0.4336857143],
-           [0.6473, 0.7456, 0.4188], [0.6834190476, 0.7434761905, 0.4044333333],
-           [0.7184095238, 0.7411333333, 0.3904761905],
-           [0.7524857143, 0.7384, 0.3768142857], [0.7858428571, 0.7355666667,
-                                                  0.3632714286],
-           [0.8185047619, 0.7327333333, 0.3497904762],
-           [0.8506571429, 0.7299, 0.3360285714], [0.8824333333, 0.7274333333, 0.3217],
-           [0.9139333333, 0.7257857143, 0.3062761905], [0.9449571429, 0.7261142857,
-                                                        0.2886428571],
-           [0.9738952381, 0.7313952381, 0.266647619],
-           [0.9937714286, 0.7454571429, 0.240347619], [0.9990428571, 0.7653142857,
-                                                       0.2164142857],
-           [0.9955333333, 0.7860571429, 0.196652381],
-           [0.988, 0.8066, 0.1793666667], [0.9788571429, 0.8271428571, 0.1633142857],
-           [0.9697, 0.8481380952, 0.147452381], [0.9625857143, 0.8705142857, 0.1309],
-           [0.9588714286, 0.8949, 0.1132428571], [0.9598238095, 0.9218333333,
-                                                  0.0948380952],
-           [0.9661, 0.9514428571, 0.0755333333],
-           [0.9763, 0.9831, 0.0538]]
-
-parula = LinearSegmentedColormap.from_list('parula', cm_data)
-
-BWG = LinearSegmentedColormap.from_list('BWG', colorcet.CET_D13)
+cet_bwg = LinearSegmentedColormap.from_list('BWG', cet_d13)
 
 VARIABLE_KEYMAP = {
     'hke': r'$E_K$',
@@ -132,10 +52,10 @@ VARIABLE_KEYMAP = {
     # r'$\mathcal{F}_{\uparrow}(p_b) - \mathcal{F}_{\uparrow}(p_t)$',
     'vf_ape': r'$\mathcal{F}_{A\uparrow}$',
     'vfd_ape': r'$\partial_{p}\mathcal{F}_{A\uparrow}$',
-    'uw_vf': r'$\rho\overline{u^{\prime}w^{\prime}}$',
-    'vw_vf': r'$\rho\overline{v^{\prime}w^{\prime}}$',
-    'gw_vf': r'$\overline{u^{\prime}w^{\prime}}$ + $\overline{v^{\prime}w^{\prime}}$',
-    'dke_dl_vf': r'$\partial_{\kappa}(\partial_{p}\mathcal{F}_{D\uparrow})$',
+    'mf_uw': r'$\rho\overline{u^{\prime}w^{\prime}}$',
+    'mf_vw': r'$\rho\overline{v^{\prime}w^{\prime}}$',
+    'mf_gw': r'$\overline{u^{\prime}w^{\prime}}$ + $\overline{v^{\prime}w^{\prime}}$',
+    'dvf_dl_dke': r'$\partial_{\kappa}(\partial_{p}\mathcal{F}_{D\uparrow})$',
     'dcdr_dl': r'$\partial_{\kappa} \mathcal{C}_{D \rightarrow R}$',
     'dis_rke': r'$\mathcal{D}_R$',
     'dis_dke': r'$\mathcal{D}_D$',
@@ -420,7 +340,7 @@ def _parse_variable(varname):
 
 def fluxes_slices_by_models(dataset, model=None, variables=None,
                             x_limits=None, y_limits=None,
-                            cmap=None, fig_name='test.png'):
+                            cmap=None, fig_name=None):
     if variables is None:
         variables = list(dataset.data_vars)
 
@@ -430,7 +350,7 @@ def fluxes_slices_by_models(dataset, model=None, variables=None,
         y_limits = [1000., 100.]
 
     if cmap is None:
-        cmap = BWG
+        cmap = cet_bwg
 
     # get coordinates
     level = 1e-2 * dataset['level'].values
@@ -466,8 +386,8 @@ def fluxes_slices_by_models(dataset, model=None, variables=None,
                          norm=SymLogNorm(**find_symlog_params(spectra)))
 
         ax.contour(kappa, level, smoothed_data,
-                   color='black', linewidths=0.8, linestyles='solid',
-                   levels=[0, ], alpha=0.6)
+                   color='black', linewidths=0.6, linestyles='solid',
+                   levels=[0, ], alpha=0.8)
 
         ax.set_ylim(y_limits)
 
@@ -482,7 +402,9 @@ def fluxes_slices_by_models(dataset, model=None, variables=None,
         axes[0].add_artist(at)
 
     plt.show()
-    fig.savefig(fig_name, dpi=300)
+    if fig_name is not None:
+        fig.savefig(fig_name, dpi=300)
+
     plt.close(fig)
 
 
@@ -502,6 +424,8 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
     # get coordinates
     kappa = 1e3 * dataset['kappa'].values
+    level = 1e-2 * dataset['level'].values
+    level_range = np.int32([level.max(), level.min()])
 
     degree_max = 2 * kappa.size - 1
     degree_eff = int(degree_max / 3)
@@ -531,7 +455,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     axes = axes.ravel()
     indicator = 'abcdefghijklmn'
 
-    for m, (level, prange) in enumerate(layers.items()):
+    for m, (layer, prange) in enumerate(layers.items()):
 
         data = dataset.integrate_range(coord_range=prange)
 
@@ -566,7 +490,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
             # Scale is defined as half-wavelength
             axes[m].annotate(r'$L_{c}\sim$' + '{:d} km'.format(int(kappa_from_lambda(kappa_c))),
-                             xy=(kappa_c, y_limits[level][0]), xycoords='data',
+                             xy=(kappa_c, y_limits[layer][0]), xycoords='data',
                              xytext=(kappa_c_pos, 20.), textcoords='offset points',
                              color='black', fontsize=9, horizontalalignment='left',
                              verticalalignment='top')
@@ -574,10 +498,10 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         # plot reference slopes
         reference_slopes(axes[m], x_scales, scale_mg, scale_st)
 
-        axes[m].set_ylim(*y_limits[level])
+        axes[m].set_ylim(*y_limits[layer])
 
-        prange_str = [int(1e-2 * p) for p in sorted(prange)[::-1]]
-        axes[m].legend(title=r"{} ({:3d} - {:3d} hPa)".format(level, *prange_str),
+        layer_lim = level_range if prange is None else (1e-2 * np.sort(prange)[::-1]).astype(int)
+        axes[m].legend(title=r"{} ({:3d} - {:3d} hPa)".format(layer, *layer_lim),
                        loc='upper right', fontsize=14, labelspacing=0.4, borderaxespad=0.4,
                        ncol=legend_cols, frameon=False, columnspacing=2.5)
 
@@ -601,7 +525,8 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
 
 def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
-                             show_injection=False, x_limits=None, y_limits=None, fig_name=None):
+                             show_injection=False, x_limits=None, y_limits=None,
+                             fig_name=None):
     if model is None:
         model = ''
 
@@ -616,6 +541,9 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
     # get coordinates
     kappa = 1e3 * dataset['kappa'].values
+    level = 1e-2 * dataset['level'].values
+    level_range = np.int32([level.max(), level.min()])
+
     degree_max = 2 * kappa.size - 1
     # -----------------------------------------------------------------------------------
     # Visualization of Kinetic energy and Available potential energy
@@ -635,12 +563,16 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     axes = axes.ravel()
     indicator = 'abcdefghijklmn'
 
-    for m, (level, prange) in enumerate(layers.items()):
+    for m, (layer, prange) in enumerate(layers.items()):
 
         data = dataset.integrate_range(coord_range=prange).mean(dim='time')
 
         for varname in variables:
             spectra = np.sum([data[name] for name in varname.split('+')], axis=0)
+            if 'pi_ape' in varname:
+                #  correction for ape spectral flux due to small deviations
+                #  from zero due to numerical precision.
+                spectra[:2] = 0.0
 
             axes[m].plot(kappa, spectra, **_parse_variable(varname))
 
@@ -660,7 +592,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
             # vertical lines denoting crossing scales
             if not np.isnan(kappa_in).all():
-                axes[m].vlines(x=kappa_in, ymin=y_limits[level][0], ymax=0.0,
+                axes[m].vlines(x=kappa_in, ymin=y_limits[layer][0], ymax=0.0,
                                color='black', linewidth=0.8,
                                linestyle='dashed', alpha=0.6)
 
@@ -669,15 +601,15 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                 # Scale is defined as half-wavelength
                 axes[m].annotate(r'$L_{in}\sim$' + '{:d} km'.format(
                     int(kappa_from_lambda(kappa_in))),
-                                 xy=(kappa_in, y_limits[level][0]), xycoords='data',
+                                 xy=(kappa_in, y_limits[layer][0]), xycoords='data',
                                  xytext=(kappa_in_pos, 20.), textcoords='offset points',
                                  color='black', fontsize=9, horizontalalignment='left',
                                  verticalalignment='top')
 
-        axes[m].set_ylim(*y_limits[level])
+        axes[m].set_ylim(*y_limits[layer])
 
-        prange_str = [int(1e-2 * p) for p in sorted(prange)[::-1]]
-        legend = axes[m].legend(title="{} ({:3d} - {:3d} hPa)".format(level, *prange_str),
+        layer_lim = level_range if prange is None else (1e-2 * np.sort(prange)[::-1]).astype(int)
+        legend = axes[m].legend(title="{} ({:3d} - {:3d} hPa)".format(layer, *layer_lim),
                                 loc='upper right', fontsize=14, labelspacing=0.5, borderaxespad=0.4,
                                 ncol=legend_cols, frameon=False, columnspacing=1.4)
         legend.set_in_layout(False)

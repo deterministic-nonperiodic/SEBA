@@ -431,41 +431,6 @@ class SebaDataset(Dataset):
 
         return data.squeeze(drop=True)
 
-    def gradient(self, variable=None, dim="level", order=6):
-        """ Differentiate along a given coordinate using high-order compact
-            finite difference scheme (Lele 1992).
-        """
-        if variable is None:
-            # create a copy and integrate the entire dataset.
-            data = self.copy()
-        elif isinstance(variable, (list, tuple)):
-            data = self[list(variable)]
-        elif variable in self:
-            data = self[variable].to_dataset(promote_attrs=True)
-        else:
-            raise ValueError(f"Variable {variable} not found in dataset!")
-
-        # Find vertical coordinate and sort 'coord_range' accordingly
-        coord = self.find_coordinate(coord_name=dim)
-        axis = tuple(data.dims).index(coord.name)
-
-        for name in data.data_vars:
-
-            var_attrs = data[name].attrs
-
-            data[name] = (data[name].dims, gradient_1d(data[name].values,
-                                                       coord.values,
-                                                       axis=axis, order=order))
-
-            # keep attrs
-            data[name].attrs.update(var_attrs)
-
-            if "units" in coord.attrs and "units" in var_attrs:
-                converted_units = _parse_units(var_attrs['units']) / _parse_units(coord.units)
-                data[name].attrs['units'] = str(converted_units.units)
-
-        return data
-
     def integrate_range(self, variable=None, dim="level", coord_range=None):
 
         if variable is None:
@@ -503,6 +468,41 @@ class SebaDataset(Dataset):
         for name, units in var_units.items():
             if units:
                 converted_units = _parse_units(units) * _parse_units(convert_units)
+                data[name].attrs['units'] = str(converted_units.units)
+
+        return data
+
+    def gradient(self, variable=None, dim="level", order=6):
+        """ Differentiate along a given coordinate using high-order compact
+            finite difference scheme (Lele 1992).
+        """
+        if variable is None:
+            # create a copy and integrate the entire dataset.
+            data = self.copy()
+        elif isinstance(variable, (list, tuple)):
+            data = self[list(variable)]
+        elif variable in self:
+            data = self[variable].to_dataset(promote_attrs=True)
+        else:
+            raise ValueError(f"Variable {variable} not found in dataset!")
+
+        # Find vertical coordinate and sort 'coord_range' accordingly
+        coord = self.find_coordinate(coord_name=dim)
+        axis = tuple(data.dims).index(coord.name)
+
+        for name in data.data_vars:
+
+            var_attrs = data[name].attrs
+
+            data[name] = (data[name].dims, gradient_1d(data[name].values,
+                                                       coord.values,
+                                                       axis=axis, order=order))
+
+            # keep attrs
+            data[name].attrs.update(var_attrs)
+
+            if "units" in coord.attrs and "units" in var_attrs:
+                converted_units = _parse_units(var_attrs['units']) / _parse_units(coord.units)
                 data[name].attrs['units'] = str(converted_units.units)
 
         return data
@@ -1052,9 +1052,8 @@ def get_surface_elevation(latitude, longitude):
 
     # infer the grid type from latitude points (raises error if grid is not regular or gaussian)
     grid_type, _, _ = inspect_gridtype(latitude)
-    grid_prefix = "n" if grid_type == 'gaussian' else "r"
-
-    grid_id = grid_prefix + str(latitude.size // 2)
+    grid_id = "n" if grid_type == 'gaussian' else "r"
+    grid_id += str(latitude.size // 2)
 
     expected_path, _ = os.path.split(path_global_topo)
     expected_file = os.path.join(expected_path, f"topo_global_{grid_id}.nc")
