@@ -12,8 +12,7 @@ from spectral_analysis import kappa_from_deg
 from spherical_harmonics import Spharmt
 from thermodynamics import exner_function, potential_temperature
 from thermodynamics import lorenz_parameter, vertical_velocity
-from tools import prepare_data, transform_io
-from tools import rotate_vector, broadcast_1dto, gradient_1d
+from tools import prepare_data, transform_io, rotate_vector, broadcast_1dto, gradient_1d
 
 # declare global read-only variables
 _global_attrs = {'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
@@ -137,13 +136,14 @@ class EnergyBudget:
         self.pressure = data.pressure.values
 
         # get vertical velocity
-        self.omega = data.get_field('omega')
+        self.omega = data.get_field('omega', masked=True)
 
         # Get geopotential field and compute geopotential height
-        self.phi = data.get_field('geopotential')
+        self.phi = data.get_field('geopotential', masked=True)
 
         # create wind array from masked wind components (preserving mask)
-        self.wind = np.ma.stack((data.get_field('u_wind'), data.get_field('v_wind')))
+        self.wind = np.ma.stack((data.get_field('u_wind', masked=True),
+                                 data.get_field('v_wind', masked=True)))
 
         # compute thermodynamic quantities. Using unmasked temperature field if possible
         # Using masked temperature causes issues computing the spectral transfers of APE,
@@ -158,6 +158,9 @@ class EnergyBudget:
         # define data mask once for consistency
         self.mask = self.omega.mask
         self.beta = (~self.mask).astype(float)
+
+        # # unmask omega after retrieving the mask
+        # self.omega = np.ma.fix_invalid(self.omega, fill_value=0.0)
 
         # Compute fraction of valid points at every level for Spectral Mode-Coupling Correction
         # same as the power-spectrum of the mask integrated along spherical harmonic degree. This

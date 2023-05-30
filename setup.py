@@ -18,7 +18,7 @@ setup(
     author_email='yanmichel.morfa-avalos@mpimet.mpg.de',
     packages=find_packages(),
     package_dir={'seba': 'seba'},
-    ext_modules=[Extension('numeric_tools', sources=['fortran_libs/numeric_tools.f90'])],
+    ext_modules=[Extension('numeric_tools', sources=['seba/fortran_libs/numeric_tools.f90'])],
     python_requires='>=3.9',
     setup_requires=['numpy'],
     install_requires=[
@@ -27,10 +27,7 @@ setup(
         'xarray',
         'numpy',
         'scipy',
-        'matplotlib',
-        'scikit-learn',
-        'joblib',
-        'colorcet'
+        'matplotlib'
     ],
     include_package_data=True,
     package_data={'seba': ['*.so']},

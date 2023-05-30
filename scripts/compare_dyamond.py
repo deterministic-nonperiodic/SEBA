@@ -10,8 +10,8 @@ warnings.filterwarnings('ignore')
 if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n1024'
-    data_path = '../data/'
+    resolution = 'n512'
+    data_path = '/media/yanm/Data/DYAMOND/simulations/'
 
     date_time = '20[0]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"

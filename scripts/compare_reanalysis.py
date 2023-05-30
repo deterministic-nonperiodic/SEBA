@@ -8,7 +8,7 @@ if __name__ == '__main__':
     # Load dyamond dataset
     model = 'ERA5'
     resolution = '025deg'
-    data_path = '../data/'
+    data_path = '/media/yanm/Data/DYAMOND/simulations/'
 
     date_time = '20200128'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"

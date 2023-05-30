@@ -19,9 +19,8 @@ if __name__ == '__main__':
 
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n1024'
-    data_path = '../data/'
-    # data_path = '/mnt/levante/energy_budget/test_data/'
+    resolution = 'n512'
+    data_path = '/media/yanm/Data/DYAMOND/simulations/'
 
     date_time = '20[0]'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
@@ -40,12 +39,14 @@ if __name__ == '__main__':
     f_sky = budget.representative_mean(beta)
 
     # visualize profiles
-    variables = ['omega', 'wind', 'theta_prime', 'theta']
+    variables = ['omega', 'theta_prime', 'wind_rot', 'wind_div']
     vars_info = {
-        'omega': ('scalar', r'Pressure velocity $(Pa^{2}~s^{-2})$'),
-        'theta': ('scalar', r'${\theta}^{2}~(K^{2})$'),
-        'theta_prime': ('scalar', r'${\theta^{\prime}}^{2}~(K^{2})$'),
-        'wind': ('vector', r'Horizontal kinetic energy  $(m^{2}~s^{-2})$')
+        'omega': ('scalar', r'Pressure vertical velocity $/~Pa^{2}~s^{-2}$'),
+        'phi': ('scalar', r'${\phi}^{2}~(K^{2})$'),
+        'theta_prime': ('scalar', r'${\theta^{\prime}}^{2}~/~K^{2}$'),
+        'wind': ('vector', r'Horizontal kinetic energy  $/~m^{2}~s^{-2}$'),
+        'wind_div': ('vector', r'Divergent kinetic energy  $/~m^{2}~s^{-2}$'),
+        'wind_rot': ('vector', r'Rotational kinetic energy  $/~m^{2}~s^{-2}$'),
     }
     pressure = 1e-2 * budget.pressure
 
@@ -54,6 +55,7 @@ if __name__ == '__main__':
                              constrained_layout=True)
 
     results = {}
+    lines = []
     # Compute spectrum of scalar variables
     for i, variable in enumerate(variables):
         ax = axes[i]
@@ -62,28 +64,36 @@ if __name__ == '__main__':
         if vars_info[variable][0] == 'vector':
             # The global average of the dot product of two vectors must equal the sum
             # of the vectors' cross-spectrum along all spherical harmonic degrees.
-            data_sqd = np.sum(data ** 2, axis=0)
-            data_gs = budget.representative_mean(data_sqd).mean(0)
-            data_sp = budget.cumulative_spectrum(budget._vector_spectrum(data))
+            data_gs = budget.representative_mean(np.ma.sum(data ** 2, axis=0)).mean(0)
+            data_clm = budget._vector_spectrum(data)
         else:
-            data_sqd = data ** 2
-            data_gs = budget.representative_mean(data_sqd).mean(0)
-            data_sp = budget.cumulative_spectrum(budget._scalar_spectrum(data))
+            data_gs = budget.representative_mean(data ** 2).mean(0)
+            data_clm = budget._scalar_spectrum(data)
+
+        masked = np.ma.is_masked(data)
+
+        data_sp = budget.cumulative_spectrum(data_clm, mask_correction=masked)
+        data_nc = budget.cumulative_spectrum(data_clm, mask_correction=False)
 
         # sum over all spherical harmonic degrees
         data_sp = np.nansum(data_sp, axis=0).mean(0)
+        data_nc = np.nansum(data_nc, axis=0).mean(0)
 
         # plot vertical profiles of reconstructed mean
         lines = ax.plot(data_gs.T, pressure, '-b',
-                        data_sp.T, pressure, '-.k', lw=2.5)
-        labels = [
-            'global mean',
-            'recovered',
-        ]
-        ax.legend(lines, labels, title=vars_info[variable][1], loc='best')
-        ax.set_ylim(1020, 20)
+                        data_sp.T, pressure, '--k',
+                        data_nc.T, pressure, '-.g', lw=2.5)
 
-    axes[0].set_ylabel('Pressure (hPa)')
+        ax.set_ylim(1020, 50)
+        ax.set_xlabel(vars_info[variable][1])
+
+    labels = [
+        'physical space',
+        'corrected spectrum',
+        'uncorrected spectrum'
+    ]
+    axes[0].legend(lines, labels, title='Integrated global variance', loc='best')
+    axes[0].set_ylabel('Pressure / hPa')
 
     plt.show()
     plt.close(fig)

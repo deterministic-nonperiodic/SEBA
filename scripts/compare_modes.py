@@ -7,15 +7,15 @@ from seba import EnergyBudget
 warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
-    mode = "RO"
-    model = 'ICON'
+    mode = "IG"
+    model = 'IFS'
     resolution = 'n256'
     data_path = '/media/yanm/Data/DYAMOND/data/'
 
     date_time = '20200202'
     file_names = data_path + f"{model}_{mode}_inst_{date_time}_{resolution}.nc"
 
-    p_levels = np.linspace(1000e2, 10e2, 25)
+    p_levels = np.linspace(1000e2, 10e2, 41)
 
     # Create energy budget object
     budget = EnergyBudget(file_names, p_levels=p_levels, truncation=420)
@@ -40,8 +40,8 @@ if __name__ == '__main__':
     # Perform vertical integration along last axis
     layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [20e2, 250e2]}
 
-    y_limits = {'Stratosphere': [-0.6, 1.0],
-                'Free troposphere': [-0.6, 1.0],
+    y_limits = {'Stratosphere': [-0.4, 0.8],
+                'Free troposphere': [-0.4, 0.8],
                 'Lower troposphere': [-1.0, 1.5]}
 
     figure_name = f'../figures/papers/{model}_{mode}_energy_fluxes_{resolution}.pdf'
@@ -57,13 +57,17 @@ if __name__ == '__main__':
     figure_name = f'../figures/papers/{model}_{mode}_hke_fluxes_{resolution}.pdf'
 
     layers = {'Free troposphere': [250e2, 450e2], 'Lower troposphere': [500e2, 850e2]}
-    y_limits = {'Free troposphere': [-0.04, 0.04], 'Lower troposphere': [-0.08, 0.08]}
+
+    y_limits = {
+        'IG': {'Free troposphere': [-0.04, 0.04], 'Lower troposphere': [-0.08, 0.08]},
+        'RO': {'Free troposphere': [-0.3, 0.3], 'Lower troposphere': [-0.3, 0.3]}
+    }
 
     # perform vertical integration
     dataset_fluxes.visualize_fluxes(model=model,
                                     variables=['pi_dke+pi_rke', 'pi_rke', 'pi_dke',
                                                'cdr', 'cdr_w', 'cdr_v'],
-                                    layers=layers, y_limits=y_limits, fig_name=figure_name)
+                                    layers=layers, y_limits=y_limits[mode], fig_name=figure_name)
 
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section

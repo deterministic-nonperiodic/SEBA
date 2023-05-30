@@ -1,6 +1,7 @@
 import numpy as np
 import xarray as xr
 
+from io_tools import SebaDataset
 from seba import EnergyBudget
 from seba import parse_dataset
 
@@ -11,7 +12,7 @@ if __name__ == '__main__':
 
     date_time = '2020020[2]'
 
-    p_levels = np.linspace(1000e2, 10e2, 41)
+    p_levels = np.linspace(1000e2, 10e2, 31)
 
     dataset = {}
     dataset_fluxes = {}
@@ -23,7 +24,6 @@ if __name__ == '__main__':
 
         # compute cumulative energy fluxes
         dataset_fluxes[mode] = EnergyBudget(dataset[mode]).cumulative_energy_fluxes()
-        dataset_fluxes[mode] = dataset_fluxes[mode].cumulative_sum(dim='kappa')
 
     # Create dataset with full winds
     add_var = ['u_wind', 'v_wind', 'omega']
@@ -36,22 +36,24 @@ if __name__ == '__main__':
     budget = EnergyBudget(dataset)
 
     # compute cumulative energy fluxes
-    dataset_fluxes['FF'] = budget.cumulative_energy_fluxes().cumulative_sum(dim='kappa')
+    dataset_fluxes['FF'] = budget.cumulative_energy_fluxes()
 
-    wave_mean_fluxes = dataset_fluxes['FF'] - dataset_fluxes['IG'] - dataset_fluxes['RO']
+    wave_mean_fluxes = SebaDataset(
+        dataset_fluxes['FF'] - dataset_fluxes['IG'] - dataset_fluxes['RO']
+    )
 
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
     variables = ['cdr', 'vfd_dke', 'pi_hke']
 
-    fig_name = f'../figures/{model}_total_fluxes_section_n256.pdf'
-    dataset_fluxes['FF'].visualize_fluxes(model=None, variables=variables, y_limits=[1000., 10.],
-                                          fig_name=fig_name)
+    fig_name = f'../figures/papers/{model}_total_fluxes_section_n256.pdf'
+    dataset_fluxes['FF'].visualize_slices(model=None, variables=variables,
+                                          y_limits=[1000., 10.], fig_name=fig_name)
 
-    fig_name = f'../figures/{model}_wave_vortex_fluxes_section_n256.pdf'
-    wave_mean_fluxes.visualize_fluxes(model=None, variables=variables, y_limits=[1000., 10.],
-                                      fig_name=fig_name)
+    fig_name = f'../figures/papers/{model}_wave_vortex_fluxes_section_n256.pdf'
+    wave_mean_fluxes.visualize_slices(model=None, variables=variables,
+                                      y_limits=[1000., 10.], fig_name=fig_name)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
@@ -60,15 +62,15 @@ if __name__ == '__main__':
     # Perform vertical integration along last axis
     layers = {'Stratosphere': [20e2, 250e2], 'Free troposphere': [250e2, 450e2]}
 
-    y_limits = {'Stratosphere': [-0.8, 0.8],
-                'Free troposphere': [-0.5, 1.0],
+    y_limits = {'Stratosphere': [-0.8, 1.2],
+                'Free troposphere': [-0.5, 1.5],
                 'Lower troposphere': [-1.0, 1.5]
                 }
 
-    figure_name = f'../figures/papers/{model}_energy_fluxes_n256.pdf'
+    figure_name = f'../figures/papers/{model}_total_energy_fluxes_n256.pdf'
 
     dataset_fluxes['FF'].visualize_fluxes(model=model,
                                           variables=['pi_hke+pi_ape', 'pi_hke',
                                                      'pi_ape', 'cad', 'cdr', 'vfd_tot'],
                                           layers=layers, y_limits=y_limits,
-                                          resolution='n1024', fig_name=figure_name)
+                                          fig_name=figure_name)

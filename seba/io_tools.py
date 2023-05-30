@@ -303,7 +303,7 @@ class SebaDataset(Dataset):
 
                         if not same_size or not np.allclose(surface_var.latitude,
                                                             self.latitude, atol=1e-4):
-                            print(f'Interpolating surface data: {name}')
+                            print(f'Info: Interpolating surface data: {name}')
 
                             # extrapolate missing values usually points near the poles
                             surface_var = surface_var.interp(latitude=self.latitude,
@@ -386,8 +386,14 @@ class SebaDataset(Dataset):
         # masked elements are filled with zeros before the spectral analysis
         data.set_fill_value(0.0)
 
-        # prepare_data(data, info_coords)
-        return np.ma.transpose(data, axes=coord_order)
+        # transpose data to required shape
+        data = np.ma.transpose(data, axes=coord_order)
+
+        # get filled data if no mask is required
+        if not masked and np.ma.is_masked(data):
+            data = data.data
+
+        return data
 
     def _coordinate_range(self, name="level", limits=None):
         # Find vertical coordinate and sort 'coord_range' accordingly
@@ -880,7 +886,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         sfcp = data.ps.values.ravel()
 
         if 'ts' not in data:
-            print("Computing surface temperature ...")
+            print("Info: Computing surface temperature ...")
 
             # compute surface temperature by linear interpolation
             sfct = numeric_tools.surface_temperature(sfcp, temperature, data.pressure.values)
@@ -893,12 +899,12 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
             # noinspection PyTypeChecker
             sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
 
-        print("Get surface elevation ...")
+        print("Info: Get surface elevation ...")
         # get surface elevation for the given grid. Using interpolated data
         # from global dataset if it does not exist already.
         sfch = get_surface_elevation(data.latitude, data.longitude).values.ravel()
 
-        print("Computing geopotential from temperature ...")
+        print("Info: Computing geopotential from temperature ...")
         # Compute geopotential from the temperature field: d(phi)/d(log p) = - Rd * T(p)
         phi = numeric_tools.geopotential(data.pressure.values, temperature, sfch, sfcp, sfct=sfct)
         phi = DataArray(phi.reshape(data_shape), dims=target_dims)
@@ -910,7 +916,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     if data.latitude.size != data.longitude.size // 2:
         gridtype = 'gaussian'
 
-        print(f'Interpolating to {gridtype} grid ...')
+        print(f'Info: Interpolating to {gridtype} grid ...')
         latitude, _ = gaussian_lats_wts(data.longitude.size // 2)
 
         data = data.interp(latitude=latitude)
@@ -919,7 +925,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
 
     data.attrs.update(gridtype=gridtype)
 
-    print("Data processing completed successfully!")
+    print("Info: Data processing completed successfully!")
 
     # return dataset with proper variables and units (remove dask arrays)
     return data.compute()
@@ -994,7 +1000,7 @@ def interpolate_pressure_levels(dataset, p_levels=None):
         p_levels = np.array(p_levels)
         assert p_levels.ndim == 1, "'p_levels' must be a one-dimensional array."
 
-    print("Interpolating data to {} isobaric levels ...".format(p_levels.size))
+    print("Info: Interpolating data to {} isobaric levels ...".format(p_levels.size))
 
     dims = get_coordinate_names(dataset)
     coords = [dataset.coords[name] for name in dims]
@@ -1024,7 +1030,7 @@ def interpolate_pressure_levels(dataset, p_levels=None):
         else:
             excluded_vars.append(name)
 
-    print("Interpolation finished successfully.")
+    print("Info: Interpolation finished successfully.")
 
     # replace pressure field in dataset with the new coordinate
     attrs = {'standard_name': "pressure", 'units': "Pa"}
