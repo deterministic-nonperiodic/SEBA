@@ -1,8 +1,8 @@
 from datetime import date
 
 import numpy as np
-import xarray as xr
 from numpy.core.numeric import normalize_axis_index
+from xarray import IndexVariable, DataArray
 
 import constants as cn
 from fortran_libs import numeric_tools
@@ -60,7 +60,7 @@ class EnergyBudget:
 
         Signature
         ---------
-        energy_budget =  EnergyBudget(dataset, [ps, ghsl, truncation, rsphere])
+        energy_budget =  EnergyBudget(dataset, [variables, ps, p_levels, truncation, rsphere])
 
         Parameters
         ----------
@@ -80,7 +80,7 @@ class EnergyBudget:
             Ensures all variables needed for the analysis are found. If not given, variables are
             looked up based on standard CF conventions of variable names, units and typical value
             ranges. Example: variables = {'u_wind': 'U', 'temperature': 'temp'}. Note that often
-            used names 'U' and 'temp' are not conventional names.
+            used names 'U' and 'temp' are not conventional CF names.
 
         :param truncation: int, optional, default None
             Triangular truncation for the spherical harmonic transforms. If truncation is not
@@ -125,10 +125,10 @@ class EnergyBudget:
         # compute horizontal wavenumber (rad / meter)
         self.kappa_h = kappa_from_deg(np.arange(self.sphere.truncation + 1, dtype=int))
 
-        self.sp_coords['kappa'] = xr.IndexVariable('kappa', self.kappa_h,
-                                                   attrs={'standard_name': 'wavenumber',
-                                                          'long_name': 'horizontal wavenumber',
-                                                          'axis': 'X', 'units': 'm**-1'})
+        self.sp_coords['kappa'] = IndexVariable('kappa', self.kappa_h,
+                                                attrs={'standard_name': 'wavenumber',
+                                                       'long_name': 'horizontal wavenumber',
+                                                       'axis': 'X', 'units': 'm**-1'})
 
         # ------------------------------------------------------------------------------------------
         # Initialize dynamic fields for the analysis
@@ -193,6 +193,7 @@ class EnergyBudget:
 
         # Absolute vorticity
         self.abs_vrt = self.vrt + self.fc
+
         # ------------------------------------------------------------------------------------------
         # Thermodynamics
         # ------------------------------------------------------------------------------------------
@@ -230,7 +231,7 @@ class EnergyBudget:
             dims = ['latitude', 'longitude', 'time', 'level']
 
         # create xarray.DataArray... dimensions are sorted according to dims
-        array = xr.DataArray(data=data, name=name, dims=dims, coords=coords)
+        array = DataArray(data=data, name=name, dims=dims, coords=coords)
 
         # add attributes to variable
         attrs.update(gridtype=gridtype)
@@ -307,12 +308,15 @@ class EnergyBudget:
         """
         Computes spectral energy budget and return as dataset objects.
         """
-        # Compute diagnostics
-        rke, dke, hke = self.horizontal_kinetic_energy()
-        vke = self.vertical_kinetic_energy()
-        ape = self.available_potential_energy()
+        energy_components = SebaDataset()
 
-        return SebaDataset(xr.merge([rke, dke, hke, vke, ape], compat="no_conflicts"))
+        for variable in self.horizontal_kinetic_energy():
+            energy_components[variable.name] = variable
+
+        energy_components['vke'] = self.vertical_kinetic_energy()
+        energy_components['ape'] = self.available_potential_energy()
+
+        return energy_components
 
     def cumulative_energy_fluxes(self):
         """
@@ -477,7 +481,7 @@ class EnergyBudget:
             -------
                 Kinetic energy tendency due to any process given by 'tendency'.
         """
-        da_flag = isinstance(tendency, xr.DataArray)
+        da_flag = isinstance(tendency, DataArray)
 
         tendency_name = name
         if da_flag:
@@ -520,7 +524,7 @@ class EnergyBudget:
                 Available potential energy tendency due to diabatic processes.
         """
 
-        da_flag = isinstance(tendency, xr.DataArray)
+        da_flag = isinstance(tendency, DataArray)
 
         tendency_name = name
         if da_flag:
