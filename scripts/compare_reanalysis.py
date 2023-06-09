@@ -1,8 +1,13 @@
+import os
 import warnings
 
 from seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
+
+print("-------------------------- Memory usage -----------------------------")
+print('Total: {} -- Used: {} -- Free: {}'.format(*os.popen('free -th').readlines()[-1].split()[1:]))
+print("---------------------------------------------------------------------")
 
 if __name__ == '__main__':
     # Load dyamond dataset
@@ -14,7 +19,7 @@ if __name__ == '__main__':
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
     # Create energy budget object. Set the truncation
-    budget = EnergyBudget(file_names, truncation=480)
+    budget = EnergyBudget(file_names, truncation=511)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
@@ -24,7 +29,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     layers = {'Troposphere': [250e2, 450e2], 'Stratosphere': [50e2, 250e2]}
 
-    figure_name = f'../figures/papers/{model}_energy_spectra_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_energy_spectra_{resolution}.pdf'
 
     dataset_energy.visualize_energy(model=model, layers=layers, fig_name=figure_name)
 
@@ -40,7 +45,7 @@ if __name__ == '__main__':
                 'Free troposphere': [-0.6, 1.0],
                 'Lower troposphere': [-1.0, 1.5]}
 
-    figure_name = f'../figures/papers/{model}_energy_fluxes_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_energy_fluxes_{resolution}.pdf'
 
     dataset_fluxes.visualize_fluxes(model=model,
                                     variables=['pi_hke+pi_ape', 'pi_hke',
@@ -50,7 +55,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    figure_name = f'../figures/papers/{model}_hke_fluxes_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_hke_fluxes_{resolution}.pdf'
 
     layers = {'Free troposphere': [250e2, 450e2], 'Lower troposphere': [500e2, 850e2]}
     y_limits = {'Free troposphere': [-0.8, 0.8], 'Lower troposphere': [-0.8, 0.8]}
@@ -64,7 +69,7 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
-    figure_name = f'../figures/papers/{model}_fluxes_section_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_fluxes_section_{resolution}.pdf'
 
     dataset_fluxes.visualize_slices(model=None, variables=['cdr', 'vfd_dke'],
                                     y_limits=[1000., 100.], fig_name=figure_name)

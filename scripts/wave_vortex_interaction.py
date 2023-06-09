@@ -12,7 +12,7 @@ if __name__ == '__main__':
 
     date_time = '2020020[2]'
 
-    p_levels = np.linspace(1000e2, 10e2, 31)
+    p_levels = np.linspace(1000e2, 10e2, 21)
 
     dataset = {}
     dataset_fluxes = {}
@@ -38,39 +38,32 @@ if __name__ == '__main__':
     # compute cumulative energy fluxes
     dataset_fluxes['FF'] = budget.cumulative_energy_fluxes()
 
-    wave_mean_fluxes = SebaDataset(
-        dataset_fluxes['FF'] - dataset_fluxes['IG'] - dataset_fluxes['RO']
-    )
+    fluxes = SebaDataset(dataset_fluxes['FF'] - dataset_fluxes['IG'] - dataset_fluxes['RO'])
 
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
-    variables = ['cdr', 'vfd_dke', 'pi_hke']
+    variables = ['cdr', 'pi_hke']
 
-    fig_name = f'../figures/papers/{model}_total_fluxes_section_n256.pdf'
+    fig_name = f'../figures/tests/{model}_total_fluxes_section_n256.pdf'
     dataset_fluxes['FF'].visualize_slices(model=None, variables=variables,
                                           y_limits=[1000., 10.], fig_name=fig_name)
 
-    fig_name = f'../figures/papers/{model}_wave_vortex_fluxes_section_n256.pdf'
-    wave_mean_fluxes.visualize_slices(model=None, variables=variables,
-                                      y_limits=[1000., 10.], fig_name=fig_name)
+    fig_name = f'../figures/tests/{model}_wave_vortex_fluxes_section_n256.pdf'
+    fluxes.visualize_slices(model=None, variables=variables,
+                            y_limits=[1000., 10.], fig_name=fig_name)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
+    layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [10e2, 250e2]}
+    y_limits = {'Stratosphere': [-0.8, 1.], 'Free troposphere': [-0.5, 1.2]}
 
-    # Perform vertical integration along last axis
-    layers = {'Stratosphere': [20e2, 250e2], 'Free troposphere': [250e2, 450e2]}
+    variables = ['pi_hke+pi_ape', 'pi_hke', 'pi_ape', 'cad', 'cdr', 'vfd_tot']
 
-    y_limits = {'Stratosphere': [-0.8, 1.2],
-                'Free troposphere': [-0.5, 1.5],
-                'Lower troposphere': [-1.0, 1.5]
-                }
-
-    figure_name = f'../figures/papers/{model}_total_energy_fluxes_n256.pdf'
-
-    dataset_fluxes['FF'].visualize_fluxes(model=model,
-                                          variables=['pi_hke+pi_ape', 'pi_hke',
-                                                     'pi_ape', 'cad', 'cdr', 'vfd_tot'],
-                                          layers=layers, y_limits=y_limits,
-                                          fig_name=figure_name)
+    for mode_id in ['FF', 'IG', 'RO']:
+        figure_name = f'../figures/tests/{model}_{mode_id}_energy_fluxes_n256.pdf'
+        dataset_fluxes[mode_id].visualize_fluxes(model=model + '-' + mode_id,
+                                                 variables=variables,
+                                                 layers=layers, y_limits=y_limits,
+                                                 fig_name=figure_name)
