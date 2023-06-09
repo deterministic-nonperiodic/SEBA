@@ -138,12 +138,12 @@ class EnergyBudget:
         # get vertical velocity
         self.omega = data.get_field('omega', masked=True)
 
-        # Get geopotential field and compute geopotential height
-        self.phi = data.get_field('geopotential', masked=True)
-
         # create wind array from masked wind components (preserving mask)
         self.wind = np.ma.stack((data.get_field('u_wind', masked=True),
                                  data.get_field('v_wind', masked=True)))
+
+        # Get geopotential field and compute geopotential height
+        self.phi = data.get_field('geopotential', masked=False)
 
         # compute thermodynamic quantities. Using unmasked temperature field if possible
         # Using masked temperature causes issues computing the spectral transfers of APE,
@@ -185,8 +185,7 @@ class EnergyBudget:
         self.wind_rot, self.wind_div = self.helmholtz()
 
         # Horizontal gradient of kinetic energy per unit mass in physical space
-        hke = np.ma.sum(self.wind * self.wind, axis=0) / 2.0
-        self.hke_gradient = self.horizontal_gradient(hke)
+        self.hke_grad = self.horizontal_gradient(np.ma.sum(self.wind ** 2, axis=0))
 
         # Coriolis parameter (broadcast to the shape of the wind vector)
         self.fc = broadcast_1dto(coriolis_parameter(data.latitude.values), self.vrt.shape)
@@ -306,9 +305,10 @@ class EnergyBudget:
 
     def energy_diagnostics(self):
         """
-        Computes spectral energy budget and return as dataset objects.
+        Computes kinetic energy components and potential energy and return as SebaDataset.
         """
         energy_components = SebaDataset()
+        energy_components.attrs.update(_global_attrs)
 
         for variable in self.horizontal_kinetic_energy():
             energy_components[variable.name] = variable
@@ -320,7 +320,7 @@ class EnergyBudget:
 
     def cumulative_energy_fluxes(self):
         """
-        Computes each term in spectral energy budget and return as xr.DataArray objects.
+        Computes each term in spectral energy budget and return as SebaDataset.
         """
 
         # ------------------------------------------------------------------------------------------
@@ -398,36 +398,13 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # Cumulative vertical fluxes of divergent kinetic energy
         # ------------------------------------------------------------------------------------------
-        pf_dke = self.pressure_flux()
-        tf_dke = self.dke_turbulent_flux()
-
-        vf_dke = pf_dke + tf_dke
-        vf_ape = self.ape_vertical_flux()
-
-        # same as 'dke_vertical_flux_divergence'
-        vfd_dke = self.vertical_gradient(vf_dke, order=2)
-
-        # same as 'ape_vertical_flux_divergence'
-        vfd_ape = self.vertical_gradient(vf_ape, order=2)
+        # Approximation for the vertical pressure flux using mass continuity and the hydrostatic
+        # approximation to avoid computing vertical gradients of spectral quantities.
+        # self.geopotential_flux() + self.dke_turbulent_flux_divergence() - c_ape_dke
+        vfd_dke = self.dke_vertical_flux_divergence()
+        vfd_ape = self.ape_vertical_flux_divergence()
 
         # add data and metadata to vertical fluxes
-        fluxes['pf_dke'] = self.add_field(pf_dke, units='Pa * ' + units,
-                                          standard_name='pressure_dke_flux',
-                                          long_name='pressure flux')
-
-        fluxes['tf_dke'] = self.add_field(tf_dke, units='Pa * ' + units,
-                                          standard_name='turbulent_dke_flux',
-                                          long_name='vertical turbulent flux'
-                                                    ' of kinetic energy')
-
-        fluxes['vf_dke'] = self.add_field(vf_dke, units='Pa * ' + units,
-                                          standard_name='vertical_dke_flux',
-                                          long_name='vertical flux of horizontal kinetic energy')
-
-        fluxes['vf_ape'] = self.add_field(vf_ape, units='Pa * ' + units,
-                                          standard_name='vertical_ape_flux',
-                                          long_name='vertical flux of available potential energy')
-
         fluxes['vfd_dke'] = self.add_field(vfd_dke, units=units,
                                            standard_name='vertical_dke_flux_divergence',
                                            long_name='vertical flux divergence'
@@ -613,8 +590,9 @@ class EnergyBudget:
         """
 
         # compute advection of the horizontal wind (using the rotational form)
-        advection = 2.0 * self._wind_advection() + self.div * self.wind
-        advection += self.omega * self.wind_shear
+        # Horizontal advection of zonal and meridional wind components
+        advection = self.hke_grad + 2.0 * self.vrt * rotate_vector(self.wind)
+        advection += self.div * self.wind + self.omega * self.wind_shear
 
         # compute nonlinear spectral transfer related to horizontal advection
         hke_transfer = - self._vector_spectrum(self.wind, advection)
@@ -656,7 +634,7 @@ class EnergyBudget:
             Spectrum of DKE transfer across scales
         """
         # Advection by the divergent wind in grid space
-        advection_div = 2.0 * self.hke_gradient + self.abs_vrt * rotate_vector(self.wind)
+        advection_div = self.hke_grad + self.abs_vrt * rotate_vector(self.wind)
         advection_div += self.omega * self.wind_shear
 
         # Horizontal advection of absolute vorticity.
@@ -720,20 +698,18 @@ class EnergyBudget:
 
         return - self.ganma * ape_flux / 2.0
 
-    def pressure_flux_divergence(self):
-        # Approximation for the vertical pressure flux using mass continuity
-        # to avoid computing vertical gradients of spectral quantities.
-        return self.geopotential_flux() - self.conversion_ape_dke()
-
     def dke_vertical_flux_divergence(self):
-        # Vertical flux divergence of Divergent kinetic energy.
+        # Vertical flux divergence of divergent kinetic energy.
         # This term enters directly the energy budget formulation.
-        return self.vertical_gradient(self.dke_vertical_flux())
+        return self.vertical_gradient(self.dke_vertical_flux(), order=2)
+
+    def dke_turbulent_flux_divergence(self):
+        return self.vertical_gradient(self.dke_turbulent_flux(), order=2)
 
     def ape_vertical_flux_divergence(self):
         # Vertical flux divergence of Available potential energy.
         # This term enters directly the energy budget formulation.
-        return self.vertical_gradient(self.ape_vertical_flux())
+        return self.vertical_gradient(self.ape_vertical_flux(), order=2)
 
     def conversion_ape_dke(self):
         # Conversion of Available Potential energy into kinetic energy (Eq. 19 of A&L)
@@ -934,7 +910,7 @@ class EnergyBudget:
         """
 
         # Horizontal advection of zonal and meridional wind components
-        return self.hke_gradient + self.vrt * rotate_vector(self.wind)
+        return self.hke_grad / 2.0 + self.vrt * rotate_vector(self.wind)
 
     def _scalar_spectrum(self, scalar_1, scalar_2=None):
         """

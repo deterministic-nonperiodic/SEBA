@@ -97,7 +97,7 @@ CF_coordinate_conventions = {
     "level": {
         "standard_name": ('level', 'lev', 'zlev', 'eta', 'plev',
                           'pressure', 'pressure_level', 'air_pressure', 'altitude',
-                          'depth', 'height', 'geopotential_height',
+                          'depth', 'height', 'geopotential_height', 'sigma',
                           'height_above_geopotential_datum',
                           'height_above_mean_sea_level',
                           'height_above_reference_ellipsoid',
@@ -107,7 +107,7 @@ CF_coordinate_conventions = {
                           'atmosphere_sigma_coordinate',
                           'atmosphere_sleve_coordinate',
                           ''),
-        "units": ('meter', 'm', 'gpm', 'Pa', 'hPa', 'mb', 'millibar'),
+        "units": ('meter', 'm', 'gpm', 'Pa', 'hPa', 'mb', 'millibar', '~'),
         "axis": ('Z', 'vertical')
     }
 }
@@ -282,8 +282,8 @@ class SebaDataset(Dataset):
                     surface_var_attrs = {}
                     if isinstance(surface_var, DataArray):
 
-                        # inputs are DataArray
-                        if 'time' in surface_var.dims:
+                        # replace surface pressure by its time mean for masking later.
+                        if 'time' in surface_var.dims and name == 'ps':
                             surface_var = surface_var.mean('time', keep_attrs=True)
 
                         # Renaming spatial coordinates. Raise error if no coordinate
@@ -292,7 +292,7 @@ class SebaDataset(Dataset):
                             {_find_coordinate(surface_var, c).name: c
                              for c in ("latitude", "longitude")})
 
-                        surface_var = surface_var.transpose('latitude', 'longitude')
+                        surface_var = surface_var.transpose(..., 'latitude', 'longitude')
 
                         # check units
                         surface_var = self.check_convert_units(surface_var)
@@ -349,6 +349,14 @@ class SebaDataset(Dataset):
             self['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
             self['ps'].attrs['units'] = 'Pa'
 
+        if 'ts' not in self:
+            level = self.find_coordinate('level')
+            names = [level.attrs.get(name) for name in ['name', 'long_name', 'standard_name']]
+            if 'sigma' in names:
+                # compute surface temperature by linear extrapolation of temperature to sigma=1.0
+                self['ts'] = self.temperature.interp({level.name: 1.0}, method='linear',
+                                                     kwargs={"fill_value": "extrapolate"})
+
         return self
 
     def get_field(self, name, default=None, masked=True):
@@ -394,6 +402,20 @@ class SebaDataset(Dataset):
             data = data.data
 
         return data
+
+    def truncate(self, truncation=None):
+
+        if truncation is None:
+            pass
+        elif isinstance(truncation, str):
+            # truncation is given as grid resolution string, compute nlat
+            truncation = 2 * int(truncation.split('n')[-1])
+        elif np.isscalar(truncation):
+            truncation = int(truncation)
+        else:
+            raise ValueError("Unknown type for truncation. Expecting a string or integer.")
+
+        return self.isel({"kappa": slice(truncation)})
 
     def _coordinate_range(self, name="level", limits=None):
         # Find vertical coordinate and sort 'coord_range' accordingly
@@ -560,14 +582,44 @@ class SebaDataset(Dataset):
     # ----------------------------------------------------------------------------------------------
     # Functions for visualizing of energy spectra and spectral fluxes
     # ----------------------------------------------------------------------------------------------
-    def visualize_fluxes(self, **kwargs):
-        fluxes_spectra_by_levels(self, **kwargs)
+    def visualize_fluxes(self, show=True, fig_name=None, **kwargs):
 
-    def visualize_energy(self, **kwargs):
-        energy_spectra_by_levels(self, **kwargs)
+        figure = fluxes_spectra_by_levels(self, **kwargs)
 
-    def visualize_slices(self, **kwargs):
-        fluxes_slices_by_models(self, **kwargs)
+        # show figure
+        if show: figure.show()
+
+        # render figure and save to file
+        if isinstance(fig_name, str):
+            figure.savefig(fig_name, dpi=300)
+
+        return figure
+
+    def visualize_energy(self, show=True, fig_name=None, **kwargs):
+
+        figure = energy_spectra_by_levels(self, **kwargs)
+
+        # show figure
+        if show: figure.show()
+
+        # render figure and save to file
+        if isinstance(fig_name, str):
+            figure.savefig(fig_name, dpi=300)
+
+        return figure
+
+    def visualize_slices(self, show=True, fig_name=None, **kwargs):
+
+        figure = fluxes_slices_by_models(self, **kwargs)
+
+        # show figure
+        if show: figure.show()
+
+        # render figure and save to file
+        if isinstance(fig_name, str):
+            figure.savefig(fig_name, dpi=300)
+
+        return figure
 
 
 def get_coordinate_names(dataset):
@@ -738,7 +790,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         :param dataset: xarray.Dataset or str indicating the path to a dataset.
 
             The dataset must contain the following analysis fields:
-            - The horizontal wind component in the zonal direction      (u)
+            - The horizontal wind component in the zonal direction      ()
             - The horizontal wind component in the meridional direction (v)
             - Height/pressure vertical velocity depending on leveltype (inferred from dataset)
             - Temperature
@@ -827,6 +879,12 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
 
     # Create output dataset with required fields and check units consistency.
     # Find surface data arrays and assign to dataset if given externally
+    # Prioritize surface data in the dataset over external ones.
+    for name in ['ps', 'ts']:
+        surface_var = dataset.find_variable(name, raise_notfound=False)
+        if surface_var is not None:
+            surface_data[name] = surface_var
+
     data = SebaDataset(data).add_surface_data(surface_data=surface_data).check_convert_units()
 
     # Check if vorticity and divergence are present in dataset
@@ -927,7 +985,6 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
 
     print("Info: Data processing completed successfully!")
 
-    # return dataset with proper variables and units (remove dask arrays)
     return data.compute()
 
 
@@ -941,8 +998,9 @@ def interpolate_pressure_levels(dataset, p_levels=None):
         The input dataset to be interpolated.
 
     p_levels : list, array, optional
-        The target levels to interpolate to. If not given, it is created from the number of
-        vertical levels of the variables in dataset and the pressure field.
+        The target pressure levels for the interpolation in [Pa].
+        If not given, it is created from the number of vertical
+        levels of the variables in dataset and the pressure field.
 
     Returns
     -------
@@ -964,6 +1022,10 @@ def interpolate_pressure_levels(dataset, p_levels=None):
     raises a `ValueError`.
     """
 
+    if p_levels is not None:
+        p_levels = np.array(p_levels)
+        assert p_levels.ndim == 1, "'p_levels' must be a one-dimensional array."
+
     # find vertical coordinate
     levels = _find_coordinate(dataset, "level")
 
@@ -973,7 +1035,24 @@ def interpolate_pressure_levels(dataset, p_levels=None):
     # If the vertical coordinate is consistent with pressure standards, then no interpolation is
     # needed: Data is already in pressure coordinates.
     if is_standard(levels, "pressure"):
-        # If pressure was not found create a new variable 'pressure' from levels.
+
+        # data is already on pressure levels but different analysis levels are required
+        if p_levels is not None:
+            print("Info: Interpolating data to {} isobaric levels ...".format(p_levels.size))
+
+            # perform vertical interpolation in logarithmic space (high-accuracy linear method)
+            dataset = dataset.assign_coords({levels.name: np.log(levels.values)})
+            dataset = dataset.interp({levels.name: np.log(p_levels)}, method='linear',
+                                     kwargs={"fill_value": "extrapolate"})
+
+            # reassign the new pressure coordinate
+            dataset = dataset.assign_coords({levels.name: p_levels})
+            dataset[levels.name].attrs.update(dict(standard_name="pressure", long_name="pressure",
+                                                   positive="up", units="Pa", axis="Z"))
+
+            # If pressure was not found create a new variable 'pressure' from levels.
+            dataset["pressure"] = dataset[levels.name].astype(float)
+
         if pressure is None:
             dataset["pressure"] = levels.astype(float)
 
@@ -996,23 +1075,21 @@ def interpolate_pressure_levels(dataset, p_levels=None):
         # creating levels from pressure range and number of levels if no pressure levels
         # are given (set bottom level to 1000 hPa)
         p_levels = np.linspace(1000e2, np.min(pressure), levels.size)  # [Pa]
-    else:
-        p_levels = np.array(p_levels)
-        assert p_levels.ndim == 1, "'p_levels' must be a one-dimensional array."
 
     print("Info: Interpolating data to {} isobaric levels ...".format(p_levels.size))
 
     dims = get_coordinate_names(dataset)
     coords = [dataset.coords[name] for name in dims]
-    z_axis = ''.join([coord.axis for coord in coords]).lower().find('z')
+    c_axes = ''.join([coord.attrs.get('axis') or '-' for coord in coords]).lower()
+    # the vertical axis defaults to axis=1 if Z axis is not found
+    z_axis = abs(c_axes.find('z'))
 
     # Replace vertical coordinate with new pressure levels
     dims[z_axis] = "level"
     coords[z_axis] = DataArray(data=p_levels, name="level", dims=["level"],
                                coords=dict(plev=("level", p_levels)),
-                               attrs=dict(standard_name="pressure",
-                                          long_name="pressure", positive="up",
-                                          units="Pa", axis="Z"))
+                               attrs=dict(standard_name="pressure", long_name="pressure",
+                                          positive="up", units="Pa", axis="Z"))
     # create coordinate dictionary for dataset
     coords = {coord.name: coord for coord in coords}
 

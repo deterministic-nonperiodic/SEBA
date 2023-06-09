@@ -40,6 +40,9 @@ VARIABLE_KEYMAP = {
     'pi_hke': r'$\Pi_K$',
     'pi_dke': r'$\Pi_D$',
     'pi_rke': r'$\Pi_R$',
+    'pi_RO': r'$\Pi_{RO}$',
+    'pi_IG': r'$\Pi_{IG}$',
+    'pi_IG_RO': r'$\Pi_{IG/RO}$',
     'pi_ape': r'$\Pi_A$',
     'cdr': r'$\mathcal{C}_{D \rightarrow R}$',
     'cdr_w': r'$\mathcal{C}_{D \rightarrow R}^{\omega}$',
@@ -59,7 +62,8 @@ VARIABLE_KEYMAP = {
     'dcdr_dl': r'$\partial_{\kappa} \mathcal{C}_{D \rightarrow R}$',
     'dis_rke': r'$\mathcal{D}_R$',
     'dis_dke': r'$\mathcal{D}_D$',
-    'dis_hke': r'$\mathcal{D}_K$'
+    'dis_hke': r'$\mathcal{D}_K$',
+    'lc': r"$L_c$"
 }
 
 LINES_KEYMAP = {
@@ -72,6 +76,9 @@ LINES_KEYMAP = {
     'pi_dke': ('green', 'solid', 1.6),
     'pi_rke': ('red', 'solid', 1.6),
     'pi_ape': ('navy', 'solid', 2.0),
+    'pi_RO': ('red', 'solid', 1.6),
+    'pi_IG': ('green', 'solid', 1.6),
+    'pi_IG_RO': ('black', '-.', 1.6),
     'cdr': ('blue', 'dashed', 2.0),
     'cdr_w': ('black', '-.', 1.6),
     'cdr_v': ('red', '-.', 1.6),
@@ -83,6 +90,7 @@ LINES_KEYMAP = {
     'dis_rke': ('blue', '-.', 1.6),
     'dis_dke': ('blue', '-.', 1.6),
     'dis_hke': ('cyan', '-.', 1.6),
+    'lc': ('orange', '-.', 1.6),
 }
 
 
@@ -125,7 +133,7 @@ def find_symlog_params(data):
     # Find the value of linthresh that separates the linear and logarithmic parts
     # We want the linear part to be as large as possible while still excluding the
     # top and bottom 5% of the data, which could skew the normalization
-    linthresh = np.nanpercentile(scaled_data, [5, 95])
+    linthresh = np.nanpercentile(scaled_data, [10, 90])
     linthresh = np.interp(0.5, [0, 1], linthresh)  # use the median value
 
     # Compute the scale factor for the logarithmic part of the normalization
@@ -135,10 +143,10 @@ def find_symlog_params(data):
     else:
         # Find the value of linscale that stretches the linear part to cover most of the range
         # We want the linear part to cover about half of the range
-        qr_5 = np.nanpercentile(data, [5, 95]).ptp()  # / 2.0
+        qr_5 = np.nanpercentile(data, [10, 90]).ptp()  # / 2.0
         linscale = qr_5 / (linthresh * np.log10(data_range))
 
-    abs_max = 0.65 * np.nanmax(abs(data))
+    abs_max = 0.6 * np.nanmax(abs(data))
 
     v_min = 0.0 if np.nanmin(data) > 0 else -abs_max
     v_max = 0.0 if np.nanmax(data) < 0 else abs_max
@@ -196,10 +204,12 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
     if x_limits is None:
         x_limits = kappa_from_lambda([40e3, 1e-3 * lambda_from_deg(truncation)])
 
-    if truncation > 1000:
+    if truncation > 1024:
         x_ticks = np.array([2, 20, 200, 2000])
     else:
         x_ticks = np.array([1, 10, 100, 1000])
+
+    label_fonts_size = 15
 
     show_limit = True
     if lambda_lines is None:
@@ -242,7 +252,8 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
 
         # axes title as annotation
         if ax_titles is not None:
-            at = AnchoredText(ax_titles[m], prop=dict(size=15), frameon=frame, loc='upper right')
+            at = AnchoredText(ax_titles[m], prop=dict(size=label_fonts_size),
+                              frameon=frame, loc='upper right')
             at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
             ax.add_artist(at)
 
@@ -270,13 +281,13 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
 
         # set y label only for left most panels
         if not (m % n_cols):
-            ax.set_ylabel(y_label, fontsize=16)
+            ax.set_ylabel(y_label, fontsize=label_fonts_size)
         else:
             if shared_ticks:
                 ax.axes.get_yaxis().set_visible(False)
 
         if m >= n_cols * (n_rows - 1):  # lower boundary only
-            ax.set_xlabel('wavenumber', fontsize=14, labelpad=4)
+            ax.set_xlabel('wavenumber', fontsize=label_fonts_size, labelpad=4)
         else:
             if shared_ticks:
                 ax.axes.get_xaxis().set_visible(False)
@@ -290,7 +301,7 @@ def spectra_base_figure(n_rows=1, n_cols=1, x_limits=None, y_limits=None, y_labe
             secax = ax.secondary_xaxis('top', functions=(kappa_from_lambda, kappa_from_lambda))
             secax.xaxis.set_major_formatter(ScalarFormatter())
 
-            secax.set_xlabel(r'wavelength / $km$', fontsize=14, labelpad=6)
+            secax.set_xlabel(r'wavelength / $km$', fontsize=label_fonts_size, labelpad=6)
 
     return fig, axes
 
@@ -332,15 +343,18 @@ def _parse_variable(varname):
         color, style, width = 'black', 'solid', 2
         label = VARIABLE_KEYMAP[varname.split('+')[0]].split('_')[0] + r'=$ '
         label += r' $+$ '.join([VARIABLE_KEYMAP[name] for name in varname.split('+')])
+    elif "-" in varname:
+        color, style, width = 'black', 'solid', 2
+        label = VARIABLE_KEYMAP[varname.split('-')[0]].split('_')[0] + r'=$ '
+        label += r' $-$ '.join([VARIABLE_KEYMAP[name] for name in varname.split('+')])
     else:
         raise ValueError(f'Unknown variable name: {varname}.')
 
     return dict(label=label, lw=width, color=color, linestyle=style)
 
 
-def fluxes_slices_by_models(dataset, model=None, variables=None,
-                            x_limits=None, y_limits=None,
-                            cmap=None, fig_name=None):
+def fluxes_slices_by_models(dataset, model=None, variables=None, truncation=None,
+                            x_limits=None, y_limits=None, cmap=None):
     if variables is None:
         variables = list(dataset.data_vars)
 
@@ -356,6 +370,9 @@ def fluxes_slices_by_models(dataset, model=None, variables=None,
     level = 1e-2 * dataset['level'].values
     kappa = 1e3 * dataset['kappa'].values
 
+    if truncation is None:
+        truncation = kappa.size
+
     if 'time' in dataset.dims:
         dataset = dataset.mean(dim='time')
 
@@ -365,15 +382,17 @@ def fluxes_slices_by_models(dataset, model=None, variables=None,
     n = len(variables)
     cols = 2 if not n % 2 else n
     rows = max(1, n // cols)
+    cols, rows = max(rows, cols), min(rows, cols)
 
     fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols, x_limits=x_limits,
-                                    y_limits=y_limits, figure_size=4.6,
+                                    y_limits=y_limits, figure_size=4.65,
                                     y_label=r'Pressure / hPa',
                                     y_scale='linear', ax_titles=ax_titles,
-                                    frame=True, truncation=kappa.size)
+                                    frame=True, truncation=truncation)
     axes = axes.ravel()
+    indicator = 'abcdefghijklmn'
 
-    cs_levels = 100
+    cs_levels = 80
 
     for m, (ax, varname) in enumerate(zip(axes, variables)):
         spectra = 1e3 * dataset[varname].values
@@ -383,7 +402,8 @@ def fluxes_slices_by_models(dataset, model=None, variables=None,
         # Create plots:
         cs = ax.contourf(kappa, level, smoothed_data,
                          cmap=cmap, levels=cs_levels,
-                         norm=SymLogNorm(**find_symlog_params(spectra)))
+                         norm=SymLogNorm(**find_symlog_params(smoothed_data))
+                         )
 
         ax.contour(kappa, level, smoothed_data,
                    color='black', linewidths=0.6, linestyles='solid',
@@ -393,23 +413,26 @@ def fluxes_slices_by_models(dataset, model=None, variables=None,
 
         # add a colorbar to all axes
         cb = plt.colorbar(cs, ax=ax, orientation='vertical', pad=0.001, format="%.2f")
-        cb.ax.set_title(r"($\times 10^{3}~W/m^{2}$)", fontsize=11, loc='center', pad=10)
+        cb.ax.set_title(r"($\times 10^{-3}~W/m^{2}$)", fontsize=11, loc='center', pad=10)
         cb.ax.tick_params(labelsize=12)
+
+        # add subplot indicator
+        art = AnchoredText(f"({indicator[m]})",
+                           loc='lower left', prop=dict(size=18), frameon=False,
+                           bbox_to_anchor=(-0.1, 0.96), bbox_transform=ax.transAxes)
+        art.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        ax.add_artist(art)
 
     if model is not None:
         at = AnchoredText(model.upper(), prop=dict(size=15), frameon=True, loc='upper left')
         at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         axes[0].add_artist(at)
 
-    plt.show()
-    if fig_name is not None:
-        fig.savefig(fig_name, dpi=300)
-
-    plt.close(fig)
+    return fig
 
 
 def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
-                             x_limits=None, y_limits=None, fig_name=None):
+                             x_limits=None, y_limits=None):
     if model is None:
         model = ''
 
@@ -420,7 +443,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
         layers = {'': [10e2, 1000e2]}
 
     if y_limits is None:
-        y_limits = {name: [7e-5, 3e7] for name in layers.keys()}
+        y_limits = {name: [7e-5, 4e7] for name in layers.keys()}
 
     # get coordinates
     kappa = 1e3 * dataset['kappa'].values
@@ -506,7 +529,7 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                        ncol=legend_cols, frameon=False, columnspacing=2.5)
 
         art = AnchoredText(f"({indicator[m]})",
-                           loc='lower left', prop=dict(size=20), frameon=False,
+                           loc='lower left', prop=dict(fontweight="bold", size=20), frameon=False,
                            bbox_to_anchor=(-0.14, 0.98), bbox_transform=axes[m].transAxes)
         art.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         axes[m].add_artist(art)
@@ -516,17 +539,11 @@ def energy_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
     axes[0].add_artist(art)
 
-    plt.show()
-
-    if fig_name is not None:
-        fig.savefig(fig_name, dpi=300)
-
-    plt.close(fig)
+    return fig
 
 
 def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
-                             show_injection=False, x_limits=None, y_limits=None,
-                             fig_name=None):
+                             show_injection=False, x_limits=None, y_limits=None):
     if model is None:
         model = ''
 
@@ -555,7 +572,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     legend_cols = 1 + int(len(variables) >= 6)
 
     fig, axes = spectra_base_figure(n_rows=rows, n_cols=cols,
-                                    figure_size=(cols * 6.4, rows * 5.8),
+                                    figure_size=(cols * 6.2, rows * 5.8),
                                     x_limits=x_limits, y_limits=None, aligned=False,
                                     y_label=r'Cumulative energy flux / $W ~ m^{-2}$',
                                     y_scale='linear', ax_titles=None, frame=False,
@@ -569,6 +586,7 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
 
         for varname in variables:
             spectra = np.sum([data[name] for name in varname.split('+')], axis=0)
+
             if 'pi_ape' in varname:
                 #  correction for ape spectral flux due to small deviations
                 #  from zero due to numerical precision.
@@ -614,9 +632,10 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
                                 ncol=legend_cols, frameon=False, columnspacing=1.4)
         legend.set_in_layout(False)
 
-        art = AnchoredText(f"({indicator[m]})",
-                           loc='lower left', prop=dict(size=20), frameon=False,
-                           bbox_to_anchor=(-0.1, 1.0), bbox_transform=axes[m].transAxes)
+        art = AnchoredText(f"({indicator[m]})", loc='lower left',
+                           prop=dict(fontweight="bold", size=20),
+                           frameon=False, bbox_to_anchor=(-0.115, 1.0),
+                           bbox_transform=axes[m].transAxes)
         art.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         axes[m].add_artist(art)
 
@@ -625,9 +644,4 @@ def fluxes_spectra_by_levels(dataset, model=None, variables=None, layers=None,
     art.patch.set_boxstyle("round,pad=-0.3, rounding_size=0.2")
     axes[0].add_artist(art)
 
-    plt.show()
-
-    if fig_name is not None:
-        fig.savefig(fig_name, dpi=300)
-
-    plt.close(fig)
+    return fig
