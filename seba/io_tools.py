@@ -264,8 +264,11 @@ class SebaDataset(Dataset):
         if surface_data is None:
             surface_data = {'': None}
 
-        # spatial shape of variables in dataset
-        grid_shape = (self.latitude.size, self.longitude.size)
+        # expected shape of surface variables
+        expected_dims = {
+            'ts': {dim: self[dim].size for dim in ['time', 'latitude', 'longitude']},
+            'ps': {dim: self[dim].size for dim in ['latitude', 'longitude']},
+        }
 
         # Find surface data arrays and assign to dataset if given externally
         for name in ['ts', 'ps']:
@@ -283,7 +286,7 @@ class SebaDataset(Dataset):
                     if isinstance(surface_var, DataArray):
 
                         # replace surface pressure by its time mean for masking later.
-                        if 'time' in surface_var.dims and name == 'ps':
+                        if 'time' in surface_var.dims and 'time' not in expected_dims[name]:
                             surface_var = surface_var.mean('time', keep_attrs=True)
 
                         # Renaming spatial coordinates. Raise error if no coordinate
@@ -314,15 +317,16 @@ class SebaDataset(Dataset):
 
                     if isinstance(surface_var, np.ndarray):
 
-                        if surface_var.shape != grid_shape:
+                        expected_shape = tuple(expected_dims[name].values())
+                        if surface_var.shape != expected_shape:
                             raise ValueError(f'Given surface variable {name} must be a '
                                              f'scalar or a 2D array with shape (nlat, nlon).'
-                                             f'Expected shape {grid_shape}, '
-                                             f'but got {np.shape(surface_var)}')
+                                             f'Expected shape {expected_shape}, '
+                                             f'but got {surface_var.shape}')
 
                         # create DataArray and assign to dataset
                         surface_var = DataArray(surface_var, name=name,
-                                                dims=("latitude", "longitude"),
+                                                dims=tuple(expected_dims[name].keys()),
                                                 attrs=surface_var_attrs)
                     else:
                         raise ValueError(f'Illegal type for surface variable {name}! '
@@ -330,7 +334,7 @@ class SebaDataset(Dataset):
 
                     self[name] = surface_var
             else:
-                if 'time' in surface_var.dims:
+                if 'time' in surface_var.dims and 'time' not in expected_dims[name]:
                     surface_var = surface_var.mean('time', keep_attrs=True)
 
                 # Surface data must be exactly one dimension less than the total number of
@@ -344,8 +348,9 @@ class SebaDataset(Dataset):
         # If surface pressure is not found, it is approximated by the pressure
         # level closest to the surface. This is a fallback option for unmasked terrain.
         if 'ps' not in self and 'pressure' in self:
+            expected_shape = tuple(expected_dims['ps'].values())
             pressure = self.check_convert_units(self.pressure)
-            sfcp = np.broadcast_to(np.max(pressure) + 1e2, grid_shape)
+            sfcp = np.broadcast_to(np.max(pressure) + 1e2, expected_shape)
             self['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
             self['ps'].attrs['units'] = 'Pa'
 
@@ -882,6 +887,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     # Prioritize surface data in the dataset over external ones.
     for name in ['ps', 'ts']:
         surface_var = dataset.find_variable(name, raise_notfound=False)
+
         if surface_var is not None:
             surface_data[name] = surface_var
 
@@ -1129,6 +1135,12 @@ def get_surface_elevation(latitude, longitude):
         The data source is SRTM15Plus (Global SRTM15+ V2.1) which can be accessed at
         https://opentopography.org/
     """
+    # convert to ndarray to avoid renaming
+    if isinstance(latitude, Dataset):
+        latitude = latitude.values()
+
+    if isinstance(longitude, Dataset):
+        longitude = longitude.values()
 
     # convert longitudes to range (-180, 180) if needed
     longitude = np.where(longitude > 180, longitude - 360, longitude)
@@ -1159,8 +1171,8 @@ def get_surface_elevation(latitude, longitude):
         print(f"Warning: Surface elevation data with required resolution "
               f"not found! Interpolating global data to grid {grid_id}.")
 
-        # Interpolate the global topography dataset to the required latitudes and longitudes
-        # using the nearest neighbor method.
+        # Interpolate the global topography dataset to the required
+        # latitudes and longitudes using the nearest neighbor method.
         ds = open_dataset(path_global_topo).interp(lat=latitude, lon=longitude,
                                                    method="nearest", kwargs={"fill_value": 0})
 

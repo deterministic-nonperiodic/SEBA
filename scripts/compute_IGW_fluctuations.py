@@ -8,6 +8,7 @@ from pandas import read_table
 from tqdm import tqdm
 from xarray import set_options
 
+# from io_tools import get_surface_elevation
 from spherical_harmonics import Spharmt
 
 warnings.filterwarnings('ignore')
@@ -16,6 +17,9 @@ set_options(keep_attrs=True)
 print("-------------------------- Memory usage ---------------------------------------------------")
 print('Total: {} -- Used: {} -- Free: {}'.format(*os.popen('free -th').readlines()[-1].split()[1:]))
 print("-------------------------------------------------------------------------------------------")
+
+data_path = '/media/yanm/Data/DYAMOND/modes'
+output_path = '/media/yanm/Data/DYAMOND/modes/WINTER/'
 
 # 6-hourly data from 2020-01-25 to 2020-01-30
 date_register = {
@@ -31,15 +35,16 @@ model_alias = {
     'era5': "ERA5",
 }
 
-data_path = '/media/yanm/Data/DYAMOND/modes'
-output_path = '/media/yanm/Data/DYAMOND/modes/WINTER/'
-
 # model levels index corresponding to IFS L137 vertical grid
 level_mask = np.array([29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 56, 58, 60, 61, 63,
                        64, 66, 67, 68, 70, 71, 72, 74, 75, 76, 78, 79, 80, 82, 83, 84, 86, 87, 89,
                        90, 91, 93, 94, 95, 97, 98, 99, 101, 102, 103, 105, 106, 107, 109, 110,
                        112, 113, 115, 116, 118, 120, 122, 124, 126, 128, 131, 133, 135, 137]) - 1
 start_level = level_mask[0]
+
+# surface geopotential from external file (constant in time for all analysis).
+phi_s = xr.open_dataset(os.path.join(data_path, 'topography.nc')).z.values
+phi_s = np.expand_dims(phi_s, 1)
 
 # Load IFS coordinate parameters:
 reference_coordinates = read_table(
@@ -63,6 +68,44 @@ def sigma_hybrid_coordinate(a, b):
     return b + a / 101325.
 
 
+def geopotential(temperature, ps, dim='level'):
+    # compute geopotential from temperature
+    rd = 287.058  # gas constant for dry air (J / kg / K)
+
+    temperature = temperature.sortby(dim, ascending=True)
+    level = temperature[dim]
+
+    # Averaged temperature at full levels excluding the surface
+    full_levels = sigma_hybrid_coordinate(ai[start_level:-1], bi[start_level:-1])
+
+    temperature = temperature.interp({dim: full_levels}, method='linear',
+                                     kwargs={"fill_value": "extrapolate"})
+
+    # Compute pressure at mid levels
+    half_levels = sigma_hybrid_coordinate(am[start_level - 1:], bm[start_level - 1:])
+
+    # hybrid sigma/pressure coefficients at half levels
+    a = xr.DataArray(am[start_level - 1:], coords={dim: half_levels})
+    b = xr.DataArray(bm[start_level - 1:], coords={dim: half_levels})
+
+    # pressure variation in log space (assign mid-level coordinates)
+    delta_lnp = np.log(a + b * ps).diff(dim).assign_coords({dim: full_levels})
+
+    # compute depth of each geopotential layer
+    depth = rd * (delta_lnp * temperature).sortby(dim, ascending=False)
+
+    # geopotential each level from the cumulative integral from the surface
+    phi = phi_s + depth.cumsum(dim=dim, skipna=False)
+
+    # reassign original coordinate and add attributes
+    phi = phi.sortby(dim, ascending=True).assign_coords({dim: level})
+    phi.attrs.update(dict(standard_name='geopotential',
+                          long_name='Geopotential',
+                          units='m**2 s**-2'))
+
+    return phi.transpose(..., 'lev', 'lat', 'lon')
+
+
 def parse_model_data(model_name, component='IG', date=None):
     """
     This function combines the input dataset to MODES and the resulting dataset after
@@ -70,6 +113,7 @@ def parse_model_data(model_name, component='IG', date=None):
     along with the thermodynamic fields.
     """
     mode = component.replace('RO', 'ROT')
+    date = date or 0
 
     base_path = os.path.join(data_path, f'{model_name}')
 
@@ -119,7 +163,7 @@ def parse_model_data(model_name, component='IG', date=None):
     a = xr.DataArray(am[level_mask], coords={'lev': levels})
     b = xr.DataArray(bm[level_mask], coords={'lev': levels})
 
-    dataset_mode['pressure'] = (a + b * dataset_mode['ps']).transpose('time', 'lev', ...)
+    dataset_mode['pressure'] = (a + b * dataset_mode['ps']).transpose(..., 'lev', 'lat', 'lon')
     dataset_mode['pressure'].attrs['units'] = 'Pa'
 
     return dataset_mode
@@ -306,13 +350,18 @@ def compute_modes_fluctuations(model_name=None, mode='IG'):
         dataset['omega'] = xr.DataArray(omega, dims=var_dims)
         dataset['omega'].attrs.update(dict(standard_name='pressure velocity', units='Pa/s'))
 
+        # ------------------------------------------------------------------------------------------
+        # Calculate geopotential depth [m**2/s**2] using IFS discretization Eqs. (2.21)
+        # ------------------------------------------------------------------------------------------
+        dataset['geopotential'] = geopotential(dataset.temperature, dataset.ps, dim='lev')
+
         # --------------------------------------------------------------------------------------
         # Export dataset to netcdf file
         # --------------------------------------------------------------------------------------
         # recovering the original 68 sigma levels
         dataset = dataset.sel(lev=levels, method='nearest')
 
-        file_name = '_'.join([model_alias[model_name], mode, 'inst', 'n256', date]) + '.nc'
+        file_name = '_'.join([model_alias[model_name], mode, 'inst', 'n256', date]) + '_test.nc'
         file_name = os.path.join(output_path, file_name)
 
         dataset.astype('float32').to_netcdf(file_name)
