@@ -802,7 +802,7 @@ def gradient_1d(scalar, x=None, axis=-1, order=6):
     return scalar_grad
 
 
-def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
+def interpolate_1d(x, xp, *args, axis=0, fill_value=None, scale='log'):
     r"""Interpolates data with any shape over a specified axis.
     Interpolation over a specified axis for arrays of any shape.
 
@@ -819,9 +819,10 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
         xp.
     axis : int, optional
         The axis to interpolate over. Defaults to 0.
-    fill_value: float, optional
+    fill_value: float, str, optional
         Specify handling of interpolation points out of data bounds. If None, will return
-        ValueError if points are out of bounds. Defaults to nan.
+        ValueError if points are out of bounds. Can be set to "extrapolate" with similar
+        behaviour as scipy.interp1d.
     scale: str, optional
         Interpolate in logarithmic ('log') or linear space
     Returns
@@ -881,6 +882,8 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
     above = broadcast_indices(min_value2, final_shape, axis)
     below = broadcast_indices(min_value2 - 1, final_shape, axis)
 
+    extrapolate = np.isscalar(fill_value) and fill_value == "extrapolate"
+
     # Calculate interpolation for each variable
     for var in variables:
 
@@ -888,8 +891,9 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan, scale='log'):
         var_interp = var[below] + (var[above] - var[below]) * increment
 
         # Set points out of bounds to fill value.
-        var_interp[min_value == xp.shape[axis]] = fill_value
-        var_interp[x_array < xp[below]] = fill_value
+        if not extrapolate:
+            var_interp[min_value == xp.shape[axis]] = fill_value
+            var_interp[x_array < xp[below]] = fill_value
 
         # if fill_value is nan or "masked" return masked arrays
         var_interp = np.ma.masked_invalid(var_interp, copy=True)

@@ -142,7 +142,7 @@ class EnergyBudget:
         self.wind = np.ma.stack((data.get_field('u_wind', masked=True),
                                  data.get_field('v_wind', masked=True)))
 
-        # Get geopotential field and compute geopotential height
+        # Get geopotential field
         self.phi = data.get_field('geopotential', masked=False)
 
         # compute thermodynamic quantities. Using unmasked temperature field if possible
@@ -157,17 +157,13 @@ class EnergyBudget:
         # ------------------------------------------------------------------------------------------
         # define data mask once for consistency
         self.mask = self.omega.mask
-        self.beta = (~self.mask).astype(float)
-
-        # # unmask omega after retrieving the mask
-        # self.omega = np.ma.fix_invalid(self.omega, fill_value=0.0)
 
         # Compute fraction of valid points at every level for Spectral Mode-Coupling Correction
         # same as the power-spectrum of the mask integrated along spherical harmonic degree. This
         # approximation is not accurate for big masked regions, the proper approach is to
         # compute the inverse of the Mode-Coupling matrix for many realizations of masked
         # power spectra (e.g., Cooray et al. 2012), however this is computationally too expensive!
-        self.beta_correction = 1.0 / self.representative_mean(self.beta)
+        self.beta_correction = 1.0 / self.representative_mean((~self.mask).astype(float))
 
         # ------------------------------------------------------------------------------------------
         # Kinematics
@@ -669,9 +665,6 @@ class EnergyBudget:
         ape_transfer = - self._scalar_spectrum(self.theta_prime, theta_advection)
         ape_transfer += self._scalar_spectrum(theta_gradient, self.omega * self.theta_prime)
 
-        # correction
-        # ape_avg = self.wind * self.theta_prime ** 2
-        # ape_transfer[0] += self.representative_mean(self.get_divergence(ape_avg))
         return self.ganma * ape_transfer / 2.0
 
     def geopotential_flux(self):
@@ -838,7 +831,7 @@ class EnergyBudget:
 
         return np.ma.masked_array(scalar_gradient, mask=[mask, mask], fill_value=0.0)
 
-    def vertical_gradient(self, scalar, order=6):
+    def vertical_gradient(self, scalar, order=2):
         """
             Computes vertical gradient (∂φ/∂p) of a scalar function (φ) in pressure coordinates.
             Using high-order compact finite difference scheme (Lele 1992). Contiguous masked
@@ -870,13 +863,13 @@ class EnergyBudget:
         # Same as but faster than: np.ma.sum(self.wind * self.horizontal_gradient(scalar), axis=0)
 
         # Spectral coefficients of the scalar flux divergence: ∇⋅(φ u)
-        scalar_flux_divergence = self._spectral_vrtdiv(scalar * self.wind)[1]
+        flux_divergence = self._spectral_vrtdiv(scalar * self.wind)[1]
 
         # back to grid-point space
-        scalar_flux_divergence = self._inverse_transform(scalar_flux_divergence, mask=scalar.mask)
+        flux_divergence = self._inverse_transform(flux_divergence, mask=scalar.mask)
 
         # recover scalar advection: u⋅∇φ = ∇⋅(φu) - δφ
-        scalar_advection = scalar_flux_divergence - self.div * scalar
+        scalar_advection = flux_divergence - self.div * scalar
 
         return scalar_advection
 

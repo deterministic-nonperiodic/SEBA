@@ -293,18 +293,3 @@ def brunt_vaisala_squared(pressure, temperature, vertical_axis=0):
     gamma = lorenz_parameter(pressure, theta, vertical_axis=vertical_axis)
 
     return (cn.g / theta) ** 2 / gamma
-
-
-def geopotential_depth(temperature, pressure, axis=0):
-    # compute geopotential from
-    pressure = np.moveaxis(pressure, axis, 0)
-    temperature = np.moveaxis(temperature, axis, 0)
-
-    # temperature at mid levels
-    lnp = np.log(pressure)
-    ln_temp = lnp * temperature
-
-    tbar = (ln_temp[1:] + ln_temp[:-1]) / (lnp[1:] + lnp[:-1])
-    depth = cn.Rd * np.nancumsum((lnp[1:] - lnp[:-1]) * tbar, axis=0)
-
-    return np.moveaxis(depth, 0, axis)

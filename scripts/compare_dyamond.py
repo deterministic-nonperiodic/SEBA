@@ -24,7 +24,7 @@ if __name__ == '__main__':
         print("No surface pressure file found!")
         sfc_pres = None
 
-    p_levels = None  # 1e2 * np.linspace(1000, 50, 21)
+    p_levels = None  # 1e2 * np.linspace(1000, 50, 20)
 
     # Create energy budget object
     budget = EnergyBudget(file_names, ps=sfc_pres, p_levels=p_levels)
@@ -34,7 +34,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     dataset_energy = budget.energy_diagnostics().truncate(2047)
 
-    layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [50e2, 250e2]}
+    layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [100e2, 250e2]}
 
     figure_name = f'../figures/tests/{model}_energy_spectra_{resolution}.pdf'
 
@@ -46,11 +46,11 @@ if __name__ == '__main__':
     dataset_fluxes = budget.cumulative_energy_fluxes()
 
     # Perform vertical integration along last axis
-    layers = {'Free troposphere': [250e2, 450e2], 'Stratosphere': [20e2, 250e2]}
+    layers = {'Troposphere': [250e2, 450e2], 'Stratosphere': [100e2, 250e2]}
 
-    y_limits = {'Free troposphere': [-0.5, 1.2], 'Stratosphere': [-0.5, 1.2]}
+    y_limits = {'Troposphere': [-0.6, 0.8], 'Stratosphere': [-0.6, 0.8]}
 
-    figure_name = f'../figures/tests/{model}_energy_fluxes_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_energy_fluxes_{resolution}_unmasked.pdf'
 
     dataset_fluxes.visualize_fluxes(model=model,
                                     variables=['pi_hke+pi_ape', 'pi_hke',
@@ -60,9 +60,9 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    figure_name = f'../figures/tests/{model}_hke_fluxes_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_hke_fluxes_{resolution}_unmasked.pdf'
 
-    layers = {'Free troposphere': [250e2, 450e2], 'Lower troposphere': [500e2, 850e2]}
+    layers = {'Free troposphere': [250e2, 450e2], 'Lower troposphere': [450e2, 850e2]}
     y_limits = {'Free troposphere': [-0.4, 0.4], 'Lower troposphere': [-0.4, 0.4]}
 
     # perform vertical integration
@@ -74,8 +74,14 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross sections
     # ---------------------------------------------------------------------------------------
-    figure_name = f'../figures/tests/{model}_fluxes_section_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_dke_fluxes_section_{resolution}.pdf'
 
-    fig = dataset_fluxes.visualize_slices(variables=['cdr', 'vfd_dke'],
-                                          y_limits=[1000., 98.],
-                                          fig_name=figure_name)
+    dataset_fluxes.visualize_sections(variables=['cdr', 'vfd_dke'],
+                                      y_limits=[1000., 100.], share_cbar=True,
+                                      fig_name=figure_name)
+
+    figure_name = f'../figures/tests/{model}_hke_fluxes_section_{resolution}.pdf'
+
+    dataset_fluxes.visualize_sections(variables=['pi_hke', 'pi_rke', 'pi_dke',
+                                                 'cdr', 'cdr_v', 'cdr_w'], share_cbar=True,
+                                      y_limits=[1000., 100.], fig_name=figure_name)

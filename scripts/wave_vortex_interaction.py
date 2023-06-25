@@ -46,12 +46,12 @@ if __name__ == '__main__':
     variables = ['cdr', 'pi_hke']
 
     fig_name = f'../figures/tests/{model}_total_fluxes_section_n256.pdf'
-    dataset_fluxes['FF'].visualize_slices(model=None, variables=variables,
-                                          y_limits=[1000., 10.], fig_name=fig_name)
+    dataset_fluxes['FF'].visualize_sections(model=None, variables=variables,
+                                            y_limits=[1000., 10.], fig_name=fig_name)
 
     fig_name = f'../figures/tests/{model}_wave_vortex_fluxes_section_n256.pdf'
-    fluxes.visualize_slices(model=None, variables=variables,
-                            y_limits=[1000., 10.], fig_name=fig_name)
+    fluxes.visualize_sections(model=None, variables=variables,
+                              y_limits=[1000., 10.], fig_name=fig_name)
 
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy

@@ -15,10 +15,10 @@ if __name__ == '__main__':
     date_time = '20200202'
     file_names = data_path + f"{model}_{mode}_inst_{date_time}_{resolution}.nc"
 
-    p_levels = np.linspace(1000e2, 10e2, 41)
+    p_levels = np.linspace(1000e2, 10e2, 21)
 
     # Create energy budget object
-    budget = EnergyBudget(file_names, p_levels=p_levels, truncation=420)
+    budget = EnergyBudget(file_names, p_levels=p_levels, truncation=511)
 
     # Compute diagnostics
     dataset_energy = budget.energy_diagnostics()
@@ -28,7 +28,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     layers = {'Troposphere': [250e2, 450e2], 'Stratosphere': [50e2, 250e2]}
 
-    figure_name = f'../figures/papers/{model}_{mode}_energy_spectra_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_{mode}_energy_spectra_{resolution}.pdf'
 
     dataset_energy.visualize_energy(model=model, layers=layers, fig_name=figure_name)
 
@@ -44,7 +44,7 @@ if __name__ == '__main__':
                 'Free troposphere': [-0.4, 0.8],
                 'Lower troposphere': [-1.0, 1.5]}
 
-    figure_name = f'../figures/papers/{model}_{mode}_energy_fluxes_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_{mode}_energy_fluxes_{resolution}.pdf'
 
     dataset_fluxes.visualize_fluxes(model=model,
                                     variables=['pi_hke+pi_ape', 'pi_hke',
@@ -54,7 +54,7 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------------------
     # Nonlinear transfer of Kinetic energy and Available potential energy
     # ----------------------------------------------------------------------------------------------
-    figure_name = f'../figures/papers/{model}_{mode}_hke_fluxes_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_{mode}_hke_fluxes_{resolution}.pdf'
 
     layers = {'Free troposphere': [250e2, 450e2], 'Lower troposphere': [500e2, 850e2]}
 
@@ -72,7 +72,14 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------------------
     # Visualize fluxes cross section
     # ---------------------------------------------------------------------------------------
-    figure_name = f'../figures/papers/{model}_{mode}_fluxes_section_{resolution}.pdf'
+    figure_name = f'../figures/tests/{model}_{mode}_dke_fluxes_section_{resolution}.pdf'
 
-    dataset_fluxes.visualize_slices(model=None, variables=['cdr', 'vfd_dke'],
-                                    y_limits=[1000., 100.], fig_name=figure_name)
+    dataset_fluxes.visualize_sections(model=None, variables=['cdr', 'vfd_dke'],
+                                      y_limits=[1000., 100.], fig_name=figure_name)
+
+    figure_name = f'../figures/tests/{model}_{mode}_hke_fluxes_section_{resolution}.pdf'
+
+    dataset_fluxes.visualize_sections(model=model, share_cbar=True,
+                                      variables=['pi_hke', 'pi_rke', 'pi_dke',
+                                                 'cdr', 'cdr_v', 'cdr_w'],
+                                      y_limits=[1000., 100.], fig_name=figure_name)

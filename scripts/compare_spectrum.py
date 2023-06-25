@@ -19,10 +19,10 @@ if __name__ == '__main__':
 
     # Load dyamond dataset
     model = 'ICON'
-    resolution = 'n512'
+    resolution = 'n1536'
     data_path = '/media/yanm/Data/DYAMOND/simulations/'
 
-    date_time = '20[0]'
+    date_time = '20200125_000001'
     file_names = data_path + f"{model}_atm_3d_inst_{resolution}_gps_{date_time}.nc"
 
     # # load earth topography and surface pressure
@@ -30,7 +30,8 @@ if __name__ == '__main__':
     sfc_pres = dataset_sfc.pres_sfc
 
     # Create energy budget object
-    budget = EnergyBudget(file_names, ps=sfc_pres)
+    p_levels = np.linspace(1000e2, 100e2, 10)
+    budget = EnergyBudget(file_names, ps=sfc_pres, p_levels=p_levels)
 
     # compute mask
     beta = (~budget.theta_prime.mask).astype(float)

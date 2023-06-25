@@ -12,9 +12,9 @@ from fortran_libs import numeric_tools
 from thermodynamics import pressure_vertical_velocity
 from tools import interpolate_1d, inspect_gridtype, gradient_1d
 from tools import is_sorted, gaussian_lats_wts
-from visualization import energy_spectra_by_levels
-from visualization import fluxes_slices_by_models
-from visualization import fluxes_spectra_by_levels
+from visualization import visualize_energy
+from visualization import visualize_fluxes
+from visualization import visualize_sections
 
 # Keep attributes after operations (why isn't this the default behaviour anyways...)
 set_options(keep_attrs=True)
@@ -196,8 +196,9 @@ class SebaDataset(Dataset):
     def data_shape(self):
         return tuple(self.dims[name] for name in self.coordinate_names())
 
-    def interpolate_levels(self, p_levels=None):
-        return interpolate_pressure_levels(self, p_levels=p_levels)
+    def interpolate_levels(self, p_levels=None, masked=True):
+        fill_value = np.nan if masked else None
+        return interpolate_pressure_levels(self, p_levels=p_levels, fill_value=fill_value)
 
     def check_convert_units(self, other=None):
 
@@ -280,7 +281,7 @@ class SebaDataset(Dataset):
                 print("Warning: surface variable {} not found!".format(name))
 
                 if name in surface_data and is_standard(surface_data[name], name):
-
+                    print("Info: adding surface variable {}".format(name))
                     surface_var = surface_data[name]
                     surface_var_attrs = {}
                     if isinstance(surface_var, DataArray):
@@ -402,8 +403,9 @@ class SebaDataset(Dataset):
         # transpose data to required shape
         data = np.ma.transpose(data, axes=coord_order)
 
-        # get filled data if no mask is required
-        if not masked and np.ma.is_masked(data):
+        # Get filled data if possible and no mask is required. If mask arises
+        # from vertical interpolation it is kept during the analysis.
+        if not masked and not np.any(data.mask):
             data = data.data
 
         return data
@@ -488,6 +490,7 @@ class SebaDataset(Dataset):
         var_units = {name: data[name].attrs.get("units") for name in data.data_vars}
 
         # Integrate over coordinate 'coord_name' using the trapezoidal rule
+        data = data.isel({coord.name: slice(1, -1)})  # exclude the first and last levels
         data = data.sel({coord.name: slice(*coord_range)}).integrate(coord.name)
 
         # Convert to height coordinate if data is pressure levels (hydrostatic approximation)
@@ -589,11 +592,9 @@ class SebaDataset(Dataset):
     # ----------------------------------------------------------------------------------------------
     def visualize_fluxes(self, show=True, fig_name=None, **kwargs):
 
-        figure = fluxes_spectra_by_levels(self, **kwargs)
+        figure = visualize_fluxes(self, **kwargs)
 
-        # show figure
         if show: figure.show()
-
         # render figure and save to file
         if isinstance(fig_name, str):
             figure.savefig(fig_name, dpi=300)
@@ -602,24 +603,20 @@ class SebaDataset(Dataset):
 
     def visualize_energy(self, show=True, fig_name=None, **kwargs):
 
-        figure = energy_spectra_by_levels(self, **kwargs)
+        figure = visualize_energy(self, **kwargs)
 
-        # show figure
         if show: figure.show()
-
         # render figure and save to file
         if isinstance(fig_name, str):
             figure.savefig(fig_name, dpi=300)
 
         return figure
 
-    def visualize_slices(self, show=True, fig_name=None, **kwargs):
+    def visualize_sections(self, show=True, fig_name=None, **kwargs):
 
-        figure = fluxes_slices_by_models(self, **kwargs)
+        figure = visualize_sections(self, **kwargs)
 
-        # show figure
         if show: figure.show()
-
         # render figure and save to file
         if isinstance(fig_name, str):
             figure.savefig(fig_name, dpi=300)
@@ -927,8 +924,8 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         data['geopotential'] = phi
 
     # Perform interpolation to constant pressure levels if necessary (after all dynamic fields
-    # added). Ensures latitude dimension is ordered north-to-south and vertical levels starting
-    # at the surface.
+    # were added). Extrapolate subterranean data by default. Ensures latitude dimension is ordered
+    # north-to-south and vertical levels starting at the surface.
     data = data.interpolate_levels(p_levels).sortby(["level", 'latitude'], ascending=False)
 
     # Computing geopotential if not found in dataset. This step must be done with data in
@@ -994,7 +991,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     return data.compute()
 
 
-def interpolate_pressure_levels(dataset, p_levels=None):
+def interpolate_pressure_levels(dataset, p_levels=None, fill_value=None):
     """
     Interpolate all variables in dataset to pressure levels.
 
@@ -1008,6 +1005,7 @@ def interpolate_pressure_levels(dataset, p_levels=None):
         If not given, it is created from the number of vertical
         levels of the variables in dataset and the pressure field.
 
+    fill_value : float, str
     Returns
     -------
     xarray.Dataset
@@ -1032,6 +1030,9 @@ def interpolate_pressure_levels(dataset, p_levels=None):
         p_levels = np.array(p_levels)
         assert p_levels.ndim == 1, "'p_levels' must be a one-dimensional array."
 
+    if fill_value is None:
+        fill_value = "extrapolate"
+
     # find vertical coordinate
     levels = _find_coordinate(dataset, "level")
 
@@ -1039,7 +1040,8 @@ def interpolate_pressure_levels(dataset, p_levels=None):
     pressure = _find_variable(dataset, 'pressure', raise_notfound=False)
 
     # If the vertical coordinate is consistent with pressure standards, then no interpolation is
-    # needed: Data is already in pressure coordinates.
+    # needed: Data is already in pressure coordinates; unless new pressure levels are specified by
+    # p_levels.
     if is_standard(levels, "pressure"):
 
         # data is already on pressure levels but different analysis levels are required
@@ -1107,7 +1109,8 @@ def interpolate_pressure_levels(dataset, p_levels=None):
         if not data.equals(pressure) and data.ndim == pressure.ndim:
             result, = interpolate_1d(p_levels, pressure.values,
                                      data.values, scale='log',
-                                     fill_value=np.nan, axis=z_axis)
+                                     fill_value=fill_value,
+                                     axis=z_axis)
 
             result_dataset[name] = (dims, result, data.attrs)
         else:
