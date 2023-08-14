@@ -30,7 +30,7 @@ def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
     return - (cn.Rd / cn.g) * mean_temp
 
 
-def height_to_geopotential(height):
+def height_to_geopotential(height: object) -> object:
     r"""Compute geopotential for a given height above sea level.
 
     Calculates the geopotential from height above mean sea level using the following formula,

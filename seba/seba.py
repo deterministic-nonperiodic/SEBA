@@ -186,6 +186,9 @@ class EnergyBudget:
         # Coriolis parameter (broadcast to the shape of the wind vector)
         self.fc = broadcast_1dto(coriolis_parameter(data.latitude.values), self.vrt.shape)
 
+        # clear some memory
+        del data
+
         # Absolute vorticity
         self.abs_vrt = self.vrt + self.fc
 
@@ -337,8 +340,10 @@ class EnergyBudget:
         pi_dke = self.dke_nonlinear_transfer()
         pi_ape = self.ape_nonlinear_transfer()
 
+        pi_hke = pi_rke + pi_dke
         # Linear transfer due to Coriolis
-        lc_ke = self.coriolis_linear_transfer()
+        pi_lke = self.coriolis_linear_transfer()
+        pi_nke = pi_hke - pi_lke
 
         # Create dataset to export nonlinear fluxes
         fluxes = SebaDataset()
@@ -372,24 +377,28 @@ class EnergyBudget:
                                        long_name='conversion from divergent to '
                                                  'rotational kinetic energy')
 
-        fluxes['pi_rke'] = self.add_field(pi_rke, units=units, standard_name='nonlinear_rke_flux',
-                                          long_name='nonlinear spectral transfer of rotational '
+        fluxes['pi_rke'] = self.add_field(pi_rke, units=units, standard_name='rke_transfer',
+                                          long_name='spectral transfer of rotational'
+                                                    ' kinetic energy')
+
+        fluxes['pi_dke'] = self.add_field(pi_dke, units=units, standard_name='dke_transfer',
+                                          long_name='spectral transfer of divergent '
                                                     'kinetic energy')
 
-        fluxes['pi_dke'] = self.add_field(pi_dke, units=units, standard_name='nonlinear_dke_flux',
-                                          long_name='nonlinear spectral transfer of divergent '
+        fluxes['pi_hke'] = self.add_field(pi_hke, units=units,
+                                          standard_name='hke_transfer',
+                                          long_name='spectral transfer of horizontal '
                                                     'kinetic energy')
 
-        fluxes['pi_hke'] = self.add_field(pi_rke + pi_dke, units=units,
-                                          standard_name='nonlinear_hke_flux',
+        fluxes['pi_lke'] = self.add_field(pi_lke, units=units, standard_name='coriolis_transfer',
+                                          long_name='linear coriolis transfer')
+
+        fluxes['pi_nke'] = self.add_field(pi_nke, units=units, standard_name='nonlinear_transfer',
                                           long_name='nonlinear spectral transfer of kinetic energy')
 
         fluxes['pi_ape'] = self.add_field(pi_ape, units=units, standard_name='nonlinear_ape_flux',
                                           long_name='nonlinear spectral transfer of available'
                                                     ' potential energy')
-
-        fluxes['lc'] = self.add_field(lc_ke, units=units, standard_name='coriolis_transfer',
-                                      long_name='linear coriolis transfer')
 
         # ------------------------------------------------------------------------------------------
         # Cumulative vertical fluxes of divergent kinetic energy
@@ -397,23 +406,35 @@ class EnergyBudget:
         # Approximation for the vertical pressure flux using mass continuity and the hydrostatic
         # approximation to avoid computing vertical gradients of spectral quantities.
         # self.geopotential_flux() + self.dke_turbulent_flux_divergence() - c_ape_dke
-        vfd_dke = self.dke_vertical_flux_divergence()
-        vfd_ape = self.ape_vertical_flux_divergence()
+
+        vf_dke = self.dke_vertical_flux()
+        vf_ape = self.ape_vertical_flux()
+
+        vfd_dke = self.vertical_gradient(vf_dke, order=2)
+        vfd_ape = self.vertical_gradient(vf_ape, order=2)
 
         # add data and metadata to vertical fluxes
+        fluxes['vf_dke'] = self.add_field(vf_dke, units="pascal * " + units,
+                                          standard_name='vertical_dke_flux',
+                                          long_name='vertical flux of horizontal kinetic energy')
+
         fluxes['vfd_dke'] = self.add_field(vfd_dke, units=units,
                                            standard_name='vertical_dke_flux_divergence',
                                            long_name='vertical flux divergence'
                                                      ' of horizontal kinetic energy')
+
+        fluxes['vf_ape'] = self.add_field(vf_ape, units="pascal * " + units,
+                                          standard_name='vertical_ape_flux',
+                                          long_name='vertical flux of available potential energy')
 
         fluxes['vfd_ape'] = self.add_field(vfd_ape, units=units,
                                            standard_name='vertical_ape_flux_divergence',
                                            long_name='vertical flux divergence'
                                                      ' of available potential energy')
 
-        fluxes['vfd_tot'] = self.add_field(vfd_dke + vfd_ape, units=units,
-                                           standard_name='total_vertical_flux_divergence',
-                                           long_name='total vertical flux divergence')
+        fluxes['vfd'] = self.add_field(vfd_dke + vfd_ape, units=units,
+                                       standard_name='total_vertical_flux_divergence',
+                                       long_name='total vertical flux divergence')
 
         # Compute energy dissipation assuming quasi-stationary atmospheric state.
         dis_rke = - (pi_rke + c_dke_rke)
@@ -599,7 +620,7 @@ class EnergyBudget:
     def rke_nonlinear_transfer(self):
         """
         Spectral transfer of rotational kinetic energy due to nonlinear interactions
-        after Li et. al. (2023), Eq. 28
+        after Li et al. (2023), Eq. 28
         :return:
             Spectrum of RKE transfer across scales
         """
@@ -619,7 +640,7 @@ class EnergyBudget:
     def dke_nonlinear_transfer(self):
         """
         Spectral transfer of divergent kinetic energy due to nonlinear interactions
-        after Li et. al. (2023), Eq. 27. The linear Coriolis effect is included in the
+        after Li et al. (2023), Eq. 27. The linear Coriolis effect is included in the
         formulations so that:
 
         .. math:: T_{D}(l,m) + T_{R}(l,m) = T_{K}(l,m) + L(l,m)

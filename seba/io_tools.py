@@ -9,14 +9,14 @@ from xarray import set_options
 
 import constants as cn
 from fortran_libs import numeric_tools
-from thermodynamics import pressure_vertical_velocity
+from thermodynamics import pressure_vertical_velocity, height_to_geopotential
 from tools import interpolate_1d, inspect_gridtype, gradient_1d
 from tools import is_sorted, gaussian_lats_wts
 from visualization import visualize_energy
 from visualization import visualize_fluxes
 from visualization import visualize_sections
 
-# Keep attributes after operations (why isn't this the default behaviour anyways...)
+# Keep attributes after operations (why isn't this the default behaviour anyway...)
 set_options(keep_attrs=True)
 
 path_global_topo = "../data/topo_global_n1250m.nc"
@@ -25,6 +25,10 @@ CF_variable_conventions = {
     "geopotential": {
         "standard_name": ("geop", "geopotential", "air_geopotential",),
         "units": ('joule / kilogram', 'm**2 s**-2')
+    },
+    "geopotential_height": {
+        "standard_name": ("Z", "geopotential height", "geopotential_height",),
+        "units": ('m', 'meter', 'km', 'gpm')
     },
     "temperature": {
         "standard_name": ("t", "ta", "temp", "air_temperature", 'temperature'),
@@ -348,20 +352,32 @@ class SebaDataset(Dataset):
 
         # If surface pressure is not found, it is approximated by the pressure
         # level closest to the surface. This is a fallback option for unmasked terrain.
+        level = self.find_coordinate('level')
+        names = [level.attrs.get(name) for name in ['name', 'long_name', 'standard_name']]
+
         if 'ps' not in self and 'pressure' in self:
+            print(f'Info: Inferring ps from lower boundary.')
             expected_shape = tuple(expected_dims['ps'].values())
-            pressure = self.check_convert_units(self.pressure)
-            sfcp = np.broadcast_to(np.max(pressure) + 1e2, expected_shape)
-            self['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
+
+            if set(expected_shape).issubset(self.pressure.shape):
+                sfcp = self.pressure.transpose(..., 'latitude', 'longitude').max(dim=level.name)
+                self['ps'] = sfcp if 'time' not in sfcp.dims else sfcp.mean('time')
+            else:
+                pressure = self.check_convert_units(self.pressure)
+                sfcp = np.broadcast_to(np.max(pressure) + 1e2, expected_shape)
+                self['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
+
             self['ps'].attrs['units'] = 'Pa'
 
         if 'ts' not in self:
-            level = self.find_coordinate('level')
-            names = [level.attrs.get(name) for name in ['name', 'long_name', 'standard_name']]
+            print(f'Info: Computing surface temperature from 3D temperature.')
+
             if 'sigma' in names:
                 # compute surface temperature by linear extrapolation of temperature to sigma=1.0
                 self['ts'] = self.temperature.interp({level.name: 1.0}, method='linear',
                                                      kwargs={"fill_value": "extrapolate"})
+            else:
+                self['ts'] = compute_surface_temperature(self)
 
         return self
 
@@ -433,8 +449,8 @@ class SebaDataset(Dataset):
             limits = c_range
         elif isinstance(limits, (list, tuple)):
             # Replaces None in 'coord_range' and sort the values. If None appears in the first
-            # position, e.g. [None, b], the integration is done from the [coord.min, b].
-            # Similarly for [a, None] , the integration is done from the [a, coord.max].
+            # position, e.g. [None, b], the integration is done from the [coord.min, b] and
+            # similarly for [a, None], the integration is done from the [a, coord.max].
             if None not in limits:
                 limits = sorted(limits)
             else:
@@ -783,6 +799,32 @@ def _find_variable(dataset, variable_name, raise_notfound=True) -> Optional[Data
     return candidates[0]
 
 
+def compute_surface_temperature(data):
+    # reshape temperature to pass it to fortran subroutine
+    target_dims = ('time', 'latitude', 'longitude', 'level')
+    coord_order = [data.temperature.dims.index(dim) for dim in target_dims]
+
+    data_shape = tuple(data.temperature.shape[dim] for dim in coord_order)
+    proc_shape = (data_shape[0], -1, data_shape[-1])
+
+    # get temperature field
+    temperature = data.temperature.to_masked_array()
+    temperature = np.transpose(temperature, axes=coord_order).reshape(proc_shape)
+    temperature = np.ma.filled(temperature, fill_value=0.0)
+
+    sfcp = data.ps.values.ravel()
+
+    # compute surface temperature by linear interpolation
+    sfct = numeric_tools.surface_temperature(sfcp, temperature, data.pressure.values)
+
+    # assign surface variables to dataset
+    sfct = DataArray(sfct.reshape(data_shape[:-1]), dims=target_dims[:-1])
+    sfct.attrs['standard_name'] = 'surface_temperature'
+    sfct.attrs['units'] = 'K'
+
+    return sfct
+
+
 def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     """
         Parse input xarray dataset
@@ -911,17 +953,27 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         # Checking 'w_wind' units and converting to standard before computing omega.
         w_wind = data.check_convert_units(w_wind)
 
+        print("Info: Computing pressure vertical velocity ...")
         # compute omega from pressure [Pa], temperature [K] and vertical velocity [m/s]
         data['omega'] = pressure_vertical_velocity(w_wind, data.temperature, data.pressure)
 
         # add standard units [Ps/s]
-        data.omega.attrs["units"] = expected_units['omega']
+        data.omega.name = 'omega'
+        data.omega.attrs.update({"units": expected_units['omega'],
+                                 "standard_name": "pressure velocity"})
 
     # Check if geopotential is present in dataset and add to data before interpolation
     phi = dataset.find_variable('geopotential', raise_notfound=False)
 
     if phi is not None:
         data['geopotential'] = phi
+    else:
+        gpz = dataset.find_variable('geopotential_height', raise_notfound=False)
+
+        if gpz is not None:
+            data['geopotential'] = height_to_geopotential(gpz)
+
+            data.geopotential.attrs["units"] = expected_units['geopotential']
 
     # Perform interpolation to constant pressure levels if necessary (after all dynamic fields
     # were added). Extrapolate subterranean data by default. Ensures latitude dimension is ordered
@@ -946,19 +998,9 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
 
         sfcp = data.ps.values.ravel()
 
-        if 'ts' not in data:
-            print("Info: Computing surface temperature ...")
-
-            # compute surface temperature by linear interpolation
-            sfct = numeric_tools.surface_temperature(sfcp, temperature, data.pressure.values)
-
-            # assign surface variables to dataset
-            data['ts'] = DataArray(sfct.reshape(data_shape[:-1]), dims=target_dims[:-1])
-            data['ts'].attrs['units'] = 'K'
-        else:
-            coord_order = [data.ts.dims.index(dim) for dim in ("time", "latitude", "longitude")]
-            # noinspection PyTypeChecker
-            sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
+        coord_order = [data.ts.dims.index(dim) for dim in target_dims[:-1]]
+        # noinspection PyTypeChecker
+        sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
 
         print("Info: Get surface elevation ...")
         # get surface elevation for the given grid. Using interpolated data
@@ -971,7 +1013,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         phi = DataArray(phi.reshape(data_shape), dims=target_dims)
 
         data['geopotential'] = phi.transpose("time", "level", "latitude", "longitude")
-        data['geopotential'].attrs['units'] = 'joule / kilogram'
+        data['geopotential'].attrs['units'] = expected_units['geopotential']
 
     # Inspect grid type based on the latitude sampling and interpolate if required
     if data.latitude.size != data.longitude.size // 2:

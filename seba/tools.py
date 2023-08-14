@@ -57,7 +57,7 @@ def prepare_data(data, dim_order):
 
     The ordering of the output data dimensions is out_order = 'yx(ts)z',
     where the non-spatial dimensions between brackets are packed into a single axis:
-    pdata.shape = (73, 144, 24, 17)
+    pdata shape is (73, 144, 24, 17)
     """
     if data.ndim < 3:
         raise ValueError('Input fields must be at least 3D')
