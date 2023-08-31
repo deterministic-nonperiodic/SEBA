@@ -9,9 +9,10 @@ from xarray import set_options
 
 import constants as cn
 from fortran_libs import numeric_tools
+from spectral_analysis import lambda_from_deg
 from thermodynamics import pressure_vertical_velocity, height_to_geopotential
 from tools import interpolate_1d, inspect_gridtype, gradient_1d
-from tools import is_sorted, gaussian_lats_wts
+from tools import is_sorted, gaussian_lats_wts, lowpass_lanczos
 from visualization import visualize_energy
 from visualization import visualize_fluxes
 from visualization import visualize_sections
@@ -311,7 +312,7 @@ class SebaDataset(Dataset):
 
                         if not same_size or not np.allclose(surface_var.latitude,
                                                             self.latitude, atol=1e-4):
-                            print(f'Info: Interpolating surface data: {name}')
+                            print(f'Info: Interpolating surface variable: {name}')
 
                             # extrapolate missing values usually points near the poles
                             surface_var = surface_var.interp(latitude=self.latitude,
@@ -815,7 +816,8 @@ def compute_surface_temperature(data):
     sfcp = data.ps.values.ravel()
 
     # compute surface temperature by linear interpolation
-    sfct = numeric_tools.surface_temperature(sfcp, temperature, data.pressure.values)
+    sfct = numeric_tools.surface_temperature(np.log(sfcp), temperature,
+                                             np.log(data.pressure.values))
 
     # assign surface variables to dataset
     sfct = DataArray(sfct.reshape(data_shape[:-1]), dims=target_dims[:-1])
@@ -983,7 +985,6 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     # Computing geopotential if not found in dataset. This step must be done with data in
     # pressure coordinates sorted from the surface up.
     if 'geopotential' not in data:
-
         # reshape temperature to pass it to fortran subroutine
         target_dims = ('time', 'latitude', 'longitude', 'level')
         coord_order = [data.temperature.dims.index(dim) for dim in target_dims]
@@ -1005,7 +1006,9 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         print("Info: Get surface elevation ...")
         # get surface elevation for the given grid. Using interpolated data
         # from global dataset if it does not exist already.
-        sfch = get_surface_elevation(data.latitude, data.longitude).values.ravel()
+        sfch = get_surface_elevation(data.latitude, data.longitude,
+                                     file_name=surface_data.get('hs'),
+                                     smooth=False).values.ravel()
 
         print("Info: Computing geopotential from temperature ...")
         # Compute geopotential from the temperature field: d(phi)/d(log p) = - Rd * T(p)
@@ -1174,18 +1177,18 @@ def interpolate_pressure_levels(dataset, p_levels=None, fill_value=None):
     return SebaDataset(data_vars=result_dataset, coords=coords)
 
 
-def get_surface_elevation(latitude, longitude):
+def get_surface_elevation(latitude, longitude, file_name=None, smooth=False):
     """
         Interpolates global topography data to desired grid defined by arrays lats and lons.
         The data source is SRTM15Plus (Global SRTM15+ V2.1) which can be accessed at
         https://opentopography.org/
     """
     # convert to ndarray to avoid renaming
-    if isinstance(latitude, Dataset):
-        latitude = latitude.values()
+    if isinstance(latitude, DataArray):
+        latitude = latitude.values
 
-    if isinstance(longitude, Dataset):
-        longitude = longitude.values()
+    if isinstance(longitude, DataArray):
+        longitude = longitude.values
 
     # convert longitudes to range (-180, 180) if needed
     longitude = np.where(longitude > 180, longitude - 360, longitude)
@@ -1195,14 +1198,20 @@ def get_surface_elevation(latitude, longitude):
     grid_id = "n" if grid_type == 'gaussian' else "r"
     grid_id += str(latitude.size // 2)
 
+    if file_name is None:
+        file_name = "topo_global"
+
     expected_path, _ = os.path.split(path_global_topo)
-    expected_file = os.path.join(expected_path, f"topo_global_{grid_id}.nc")
+    expected_file = os.path.join(expected_path, f"{file_name}_{grid_id}.nc")
 
     remap = True  # assume remap is needed
+    ds = 0
     if os.path.exists(expected_file):
+        print("Info: Using external topography file")
 
         # load global elevation dataset
         ds = open_dataset(expected_file)
+        ds = ds.rename({list(ds.data_vars)[0]: 'elevation'})
 
         # Sort according to required longitudes (west-to-east)
         # Latitudes are always sorted from north to south.
@@ -1210,7 +1219,8 @@ def get_surface_elevation(latitude, longitude):
             ds = ds.sortby('lon').sortby('lat', ascending=False)
 
         # Check if the longitudes in the file match the required longitudes.
-        remap = not np.allclose(ds.lon.values, longitude)
+        ds_longitude = np.where(ds.lon.values > 180, ds.lon.values - 360, ds.lon.values)
+        remap = not np.allclose(np.sort(ds_longitude), np.sort(longitude))
 
     if remap:
         print(f"Warning: Surface elevation data with required resolution "
@@ -1219,11 +1229,30 @@ def get_surface_elevation(latitude, longitude):
         # Interpolate the global topography dataset to the required
         # latitudes and longitudes using the nearest neighbor method.
         ds = open_dataset(path_global_topo).interp(lat=latitude, lon=longitude,
-                                                   method="nearest", kwargs={"fill_value": 0})
+                                                   method="nearest",
+                                                   kwargs={"fill_value": 0})
 
         # Export the interpolated dataset to a netcdf file for future use.
         ds.to_netcdf(expected_file)
 
+    if smooth:  # generate a smoothed heavy-side function
+        # Calculate normalised cut-off frequencies for zonal and meridional directions:
+        resolution = lambda_from_deg(longitude.size)  # grid spacing at the Equator
+        cutoff_scale = lambda_from_deg(200)  # wavenumber 200 (cut off scale ~200 km)
+
+        # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
+        cutoff_freq = resolution / cutoff_scale
+        # window size set to cutoff scale in grid points
+        window_size = (2.0 / np.min(cutoff_freq)).astype(int)
+
+        # Smoothing mask with a low-pass Lanczos filter (axis is the non-spatial dimension)
+        elevation = np.expand_dims(ds.elevation.values, 0)
+
+        elevation = lowpass_lanczos(elevation, window_size, cutoff_freq, axis=0, jobs=1)
+
+        ds.elevation.values = elevation.squeeze()
+
     # Return the DataArray with the surface elevation.
+    # clipping is necessary to remove overshoots
     # noinspection PyUnboundLocalVariable
-    return ds.elevation
+    return ds.elevation.clip(0.0, None)

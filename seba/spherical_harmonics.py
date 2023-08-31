@@ -4,7 +4,7 @@ import numpy as np
 import shtns
 
 from constants import earth_radius
-from tools import broadcast_1dto
+from tools import Parallel, delayed, broadcast_1dto, cpu_count
 
 # private variables for class Spharmt
 _private_vars = ['nlon', 'nlat', 'gridtype', 'rsphere']
@@ -13,8 +13,8 @@ _private_vars = ['nlon', 'nlat', 'gridtype', 'rsphere']
 def iterate_shts(func, axis=-1):
     """
     Decorator for handling arrays' IO dimensions for calling SHTns' spectral functions.
-    This wrapper function for running _shtns functions along sample dimension. Input arguments
-    can be in both spectral and grid-point space.
+    Wrapper for running _shtns functions along dimension specified by axis. Input arrays
+    can be either in spectral or grid-point space.
 
     Parameters:
     -----------
@@ -24,14 +24,14 @@ def iterate_shts(func, axis=-1):
 
     @functools.wraps(func)
     def iterated_sht(*args, **kwargs):
-        # self passed as first argument
+        # self object passed as first argument
         cls, *data = args
 
         # Compact args to a single array (input arrays must be broadcastable)
         # Infer mask when passing masked arrays and fill with zeros preserving dtype.
         data = np.ma.fix_invalid(data).filled(fill_value=0.0)
 
-        # check data type (real objects must be of type float64)
+        # check data type (shtns real arrays must be of type float64)
         if np.isrealobj(data):
             data = data.astype(np.float64)
 
@@ -40,8 +40,12 @@ def iterate_shts(func, axis=-1):
             data = np.expand_dims(data, axis)
 
         # Apply SHTns' functions along the sample dimension (test parallel loop)
-        slices = np.split(data, data.shape[axis], axis=axis)
-        data = np.stack([func(cls, *slice_[..., 0], **kwargs) for slice_ in slices], axis=axis)
+        # data = [func(cls, *slice_, **kwargs) for slice_ in np.moveaxis(data, axis, 0)]
+        with Parallel(n_jobs=cls.jobs, backend="threading") as pool:
+            data = np.stack(pool(
+                delayed(func)(cls, *slice_, **kwargs)
+                for slice_ in np.moveaxis(data, axis, 0)
+            ), axis=axis)
 
         return data.squeeze() if data.shape[axis] == 1 else data
 
@@ -117,19 +121,33 @@ class Spharmt(object):
         # Initialize 4pi-normalized harmonics with no CS phase shift (consistent with SPHEREPACK)
         # No normalization needed to recover the global mean/covariance from the power spectrum.
         # Alternatives are: sht_orthonormal or sht_schmidt.
-        self.sht = shtns.sht(ntrunc, ntrunc, 1, shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE)
+        self.jobs = int(cpu_count() // 2)
+
+        self.sht = shtns.sht(ntrunc, ntrunc, 1,
+                             norm=shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE,
+                             nthreads=self.jobs)
+
+        # Polar optimization threshold: values of Legendre Polynomials below that threshold
+        # are neglected (for high m)
+        polar_opt = 1e-6  # aggressive optimization but accuracy is still high enough
+        use_gpu = shtns.SHT_ALLOW_GPU  # perform transforms on GPUs if available
 
         if self.gridtype == 'regular':
-            self.sht.set_grid(nlat, nlon, shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS, 0)
+            self.sht.set_grid(nlat, nlon,
+                              flags=shtns.sht_reg_dct | shtns.SHT_PHI_CONTIGUOUS + use_gpu,
+                              polar_opt=polar_opt)
             self.weights = self.sht.cos_theta
         else:
             # default to gaussian grid
-            self.sht.set_grid(nlat, nlon, shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS, 0)
+            self.sht.set_grid(nlat, nlon,
+                              flags=shtns.sht_quick_init | shtns.SHT_PHI_CONTIGUOUS + use_gpu,
+                              polar_opt=polar_opt)
 
             # create symmetrical weights from Legendre roots
             weights = self.sht.gauss_wts()
             self.weights = np.concatenate([weights, weights[::-1]])
 
+        # store some useful parameters
         self.truncation = ntrunc
         self.nlm = self.sht.nlm
         self.degree = self.sht.l

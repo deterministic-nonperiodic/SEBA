@@ -827,7 +827,7 @@ subroutine surface_temperature(sfct, sfcp, temp, pres, nt, ns, np)
     double precision, intent(in) :: temp (nt, ns, np)
 
     integer :: i, j, ks, ke, nn
-    double precision :: safe_temp
+    double precision :: safe_temp, increment
     logical :: mask (np)
     double precision, intent(out) :: sfct (nt, ns)
 
@@ -842,11 +842,17 @@ subroutine surface_temperature(sfct, sfcp, temp, pres, nt, ns, np)
 
             ks = minloc(abs(pres - sfcp(j)), mask = mask, dim = 1)
             ke = min(ks + 1, np)
+            ! nn = ke + 1 - ks
 
-            nn = ke + 1 - ks
+            ! linear extrapolation
+            if (ks == ke) then
+                sfct(i, j) = temp(i, j, ks)
+            else
+                increment = (sfcp(j) - pres(ks)) / (pres(ke) - pres(ks))
+                sfct(i, j) = temp(i, j, ks) + (temp(i, j, ke) - temp(i, j, ks)) * increment
+            end if
 
-            call lagrange_intp(sfct(i, j), temp(i, j, ks:ke), log(sfcp(j)), log(pres(ks:ke)), nn)
-
+            !            call lagrange_intp(sfct(i, j), temp(i, j, ks:ke), sfcp(j), pres(ks:ke), nn)
         end do
     end do
 
@@ -895,7 +901,7 @@ subroutine geopotential(phi, pres, temp, sfch, sfcp, sfct, nt, ns, np)
         sfc_temp = sfct
     else
         ! Approximate surface temperature by linear interpolation
-        call surface_temperature(sfc_temp, sfcp, temp, pres, nt, ns, np)
+        call surface_temperature(sfc_temp, lnps, temp, lnp, nt, ns, np)
     end if
 
     ! Start vertical integration of the hydrostatic equation: d(phi)/d(log p) = - Rd * T(p)

@@ -53,7 +53,7 @@ class EnergyBudget:
         https://doi.org/10.1002/ggge.20071.
     """
 
-    def __init__(self, dataset, variables=None, ps=None, p_levels=None,
+    def __init__(self, dataset, variables=None, p_levels=None, ps=None, hs=None,
                  truncation=None, rsphere=None):
         """
         Initializing class EnergyBudget.
@@ -96,7 +96,7 @@ class EnergyBudget:
         """
 
         # Parsing input dataset to search for required analysis fields.
-        data = parse_dataset(dataset, variables=variables, p_levels=p_levels, ps=ps)
+        data = parse_dataset(dataset, variables=variables, p_levels=p_levels, ps=ps, hs=hs)
 
         # Get the size of every dimension. The analysis is performed over 3D slices of data
         # (lat, lon, pressure) by simply iterating over the temporal axis.
@@ -110,7 +110,7 @@ class EnergyBudget:
         # -----------------------------------------------------------------------------
         self.sphere = Spharmt(self.nlat, self.nlon, ntrunc=truncation, rsphere=rsphere)
 
-        # Compute scale factor for vector spectra: l (l + 1) / Re ** 2 = kappa ** -2
+        # Compute scale factor for vector spectra: l (l + 1) / Re ** 2 -> kappa ** -2
         scale = - self.sphere.rsphere * self.sphere.inv_lap
         self.vector_scale = broadcast_1dto(scale, (self.sphere.nlm, self.samples, self.nlevels))
 
@@ -156,7 +156,8 @@ class EnergyBudget:
         # and 1 otherwise (Boer 1982).
         # ------------------------------------------------------------------------------------------
         # define data mask once for consistency
-        self.mask = self.omega.mask
+        self.mask = self.omega.mask if hasattr(self.omega, 'mask') else np.zeros_like(self.omega)
+        self.mask = self.mask.astype(bool)
 
         # Compute fraction of valid points at every level for Spectral Mode-Coupling Correction
         # same as the power-spectrum of the mask integrated along spherical harmonic degree. This
@@ -432,6 +433,10 @@ class EnergyBudget:
                                            long_name='vertical flux divergence'
                                                      ' of available potential energy')
 
+        fluxes['vf'] = self.add_field(vf_dke + vf_ape, units="pascal * " + units,
+                                      standard_name='total_vertical_flux',
+                                      long_name='total vertical flux')
+
         fluxes['vfd'] = self.add_field(vfd_dke + vfd_ape, units=units,
                                        standard_name='total_vertical_flux_divergence',
                                        long_name='total vertical flux divergence')
@@ -496,7 +501,7 @@ class EnergyBudget:
 
         if da_flag:
             ke_tendency = self.add_field(ke_tendency, tendency_name,
-                                         gridtype='spectral', units='W m**-2',
+                                         gridtype='spectral', units='watt / kilogram',
                                          standard_name=tendency_name)
         return ke_tendency
 
@@ -546,7 +551,7 @@ class EnergyBudget:
 
         if da_flag:
             ape_tendency = self.add_field(ape_tendency, tendency_name,
-                                          gridtype='spectral', units='W m**-2',
+                                          gridtype='spectral', units='watt / kilogram',
                                           standard_name=tendency_name)
 
         return ape_tendency
@@ -688,6 +693,33 @@ class EnergyBudget:
 
         return self.ganma * ape_transfer / 2.0
 
+    def ape_nonlinear_transfer_1(self):
+        """
+        Available potential energy spectral transfer due to nonlinear interactions.
+        This Function is a modified version of Eq.A3 in Augier and Lindborg (2013),
+        to use simulated omega explicitly instead of mass continuity.
+
+        :return:
+            Spherical harmonic coefficients of APE transfer across scales
+        """
+
+        # Compute vertical gradient of potential temperature perturbations
+        theta_omega = self.theta_prime * self.omega
+        theta_gradient = self.vertical_gradient(self.theta_prime)
+        theta_omega_gradient = self.vertical_gradient(theta_omega)
+
+        # compute 3D advection of potential temperature perturbation
+        theta_advection = self._scalar_advection(self.theta_prime) + self.omega * theta_gradient
+
+        # compute nonlinear spectral transfer due to horizontal advection
+        ape_transfer = - self._scalar_spectrum(self.theta_prime, theta_advection)
+
+        # add vertical terms
+        ape_transfer += self._scalar_spectrum(theta_gradient, theta_omega) / 2.0
+        ape_transfer += self._scalar_spectrum(self.theta_prime, theta_omega_gradient) / 2.0
+
+        return self.ganma * ape_transfer
+
     def geopotential_flux(self):
         # The geopotential flux should equal the pressure flux plus the APE to DKE conversion
         # Can be used to calculate the vertical pressure flux indirectly to avoid vertical
@@ -727,11 +759,7 @@ class EnergyBudget:
 
     def conversion_ape_dke(self):
         # Conversion of Available Potential energy into kinetic energy (Eq. 19 of A&L)
-
-        # specific volume
-        alpha = cn.Rd * self.temperature / self.pressure
-
-        return - self._scalar_spectrum(self.omega, alpha)
+        return - cn.Rd * self._scalar_spectrum(self.omega, self.temperature) / self.pressure
 
     def conversion_dke_rke(self):
         """Conversion from divergent to rotational kinetic energy
@@ -959,8 +987,7 @@ class EnergyBudget:
         else:
             vector_sp2 = vector_sp1
 
-        spectrum = vector_sp1[0] * vector_sp2[0].conjugate()
-        spectrum += vector_sp1[1] * vector_sp2[1].conjugate()
+        spectrum = np.sum(vector_sp1 * vector_sp2.conjugate(), axis=0)
 
         return self.vector_scale * spectrum.real
 

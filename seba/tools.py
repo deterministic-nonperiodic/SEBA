@@ -465,10 +465,9 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     pool = Parallel(n_jobs=jobs, backend="threading")
 
     # applying lanczos filter in parallel
-    result = np.array(pool(delayed(convolve_2d)(chunk) for chunk in np.array_split(arr, n_chunks)))
-
-    result = np.concatenate(result, axis=0)
-
+    result = pool(delayed(convolve_2d)(chunk) for chunk in np.array_split(arr, n_chunks))
+    result = np.stack(result, axis=0)
+    
     result[np.isnan(result)] = 1.0
 
     # remove added pad
