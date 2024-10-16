@@ -16,7 +16,7 @@ from tools import prepare_data, transform_io, rotate_vector, broadcast_1dto, gra
 
 # declare global read-only variables
 _global_attrs = {'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
-                 'institution': 'Max Planck Institute for Meteorology',
+                 'institution': 'Leibniz Institute of Atmospheric Physics (IAP)',
                  'title': 'Spectral Energy Budget of the Atmosphere',
                  'history': date.today().strftime('Created on %c'),
                  'references': '', 'Conventions': 'CF-1.6'}
