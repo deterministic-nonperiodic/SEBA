@@ -1,8 +1,8 @@
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
 
-import constants as cn
-from tools import broadcast_1dto, gradient_1d
+from . import constants as cn
+from .tools import broadcast_1dto, gradient_1d
 
 
 def hydrostatic_thickness(pressure, temperature, initial=0.0, axis=-1):
@@ -56,7 +56,7 @@ def height_to_geopotential(height: object) -> object:
     -----
     This calculation approximates :math:`g(z)` as
 
-    .. math:: g(z) = g_0 \left( \frac{R_e}{R_e + z} \right)^2
+    .. math:: g(z) = g_0 \left(\frac{R_e}{R_e + z} \right)^2
 
     where :math:`g_0` is standard gravity. It thereby accounts for the average effects of
     centrifugal force on apparent gravity, but neglects latitudinal variations due to

@@ -1,23 +1,28 @@
 import os
 import re
 from typing import Optional
+import warnings
 
 import numpy as np
+import pandas as pd
 import pint
+from astropy.timeseries import LombScargle
 from xarray import Dataset, DataArray, open_dataset, open_mfdataset
-from xarray import set_options
+from xarray import set_options, apply_ufunc
+from functools import partial
 
-import constants as cn
-from fortran_libs import numeric_tools
-from spectral_analysis import lambda_from_deg
-from thermodynamics import pressure_vertical_velocity, height_to_geopotential
-from tools import interpolate_1d, inspect_gridtype, gradient_1d
-from tools import is_sorted, gaussian_lats_wts, lowpass_lanczos
-from visualization import visualize_energy
-from visualization import visualize_fluxes
-from visualization import visualize_sections
+from . import constants as cn
+from . import numeric_tools
 
-# Keep attributes after operations (why isn't this the default behaviour anyway...)
+from .spectral_analysis import lambda_from_deg
+from .thermodynamics import pressure_vertical_velocity, height_to_geopotential
+from .tools import interpolate_1d, inspect_gridtype, gradient_1d, lanczos_lowpass_1d
+from .tools import is_sorted, gaussian_lats_wts, lowpass_lanczos, nyquist_frequency
+from .visualization import visualize_energy
+from .visualization import visualize_fluxes
+from .visualization import visualize_sections
+
+# Keep attributes after operations (why isn't this the default behavior anyway...)
 set_options(keep_attrs=True)
 
 path_global_topo = "../data/topo_global_n1250m.nc"
@@ -151,7 +156,7 @@ expected_range = {
 UNITS_REG = pint.UnitRegistry()
 
 # from Metpy
-cmd = re.compile(r'(?<=[A-Za-z)])(?![A-Za-z)])(?<![0-9\-][eE])(?<![0-9\-])(?=[0-9\-])')
+cmd = re.compile(r"(?<=[A-Za-z)])(?![A-Za-z)])(?<![0-9\-][eE])(?<![0-9\-])(?=[0-9\-])")
 
 
 def _parse_units(unit_str):
@@ -180,9 +185,9 @@ class SebaDataset(Dataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def find_coordinate(self, coord_name=None):
+    def find_coordinate(self, coord_name=None, raise_notfound=True):
         # Use the instance variables to perform the necessary computations
-        return _find_coordinate(self, coord_name)
+        return _find_coordinate(self, coord_name, raise_notfound=raise_notfound)
 
     def find_variable(self, name=None, raise_notfound=True):
         return _find_variable(self, name, raise_notfound=raise_notfound)
@@ -318,7 +323,7 @@ class SebaDataset(Dataset):
                             surface_var = surface_var.interp(latitude=self.latitude,
                                                              longitude=self.longitude,
                                                              kwargs={"fill_value": "extrapolate"})
-                        # convert to masked array
+                        # convert to masked-array
                         surface_var = surface_var.to_masked_array()
 
                     if isinstance(surface_var, np.ndarray):
@@ -365,6 +370,7 @@ class SebaDataset(Dataset):
                 self['ps'] = sfcp if 'time' not in sfcp.dims else sfcp.mean('time')
             else:
                 pressure = self.check_convert_units(self.pressure)
+                # noinspection PyTypeChecker
                 sfcp = np.broadcast_to(np.max(pressure) + 1e2, expected_shape)
                 self['ps'] = DataArray(sfcp, dims=("latitude", "longitude"))
 
@@ -421,7 +427,7 @@ class SebaDataset(Dataset):
         data = np.ma.transpose(data, axes=coord_order)
 
         # Get filled data if possible and no mask is required. If mask arises
-        # from vertical interpolation it is kept during the analysis.
+        # from vertical interpolation, it is kept during the analysis.
         if not masked and not np.any(data.mask):
             data = data.data
 
@@ -507,7 +513,7 @@ class SebaDataset(Dataset):
         var_units = {name: data[name].attrs.get("units") for name in data.data_vars}
 
         # Integrate over coordinate 'coord_name' using the trapezoidal rule
-        data = data.isel({coord.name: slice(1, -1)})  # exclude the first and last levels
+        # data = data.isel({coord.name: slice(None, None)})  # Exclude the surface levels?
         data = data.sel({coord.name: slice(*coord_range)}).integrate(coord.name)
 
         # Convert to height coordinate if data is pressure levels (hydrostatic approximation)
@@ -604,6 +610,49 @@ class SebaDataset(Dataset):
         # Assign dimension before sorting (cumsum drops coordinates for some reason!)
         return data.assign_coords({dim: coordinate[::-1]}).sortby(dim)
 
+    def field_mean(self, variable=None):
+        """
+        Compute spatial mean over longitude and optionally latitude (with cosine weighting if present).
+
+        Parameters
+        ----------
+        variable : str, optional
+            Name of the variable to average. If None, averages the entire dataset.
+
+        Returns
+        -------
+        xr.DataArray or xr.Dataset
+            Spatially averaged data.
+        """
+        # Select data
+        if variable is None:
+            data = self.copy()
+        elif variable in self:
+            data = self[variable]
+        else:
+            raise ValueError(f"Variable '{variable}' not found in dataset.")
+
+        # Detect latitude and longitude
+        lat = _find_coordinate(data, "latitude", raise_notfound=False)
+        lon = _find_coordinate(data, "longitude", raise_notfound=False)
+
+        spatial_dims = []
+
+        if lon is not None:
+            spatial_dims.append(lon.name)
+
+        if lat is not None:
+            # Latitude weighting if present
+            weights = np.cos(np.deg2rad(data[lat.name]))
+            weights /= weights.sum()
+            data = data.weighted(weights)
+            spatial_dims.append(lat.name)
+
+        if not spatial_dims:
+            raise ValueError("No spatial coordinates (latitude or longitude) found for averaging.")
+
+        return data.mean(dim=spatial_dims)
+
     # ----------------------------------------------------------------------------------------------
     # Functions for visualizing of energy spectra and spectral fluxes
     # ----------------------------------------------------------------------------------------------
@@ -636,7 +685,7 @@ class SebaDataset(Dataset):
         if show: figure.show()
         # render figure and save to file
         if isinstance(fig_name, str):
-            figure.savefig(fig_name, dpi=300)
+            figure.savefig(fig_name, dpi=350)
 
         return figure
 
@@ -676,7 +725,7 @@ def ordered_dims(dataset):
     return [dataset.dims[name] for name in get_coordinate_names(dataset)]
 
 
-def _find_coordinate(ds, name):
+def _find_coordinate(ds, name, raise_notfound=True):
     """
     Find a dimension coordinate in an `xarray.DataArray` that satisfies
     a predicate function.
@@ -699,12 +748,18 @@ def _find_coordinate(ds, name):
 
     candidates = [coord for coord in [ds.coords[n] for n in ds.dims] if predicate(coord)]
 
-    if len(candidates) > 1:
-        msg = 'Multiple {!s} coordinates are not allowed.'
-        raise ValueError(msg.format(name))
+    # if len(candidates) > 1:
+    #     msg = 'Multiple {!s} coordinates are not allowed.'
+    #     raise ValueError(msg.format(name))
 
     if not candidates:
-        raise ValueError('Cannot find a {!s} coordinate'.format(name))
+        if raise_notfound:
+            # variable is not in the dataset or not consistent with the CF conventions
+            msg = f"The coordinate {name} is not in the dataset or is " \
+                  "inconsistent with the CF conventions."
+            raise ValueError(msg)
+        else:
+            return None
 
     return candidates[0]
 
@@ -836,10 +891,10 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         :param dataset: xarray.Dataset or str indicating the path to a dataset.
 
             The dataset must contain the following analysis fields:
-            - The horizontal wind component in the zonal direction      ()
-            - The horizontal wind component in the meridional direction (v)
-            - Height/pressure vertical velocity depending on leveltype (inferred from dataset)
-            - Temperature
+            - u: The horizontal wind component in the zonal direction
+            - v: The horizontal wind component in the meridional direction
+            - w: Height/pressure vertical velocity depending on leveltype (inferred from dataset)
+            - Air Temperature
             - Atmospheric pressure: A 1D array for isobaric levels or a ND array for arbitrary
                vertical coordinate. Data is interpolated to pressure levels before the analysis.
 
@@ -862,15 +917,15 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         SebaDataset object containing the required analysis fields
 
     """
-    # check if input dataset is a path to file
+    # Check if the input dataset is a path to a file
     if isinstance(dataset, str):
-        dataset = open_mfdataset(dataset, combine='by_coords', parallel=False)
+        dataset = open_mfdataset(dataset, combine='by_coords', parallel=True, chunks='auto')
 
     if not isinstance(dataset, Dataset):
         raise TypeError("Input parameter 'dataset' must be xarray.Dataset instance"
                         "or a string containing the path to a netcdf file.")
 
-    # Define list of mandatory variables in dataset. Raise error if missing. Pressure vertical
+    # Define list of mandatory variables in the dataset. Raise error if missing. Pressure vertical
     # velocity 'omega' is estimated from height-based vertical velocity if not present.
     default_variables = ['u_wind', 'v_wind', 'temperature', 'pressure']
 
@@ -892,7 +947,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     variables = merged_variables
 
     # Create a SebaDataset instance for convenience (remove dask chunks)
-    dataset = SebaDataset(dataset).compute()
+    dataset = SebaDataset(dataset)  # .compute()
 
     # rename spatial coordinates to standard names: (level, latitude, longitude)
     new_dims = ("time", "level", "longitude", "latitude")
@@ -923,18 +978,19 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
             raise ValueError(f'Fields must be at least 3D. '
                              f'Variable {name} has {values.ndim} dimensions')
 
-    # Create output dataset with required fields and check units consistency.
+    # Create the output dataset with required fields and check the units' consistency.
     # Find surface data arrays and assign to dataset if given externally
     # Prioritize surface data in the dataset over external ones.
     for name in ['ps', 'ts']:
         surface_var = dataset.find_variable(name, raise_notfound=False)
 
         if surface_var is not None:
+            print(f"Info: Found surface data {surface_var.name} ...")
             surface_data[name] = surface_var
 
     data = SebaDataset(data).add_surface_data(surface_data=surface_data).check_convert_units()
 
-    # Check if vorticity and divergence are present in dataset
+    # Check if vorticity and divergence are present in the dataset
     for variable in ['vorticity', 'divergence']:
 
         values = dataset.find_variable(variable, raise_notfound=False)
@@ -948,11 +1004,11 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     if omega is not None:
         data['omega'] = omega
     else:
-        # Searching for vertical velocity. Raise error if 'w_wind' cannot be found!
-        # This is neither 'omega' nor 'w_wind' are present in dataset.
+        # Searching for vertical velocity. Raise an error if 'w_wind' cannot be found.
+        # This is neither 'omega' nor 'w_wind' are present in the dataset.
         w_wind = dataset.find_variable('w_wind', raise_notfound=True)
 
-        # Checking 'w_wind' units and converting to standard before computing omega.
+        # Checking 'w_wind' units and converting to the standard before computing omega.
         w_wind = data.check_convert_units(w_wind)
 
         print("Info: Computing pressure vertical velocity ...")
@@ -964,7 +1020,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         data.omega.attrs.update({"units": expected_units['omega'],
                                  "standard_name": "pressure velocity"})
 
-    # Check if geopotential is present in dataset and add to data before interpolation
+    # Check if geopotential is present in the dataset and add to data before interpolation
     phi = dataset.find_variable('geopotential', raise_notfound=False)
 
     if phi is not None:
@@ -982,8 +1038,8 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
     # north-to-south and vertical levels starting at the surface.
     data = data.interpolate_levels(p_levels).sortby(["level", 'latitude'], ascending=False)
 
-    # Computing geopotential if not found in dataset. This step must be done with data in
-    # pressure coordinates sorted from the surface up.
+    # Computing geopotential if is not found in dataset.
+    # This step must be done with data in pressure coordinates sorted from the surface up.
     if 'geopotential' not in data:
         # reshape temperature to pass it to fortran subroutine
         target_dims = ('time', 'latitude', 'longitude', 'level')
@@ -1004,7 +1060,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         sfct = np.transpose(data.ts.values, axes=coord_order).reshape(data.dims["time"], -1)
 
         print("Info: Get surface elevation ...")
-        # get surface elevation for the given grid. Using interpolated data
+        # Get surface elevation for the given grid using interpolated data
         # from global dataset if it does not exist already.
         sfch = get_surface_elevation(data.latitude, data.longitude,
                                      file_name=surface_data.get('hs'),
@@ -1018,16 +1074,15 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
         data['geopotential'] = phi.transpose("time", "level", "latitude", "longitude")
         data['geopotential'].attrs['units'] = expected_units['geopotential']
 
-    # Inspect grid type based on the latitude sampling and interpolate if required
-    if data.latitude.size != data.longitude.size // 2:
+    try:  # Inspect grid-type based on the latitude sampling and interpolate if required
+        gridtype, *_ = inspect_gridtype(data.latitude)
+    except:
         gridtype = 'gaussian'
 
         print(f'Info: Interpolating to {gridtype} grid ...')
         latitude, _ = gaussian_lats_wts(data.longitude.size // 2)
 
         data = data.interp(latitude=latitude)
-    else:
-        gridtype, *_ = inspect_gridtype(data.latitude)
 
     data.attrs.update(gridtype=gridtype)
 
@@ -1038,7 +1093,7 @@ def parse_dataset(dataset, variables=None, p_levels=None, **surface_data):
 
 def interpolate_pressure_levels(dataset, p_levels=None, fill_value=None):
     """
-    Interpolate all variables in dataset to pressure levels.
+    Interpolate all variables in 'dataset' to pressure levels.
 
     Parameters
     ----------
@@ -1048,7 +1103,7 @@ def interpolate_pressure_levels(dataset, p_levels=None, fill_value=None):
     p_levels : list, array, optional
         The target pressure levels for the interpolation in [Pa].
         If not given, it is created from the number of vertical
-        levels of the variables in dataset and the pressure field.
+        levels in dataset and the pressure field.
 
     fill_value : float, str
     Returns
@@ -1066,9 +1121,9 @@ def interpolate_pressure_levels(dataset, p_levels=None, fill_value=None):
     This function checks if the input dataset is on pressure levels by examining its coordinate
     variables. If the pressure coordinate variable is not present, or if it is not consistent
     with CF conventions (standard name, units), this function assumes that the dataset is not on
-    pressure levels and attempts to interpolate all variables to pressure levels using linear
-    interpolation. If the pressure field is not present, or it is consistent with CF convention
-    raises a `ValueError`.
+    pressure levels and attempts to interpolate all variables using linear interpolation.
+    If the pressure field is not present, or it is consistent with CF convention raises a
+    `ValueError`.
     """
 
     if p_levels is not None:
@@ -1081,15 +1136,15 @@ def interpolate_pressure_levels(dataset, p_levels=None, fill_value=None):
     # find vertical coordinate
     levels = _find_coordinate(dataset, "level")
 
-    # Finding pressure array in dataset. Silence error if not found (try to use coordinate)
+    # Finding the pressure data in the dataset. Silence error if not found (try to use coordinate)
     pressure = _find_variable(dataset, 'pressure', raise_notfound=False)
 
     # If the vertical coordinate is consistent with pressure standards, then no interpolation is
-    # needed: Data is already in pressure coordinates; unless new pressure levels are specified by
-    # p_levels.
+    # needed: e.g., the data is already in pressure coordinates; unless new pressure levels are
+    # specified by p_levels.
     if is_standard(levels, "pressure"):
 
-        # data is already on pressure levels but different analysis levels are required
+        # data is already on pressure levels, but different analysis levels are required
         if p_levels is not None:
             print("Info: Interpolating data to {} isobaric levels ...".format(p_levels.size))
 
@@ -1207,7 +1262,7 @@ def get_surface_elevation(latitude, longitude, file_name=None, smooth=False):
     remap = True  # assume remap is needed
     ds = 0
     if os.path.exists(expected_file):
-        print("Info: Using external topography file")
+        print(f"Info: Using external topography file: {expected_file}")
 
         # load global elevation dataset
         ds = open_dataset(expected_file)
@@ -1236,7 +1291,7 @@ def get_surface_elevation(latitude, longitude, file_name=None, smooth=False):
         ds.to_netcdf(expected_file)
 
     if smooth:  # generate a smoothed heavy-side function
-        # Calculate normalised cut-off frequencies for zonal and meridional directions:
+        # Calculate the normalised cut-off frequencies for zonal and meridional directions:
         resolution = lambda_from_deg(longitude.size)  # grid spacing at the Equator
         cutoff_scale = lambda_from_deg(200)  # wavenumber 200 (cut off scale ~200 km)
 
@@ -1253,6 +1308,166 @@ def get_surface_elevation(latitude, longitude, file_name=None, smooth=False):
         ds.elevation.values = elevation.squeeze()
 
     # Return the DataArray with the surface elevation.
-    # clipping is necessary to remove overshoots
     # noinspection PyUnboundLocalVariable
     return ds.elevation.clip(0.0, None)
+
+
+def lombscargle_periodogram(dataset, variables=None, dim='time', nyquist_factor=1.0,
+                            samples_per_peak=5):
+    """
+    Calculate periodograms for different variables in a xarray.Dataset using Lomb-Scargle method.
+
+    Parameters:
+    - dataset (xr.Dataset): The input dataset.
+    - variables (list of str): List of variable names to calculate periodograms for.
+                               If None, all variables in the dataset will be used.
+    - axis (str): The name of the axis along which to calculate the periodogram. Default is 'time'.
+
+    - nyquist_factor (float): Controls the maximum frequency to evaluate the periodogram.
+                              Default is 1.0.
+    - samples_per_peak (float): Controls the maximum number of samples to evaluate the periodogram.
+
+    Returns:
+    - periodograms_ds (xr.Dataset): A dataset containing periodograms with 'freq' as a coordinate.
+    """
+    if variables is None:
+        variables = list(dataset.data_vars)
+
+    # Compute the frequencies used for Lomb-Scargle
+    time_coord = dataset[dim]
+
+    # Convert time coordinate to hours
+    time_values = (time_coord - time_coord[0]) / pd.Timedelta(hours=1)
+
+    minimum_frequency = 2.0 / np.max(time_values)
+    maximum_frequency = nyquist_factor * nyquist_frequency(time_values)
+
+    num_frequencies = samples_per_peak * int(maximum_frequency / minimum_frequency)
+    num_frequencies = max(num_frequencies, len(time_values))
+
+    freq_grid = np.linspace(minimum_frequency, maximum_frequency, num_frequencies)
+
+    def lomb_scargle(data):
+        mask = ~np.isnan(data)
+
+        # number of valid points should be greater than number of samples
+        if np.count_nonzero(mask) < max(2, samples_per_peak):
+            return np.full_like(freq_grid, np.nan)
+
+        # compute the Lomb-Scargle periodogram for predefined frequencies
+        ls = LombScargle(time_values[mask], data[mask], normalization='psd', nterms=1)
+        return ls.power(frequency=freq_grid, assume_regular_frequency=True, method='fast')
+
+    periodogram = {}
+    for var in variables:
+        data = dataset[var]
+
+        if dim not in data.dims:
+            continue
+
+        # Use xr.apply_ufunc to apply Lomb-Scargle along the specified axis
+        periodogram[var] = apply_ufunc(
+            lomb_scargle, data,
+            input_core_dims=[[dim]],
+            output_core_dims=[['freq']],
+            vectorize=True, dask='parallelized',
+            output_dtypes=[float],
+            dask_gufunc_kwargs={
+                'allow_rechunk': True,
+                'output_sizes': {'freq': freq_grid.size}
+            }
+        )
+
+        # change variable attributes
+        units = periodogram[var].attrs.get('units')
+        if units:
+            periodogram[var].attrs['units'] = str((_parse_units(units) ** 2).units)
+
+        for attr_name in ['standard_name', 'long_name']:
+            if attr_name in periodogram[var].attrs:
+                periodogram[var].attrs[attr_name] += ' spectrum'
+
+    # Create dataset and ass frequency coordinate
+    periodogram = Dataset(periodogram).assign_coords(freq=freq_grid)
+
+    # Add units attribute to the frequency coordinate
+    periodogram['freq'].attrs['units'] = '1 / hour'
+
+    return periodogram.transpose('freq', ...)
+
+
+def lowpass_filter(dataset, variables=None, dim='time', cutoff_period=None, remove_na=True):
+    """
+
+    :param dataset:
+    :param variables:
+    :param dim:
+    :param cutoff_period:
+    :param remove_na:
+    :return:
+    """
+    if variables is None:
+        variables = list(dataset.data_vars)
+
+    # removing nan values via linear interpolation
+    if remove_na:
+        dataset = dataset.chunk(dict(time=-1)).interpolate_na(dim=dim, method='linear')
+
+    # Compute the frequencies used for Lomb-Scargle
+    time_coord = dataset[dim]
+
+    # Convert time coordinate to hours
+    time_values = (time_coord - time_coord[0]) / pd.Timedelta(hours=1)
+
+    # Check for irregular time steps
+    time_diff = np.diff(time_values)
+    if not np.allclose(time_diff, time_diff[0], rtol=1e-5):
+        warnings.warn("Time axis contains irregular intervals, which may affect filtering.")
+
+    # Calculate normalised cut-off frequencies for zonal and meridional directions:
+    sampling_frequency = 1.0 / time_diff.min()
+
+    # Normalized spatial cut-off frequency (cutoff_frequency / sampling_frequency)
+    if cutoff_period is not None:
+        # convert period to hours
+        if isinstance(cutoff_period, (int, float)):
+            cutoff_period = pd.Timedelta(hours=cutoff_period)
+        elif isinstance(cutoff_period, str):
+            cutoff_period = pd.Timedelta(cutoff_period)
+        else:
+            raise ValueError("Unknown format for 'cutoff_period'")
+
+        # convert to fraction of an hour
+        cutoff_period /= pd.Timedelta(hours=1.0)
+    else:
+        return dataset[variables].mean(dim=dim)
+
+    # define cut-off frequency
+    cutoff_freq = 1.0 / (cutoff_period or 1.0)
+
+    # define lanczos filter for 1D data
+    lanczos_1d = partial(lanczos_lowpass_1d,
+                         cutoff_frequency=cutoff_freq / 2.0 / np.pi,
+                         sampling_frequency=sampling_frequency)
+
+    filtered_dataset = {}
+    for var in variables:
+        data = dataset[var]
+
+        if dim not in data.dims:
+            continue
+
+        # Use xr.apply_ufunc to apply Lomb-Scargle along the specified axis
+        filtered_dataset[var] = apply_ufunc(
+            lanczos_1d, data.chunk(dict(time=-1)),
+            input_core_dims=[[dim]], output_core_dims=[[dim]],
+            vectorize=True, dask='parallelized',
+            output_dtypes=[float],
+            dask_gufunc_kwargs={
+                'allow_rechunk': True,
+                'output_sizes': {'time': time_values.size}
+            }
+        )
+
+    # Create dataset and ass frequency coordinate
+    return Dataset(filtered_dataset).transpose('time', ...)

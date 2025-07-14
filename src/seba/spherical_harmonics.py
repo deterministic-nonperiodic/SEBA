@@ -1,20 +1,19 @@
 import functools
-
 import numpy as np
 import shtns
 
-from constants import earth_radius
-from tools import Parallel, delayed, broadcast_1dto, cpu_count
+from .constants import earth_radius
+from .tools import Parallel, delayed, broadcast_1dto, cpu_count
 
 # private variables for class Spharmt
 _private_vars = ['nlon', 'nlat', 'gridtype', 'rsphere']
 
 
-def iterate_shts(func, axis=-1):
+def iterate_shts(func):
     """
-    Decorator for handling arrays' IO dimensions for calling SHTns' spectral functions.
-    Wrapper for running _shtns functions along dimension specified by axis. Input arrays
-    can be either in spectral or grid-point space.
+    Decorator for applying shtns functions along a sample dimension (e.g., time or levels).
+    Input arrays must be broadcast to a consistent shape. The sample axis is assumed to be the
+    first dimension that differs from grid size (nlat, nlon, or nlm).
 
     Parameters:
     -----------
@@ -23,31 +22,36 @@ def iterate_shts(func, axis=-1):
     """
 
     @functools.wraps(func)
-    def iterated_sht(*args, **kwargs):
-        # self object passed as first argument
-        cls, *data = args
+    def iterated_sht(cls, *data, axis=-1, **kwargs):
+        # Ensure broadcast-compatible arrays
+        data = np.broadcast_arrays(*data)
 
-        # Compact args to a single array (input arrays must be broadcastable)
-        # Infer mask when passing masked arrays and fill with zeros preserving dtype.
-        data = np.ma.fix_invalid(data).filled(fill_value=0.0)
+        # Convert masked or NaN values to zero
+        data = [np.nan_to_num(d, nan=0.0) for d in data]
 
-        # check data type (shtns real arrays must be of type float64)
-        if np.isrealobj(data):
-            data = data.astype(np.float64)
+        # Ensure float64 for shtns compatibility
+        data = [d.astype(np.complex128 if np.iscomplexobj(d) else np.float64, copy=False)
+                for d in data]
 
-        # expand sample dimension if needed
-        if data.shape[axis] in (cls.nlon, cls.nlm):
-            data = np.expand_dims(data, axis)
+        # Infer sample axis: first axis not matching grid/spectral size
+        shape = data[0].shape
+        if shape[axis] in (cls.nlon, cls.nlm):
+            data = [np.expand_dims(d, axis=axis) for d in data]
 
-        # Apply SHTns' functions along the sample dimension (test parallel loop)
-        # data = [func(cls, *slice_, **kwargs) for slice_ in np.moveaxis(data, axis, 0)]
-        with Parallel(n_jobs=cls.jobs, backend="threading") as pool:
-            data = np.stack(pool(
-                delayed(func)(cls, *slice_, **kwargs)
-                for slice_ in np.moveaxis(data, axis, 0)
-            ), axis=axis)
+        n_tasks = data[0].shape[axis]
+        use_parallel = cls.jobs > 1 and n_tasks > 2
 
-        return data.squeeze() if data.shape[axis] == 1 else data
+        mover = lambda x: np.moveaxis(x, axis, 0)
+        mover_back = lambda x: np.moveaxis(x, 0, axis)
+
+        if use_parallel:
+            with Parallel(n_jobs=cls.jobs, backend="threading") as pool:
+                out = pool(delayed(func)(cls, *slices, **kwargs) for slices in
+                           zip(*(mover(d) for d in data)))
+        else:
+            out = [func(cls, *slices, **kwargs) for slices in zip(*(mover(d) for d in data))]
+
+        return mover_back(np.stack(out))
 
     return iterated_sht
 
@@ -83,14 +87,14 @@ class Spharmt(object):
         :param nlat:  number of latitude points
 
         :param ntrunc: int, optional, default None
-            Triangular truncation for the spherical harmonic transforms. If truncation is not
-            specified then 'truncation=nlat-1' is used.
+            Triangular truncation for the spherical harmonic transforms.
+            If truncation is not specified, then 'truncation=nlat-1' is used.
         :param gridtype: grid type
         """
         # checking parameters
         if rsphere is None:
             self.rsphere = earth_radius
-        elif type(rsphere) == int or type(rsphere) == float:
+        elif type(rsphere) is int or type(rsphere) is float:
             self.rsphere = abs(rsphere)
         else:
             raise ValueError(f'Illegal value of rsphere {rsphere} - must be positive')
@@ -118,18 +122,18 @@ class Spharmt(object):
         else:
             self.gridtype = gridtype.lower()
 
-        # Initialize 4pi-normalized harmonics with no CS phase shift (consistent with SPHEREPACK)
+        # Initialize 4 pi-normalized harmonics with no CS phase shift (consistent with SPHEREPACK)
         # No normalization needed to recover the global mean/covariance from the power spectrum.
         # Alternatives are: sht_orthonormal or sht_schmidt.
-        self.jobs = int(cpu_count() // 2)
+        self.jobs = cpu_count()  # int(cpu_count() // 2)
 
-        self.sht = shtns.sht(ntrunc, ntrunc, 1,
+        self.sht = shtns.sht(ntrunc, ntrunc, mres=1,
                              norm=shtns.sht_fourpi + shtns.SHT_NO_CS_PHASE,
                              nthreads=self.jobs)
 
         # Polar optimization threshold: values of Legendre Polynomials below that threshold
         # are neglected (for high m)
-        polar_opt = 1e-6  # aggressive optimization but accuracy is still high enough
+        polar_opt = 1e-4  # aggressive optimization but accuracy is still high enough
         use_gpu = shtns.SHT_ALLOW_GPU  # perform transforms on GPUs if available
 
         if self.gridtype == 'regular':
@@ -191,7 +195,7 @@ class Spharmt(object):
         return self.synthesis(scalar_spec)
 
     def getpsichi(self, u, v):
-        """compute streamfunction and velocity potential from horizontal wind"""
+        """compute stream function and velocity potential from horizontal wind"""
         psi_spec, chi_spec = self.analysis(u, v)
 
         psi_grid = self.rsphere * self.synthesis(psi_spec)
@@ -200,13 +204,13 @@ class Spharmt(object):
         return psi_grid, chi_grid
 
     def getvrtdivspec(self, u, v):
-        """compute spectral coeffs of vorticity and divergence from wind vector"""
+        """compute spectral coefficients of vorticity and divergence from wind vector"""
         psi_spec, chi_spec = self.analysis(u, v)
 
         return self.laplacian(psi_spec), self.laplacian(chi_spec)
 
     def getuv(self, vrt_spec, div_spec):
-        """compute wind vector from spectral coeffs of vorticity and divergence"""
+        """compute wind vector from spectral coefficients of vorticity and divergence"""
 
         psi_spec = self.inverse_laplacian(vrt_spec)
         chi_spec = self.inverse_laplacian(div_spec)
@@ -214,8 +218,7 @@ class Spharmt(object):
         return self.synthesis(psi_spec, chi_spec)
 
     def getgrad(self, scalar):
-        """ Compute the zonal and meridional components of the gradient
-            of a scalar function on the sphere.
+        """ Compute the zonal and meridional components scalar's function gradient on the sphere.
         """
 
         # compute spectral coefficients
@@ -227,7 +230,7 @@ class Spharmt(object):
         return u / self.rsphere, - v / self.rsphere
 
     def getuv_from_stream(self, psi_spec):
-        """Compute wind vector from spectral coefficients of stream function"""
+        """Compute wind vector from spectral coefficients of stream-function"""
         u, v = self.synth_grad(psi_spec)
 
         return u / self.rsphere, v / self.rsphere

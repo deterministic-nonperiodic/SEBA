@@ -1,0 +1,24 @@
+name: seba-env
+channels:
+  - conda-forge
+dependencies:
+  - python
+  - numpy
+  - xarray
+  - scipy
+  - matplotlib
+  - pint
+  - shtns
+  - h5py
+  - netcdf4
+  - pandas
+  - dask
+  - pooch
+  - joblib
+  - cartopy
+  - shapely
+  - pyproj
+  - cmasher
+  - alphashape
+  - geopy
+  - astropy

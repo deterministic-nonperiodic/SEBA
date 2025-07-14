@@ -842,7 +842,6 @@ subroutine surface_temperature(sfct, sfcp, temp, pres, nt, ns, np)
 
             ks = minloc(abs(pres - sfcp(j)), mask = mask, dim = 1)
             ke = min(ks + 1, np)
-            ! nn = ke + 1 - ks
 
             ! linear extrapolation
             if (ks == ke) then
@@ -851,8 +850,6 @@ subroutine surface_temperature(sfct, sfcp, temp, pres, nt, ns, np)
                 increment = (sfcp(j) - pres(ks)) / (pres(ke) - pres(ks))
                 sfct(i, j) = temp(i, j, ks) + (temp(i, j, ke) - temp(i, j, ks)) * increment
             end if
-
-            !            call lagrange_intp(sfct(i, j), temp(i, j, ks:ke), sfcp(j), pres(ks:ke), nn)
         end do
     end do
 

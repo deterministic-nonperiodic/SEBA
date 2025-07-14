@@ -1,0 +1,14 @@
+Metadata-Version: 2.1
+Name: seba
+Version: 0.1.0
+Summary: Spectral Energy Budget of the Atmosphere
+Author: Yanmichel A. Morfa
+Author-email: morfa@iap-kborn.de
+License: MIT
+License-File: LICENSE.md
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: xarray
+Requires-Dist: matplotlib
+Requires-Dist: pint
+Requires-Dist: shtns

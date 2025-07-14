@@ -4,19 +4,19 @@ import numpy as np
 from numpy.core.numeric import normalize_axis_index
 from xarray import IndexVariable, DataArray
 
-import constants as cn
-from fortran_libs import numeric_tools
-from io_tools import parse_dataset, SebaDataset
-from kinematics import coriolis_parameter
-from spectral_analysis import kappa_from_deg
-from spherical_harmonics import Spharmt
-from thermodynamics import exner_function, potential_temperature
-from thermodynamics import lorenz_parameter, vertical_velocity
-from tools import prepare_data, transform_io, rotate_vector, broadcast_1dto, gradient_1d
+from . import numeric_tools
+from . import constants as cn
+from .io_tools import parse_dataset, SebaDataset
+from .kinematics import coriolis_parameter
+from .spectral_analysis import kappa_from_deg
+from .spherical_harmonics import Spharmt
+from .thermodynamics import exner_function, potential_temperature
+from .thermodynamics import lorenz_parameter, vertical_velocity
+from .tools import prepare_data, transform_io, rotate_vector, broadcast_1dto, gradient_1d
 
 # declare global read-only variables
 _global_attrs = {'source': 'git@github.com:deterministic-nonperiodic/SEBA.git',
-                 'institution': 'Leibniz Institute of Atmospheric Physics (IAP)',
+                 'institution': 'Leibniz Institute for Atmospheric Physics (IAP)',
                  'title': 'Spectral Energy Budget of the Atmosphere',
                  'history': date.today().strftime('Created on %c'),
                  'references': '', 'Conventions': 'CF-1.6'}
@@ -34,9 +34,9 @@ class EnergyBudget:
         fluxes introduced by Li et al. (2023). The Spherical Harmonic Transforms are carried out
         with the high-performance SHTns C library. The analysis supports data sampled on a
         regular (equally spaced in longitude and latitude) or gaussian (equally spaced in
-        longitude, latitudes located at roots of ordinary Legendre polynomial of degree nlat)
+        longitude, latitudes located at roots of ordinary Legendre polynomial with degree nlat)
         horizontal grids. The vertical grid can be arbitrary; if data is not sampled on
-        pressure levels it is interpolated to isobaric levels before the analysis.
+        pressure levels, it is interpolated to isobaric levels before the analysis.
 
         References:
         -----------
@@ -84,7 +84,7 @@ class EnergyBudget:
 
         :param truncation: int, optional, default None
             Triangular truncation for the spherical harmonic transforms. If truncation is not
-            specified then 'truncation=nlat-1' is used, where 'nlat' is the number of
+            specified, then 'truncation=nlat-1' is used, where 'nlat' is the number of
             latitude points.
 
         :param rsphere: float, optional,
@@ -96,7 +96,8 @@ class EnergyBudget:
         """
 
         # Parsing input dataset to search for required analysis fields.
-        data = parse_dataset(dataset, variables=variables, p_levels=p_levels, ps=ps, hs=hs)
+        self.p_levels = p_levels
+        data = parse_dataset(dataset, variables=variables, p_levels=self.p_levels, ps=ps, hs=hs)
 
         # Get the size of every dimension. The analysis is performed over 3D slices of data
         # (lat, lon, pressure) by simply iterating over the temporal axis.
@@ -114,7 +115,7 @@ class EnergyBudget:
         scale = - self.sphere.rsphere * self.sphere.inv_lap
         self.vector_scale = broadcast_1dto(scale, (self.sphere.nlm, self.samples, self.nlevels))
 
-        # Create dictionary with name/coordinate pairs (ensure dimension order is preserved)
+        # Create a dictionary with name/coordinate pairs (ensure dimension order is preserved)
         # These coordinates are used to export data as SebaDataset
         self.gp_coords = data.coordinates_by_names()
 
@@ -138,14 +139,14 @@ class EnergyBudget:
         # get vertical velocity
         self.omega = data.get_field('omega', masked=True)
 
-        # create wind array from masked wind components (preserving mask)
+        # create a wind array from masked wind components (preserving mask)
         self.wind = np.ma.stack((data.get_field('u_wind', masked=True),
                                  data.get_field('v_wind', masked=True)))
 
         # Get geopotential field
         self.phi = data.get_field('geopotential', masked=False)
 
-        # compute thermodynamic quantities. Using unmasked temperature field if possible
+        # Compute thermodynamic quantities using unmasked temperature field if possible
         # Using masked temperature causes issues computing the spectral transfers of APE,
         # as well as neutral stratification close to the surface resulting in singular APE.
         self.temperature = data.get_field('temperature', masked=False)
@@ -159,11 +160,11 @@ class EnergyBudget:
         self.mask = self.omega.mask if hasattr(self.omega, 'mask') else np.zeros_like(self.omega)
         self.mask = self.mask.astype(bool)
 
-        # Compute fraction of valid points at every level for Spectral Mode-Coupling Correction
+        # Compute the fraction of valid points at every level for Spectral Mode-Coupling Correction
         # same as the power-spectrum of the mask integrated along spherical harmonic degree. This
-        # approximation is not accurate for big masked regions, the proper approach is to
+        # approximation is not accurate for big masked regions. The proper approach is to
         # compute the inverse of the Mode-Coupling matrix for many realizations of masked
-        # power spectra (e.g., Cooray et al. 2012), however this is computationally too expensive!
+        # power spectra (e.g., Cooray et al. 2012), however, this is computationally too expensive!
         self.beta_correction = 1.0 / self.representative_mean((~self.mask).astype(float))
 
         # ------------------------------------------------------------------------------------------
@@ -199,12 +200,12 @@ class EnergyBudget:
         self.exner = exner_function(self.pressure)
         self.theta = potential_temperature(self.pressure, self.temperature)
 
-        # Compute global average of potential temperature on pressure surfaces
+        # Compute the global average of potential temperature on pressure surfaces
         # above the ground (representative mean) and the perturbations.
         self.theta_avg, self.theta_prime = self._split_mean_perturbation(self.theta)
 
-        # Lorenz's stability parameter 'ganma' used to convert from temperature variance to APE
-        self.ganma = lorenz_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
+        # Lorenz's stability parameter 'gamma' used to convert from temperature variance to APE
+        self.gamma = lorenz_parameter(self.pressure, self.theta_avg, vertical_axis=-1)
 
     # ----------------------------------------------------------------------------------------------
     # Helper function for adding metadata to fields and convert to DataArray
@@ -295,7 +296,7 @@ class EnergyBudget:
         """
         Total available potential energy after Augier and Lindborg (2013), Eq.10
         """
-        ape = self.ganma * self._scalar_spectrum(self.theta_prime) / 2.0
+        ape = self.gamma * self._scalar_spectrum(self.theta_prime) / 2.0
 
         ape = self.add_field(ape, 'ape', cumulative_flux=False,
                              gridtype='spectral', units='m**2 s**-2',
@@ -346,10 +347,13 @@ class EnergyBudget:
         pi_lke = self.coriolis_linear_transfer()
         pi_nke = pi_hke - pi_lke
 
+        # Non-conservative fluxes
+        # j = self.non_conservative_term()
+
         # Create dataset to export nonlinear fluxes
         fluxes = SebaDataset()
 
-        # add some relevant info to dataset
+        # Add some relevant information to the results' dataset
         fluxes.attrs.update(_global_attrs)
 
         # add data and metadata
@@ -412,6 +416,8 @@ class EnergyBudget:
         vf_ape = self.ape_vertical_flux()
 
         vfd_dke = self.vertical_gradient(vf_dke, order=2)
+        # vfd_dke = self.geopotential_flux() + self.dke_turbulent_flux_divergence() - c_ape_dke
+
         vfd_ape = self.vertical_gradient(vf_ape, order=2)
 
         # add data and metadata to vertical fluxes
@@ -459,7 +465,7 @@ class EnergyBudget:
 
         return fluxes
 
-    def get_ke_tendency(self, tendency, name=None):
+    def get_hke_tendency(self, tendency, wind=None, name=None):
         r"""
             Compute kinetic energy spectral transfer from parametrized
             or explicit horizontal wind tendencies.
@@ -482,6 +488,9 @@ class EnergyBudget:
         """
         da_flag = isinstance(tendency, DataArray)
 
+        if wind is None:
+            wind = self.wind
+
         tendency_name = name
         if da_flag:
             if tendency_name is None:
@@ -492,22 +501,22 @@ class EnergyBudget:
         else:
             tendency = np.asarray(tendency)
 
-            if tendency.shape != self.wind.shape:
+            if tendency.shape != wind.shape:
                 raise ValueError(f"The shape of 'tendency' array must be "
                                  f"consistent with the initialized wind."
-                                 f"Expecting {self.wind.shape}, but got {tendency.shape}")
+                                 f"Expecting {wind.shape}, but got {tendency.shape}")
 
-        ke_tendency = self._vector_spectrum(self.wind, tendency)
+        # Calculate the HKE tendency from the wind tendency.
+        ke_tendency = self._vector_spectrum(wind, tendency)
 
-        if da_flag:
-            ke_tendency = self.add_field(ke_tendency, tendency_name,
-                                         gridtype='spectral', units='watt / kilogram',
-                                         standard_name=tendency_name)
+        ke_tendency = self.add_field(ke_tendency, tendency_name,
+                                     gridtype='spectral', units='watt / kilogram',
+                                     standard_name=tendency_name)
         return ke_tendency
 
     def get_ape_tendency(self, tendency, name=None):
         r"""
-            Compute Available potential energy tendency from
+            Compute the Available potential energy tendency from
             parametrized or explicit temperature tendencies.
 
             .. math:: {\partial}_{t}E_{A}(l)= (\theta^{\prime}, \partial_{t}\theta^{\prime})_{l}
@@ -541,18 +550,17 @@ class EnergyBudget:
                                  f"consistent with the initialized temperature."
                                  f"Expecting {self.wind.shape}, but got {tendency.shape}")
 
-        # remove representative mean from total temperature tendency
+        # remove representative mean from the total temperature tendency.
         # tendency -= self._representative_mean(tendency)
 
         # convert temperature tendency to potential temperature tendency
-        theta_tendency = tendency / self.exner / cn.cp  # rate of production of internal energy
+        theta_tendency = tendency / self.exner / cn.cp  # production rate of internal energy
 
-        ape_tendency = self.ganma * self._scalar_spectrum(self.theta_prime, theta_tendency)
+        ape_tendency = self.gamma * self._scalar_spectrum(self.theta_prime, theta_tendency)
 
-        if da_flag:
-            ape_tendency = self.add_field(ape_tendency, tendency_name,
-                                          gridtype='spectral', units='watt / kilogram',
-                                          standard_name=tendency_name)
+        ape_tendency = self.add_field(ape_tendency, tendency_name,
+                                      gridtype='spectral', units='watt / kilogram',
+                                      standard_name=tendency_name)
 
         return ape_tendency
 
@@ -563,7 +571,7 @@ class EnergyBudget:
         irrotational and non-divergent components.
 
         Returns:
-            upsi, vpsi, uchi, vchi:
+            rot_wind, div_wind:
             zonal and meridional components of the rotational and divergent winds.
         """
 
@@ -573,17 +581,20 @@ class EnergyBudget:
         # Compute non-divergent components from velocity potential
         rot_wind = rotate_vector(self.horizontal_gradient(psi_grid))
 
-        # Compute non-rotational components from streamfunction
+        # Compute non-rotational components from the streamfunction
         div_wind = self.horizontal_gradient(chi_grid)
 
         return rot_wind, div_wind
 
-    def vorticity_divergence(self):
+    def vorticity_divergence(self, wind=None):
         """
         Computes the vertical vorticity and horizontal divergence
         """
         # Spectral coefficients of vertical vorticity and horizontal wind divergence.
-        vrt_spc, div_spc = self._spectral_vrtdiv(self.wind)
+        if wind is None:
+            wind = self.wind
+
+        vrt_spc, div_spc = self._spectral_vrtdiv(wind)
 
         # transform back to grid-point space preserving mask
         vrt = self._inverse_transform(vrt_spc, mask=self.mask)
@@ -691,7 +702,7 @@ class EnergyBudget:
         ape_transfer = - self._scalar_spectrum(self.theta_prime, theta_advection)
         ape_transfer += self._scalar_spectrum(theta_gradient, self.omega * self.theta_prime)
 
-        return self.ganma * ape_transfer / 2.0
+        return self.gamma * ape_transfer / 2.0
 
     def ape_nonlinear_transfer_1(self):
         """
@@ -718,7 +729,7 @@ class EnergyBudget:
         ape_transfer += self._scalar_spectrum(theta_gradient, theta_omega) / 2.0
         ape_transfer += self._scalar_spectrum(self.theta_prime, theta_omega_gradient) / 2.0
 
-        return self.ganma * ape_transfer
+        return self.gamma * ape_transfer
 
     def geopotential_flux(self):
         # The geopotential flux should equal the pressure flux plus the APE to DKE conversion
@@ -742,15 +753,21 @@ class EnergyBudget:
         # Total APE vertical flux (Eq. A10)
         ape_flux = self._scalar_spectrum(self.theta_prime, self.omega * self.theta_prime)
 
-        return - self.ganma * ape_flux / 2.0
+        return - self.gamma * ape_flux / 2.0
 
     def dke_vertical_flux_divergence(self):
         # Vertical flux divergence of divergent kinetic energy.
-        # This term enters directly the energy budget formulation.
+        # This term enters directly into the energy budget formulation.
         return self.vertical_gradient(self.dke_vertical_flux(), order=2)
 
     def dke_turbulent_flux_divergence(self):
-        return self.vertical_gradient(self.dke_turbulent_flux(), order=2)
+        # Avoid vertical gradients of spectral coefficients
+        # return self.vertical_gradient(self.dke_turbulent_flux(), order=2)
+        dke_turb_flux = self._vector_spectrum(self.wind_shear, self.omega * self.wind)
+        dke_turb_flux += self._vector_spectrum(self.wind,
+                                               self.omega * self.wind_shear - self.wind * self.div)
+
+        return - dke_turb_flux / 2.0
 
     def ape_vertical_flux_divergence(self):
         # Vertical flux divergence of Available potential energy.
@@ -816,7 +833,7 @@ class EnergyBudget:
 
     def non_conservative_term(self):
         # non-conservative term J(p) in Eq. A11
-        dlog_gamma = self.vertical_gradient(np.log(self.ganma))
+        dlog_gamma = self.vertical_gradient(np.log(self.gamma))
 
         heat_trans = self._scalar_spectrum(self.theta_prime, self.omega * self.theta_prime)
 
@@ -858,7 +875,7 @@ class EnergyBudget:
     @transform_io
     def streamfunction_potential(self, vector):
         """
-            Computes the streamfunction and potential of a vector field on the sphere.
+            Computes the stream function and potential of a vector field on the sphere.
         """
         return self.sphere.getpsichi(*vector)
 
@@ -883,8 +900,8 @@ class EnergyBudget:
     def vertical_gradient(self, scalar, order=2):
         """
             Computes vertical gradient (∂φ/∂p) of a scalar function (φ) in pressure coordinates.
-            Using high-order compact finite difference scheme (Lele 1992). Contiguous masked
-            regions are excluded from the calculation and the original scalar mask is recovered.
+            Using a high-order compact finite difference scheme (Lele 1992). Contiguous masked
+            regions are excluded from the calculation, and the original scalar mask is recovered.
         """
         return gradient_1d(scalar, self.pressure, axis=-1, order=order)
 
@@ -994,7 +1011,7 @@ class EnergyBudget:
     def cumulative_spectrum(self, cs_lm, cumulative_flux=False, mask_correction=True, axis=0):
         """Accumulates over spherical harmonic order and returns
            spectrum as a function of spherical harmonic degree. The resulting spectrum can be
-           converted to cumulative flux if required, i.e, adding the values corresponding to
+           converted to cumulative flux if required, i.e., adding the values corresponding to
            all wavenumbers n >= l for each l.
 
         Signature
@@ -1032,7 +1049,7 @@ class EnergyBudget:
         # Compute spectrum as a function of spherical harmonic degree (total wavenumber).
         spectrum = numeric_tools.cumulative_spectrum(cs_lm, truncation, flux_form=cumulative_flux)
 
-        # back to original shape
+        # back to the original shape
         spectrum = np.moveaxis(spectrum.reshape([truncation] + clm_shape), 0, axis)
 
         # Spectral Mode-Coupling Correction for masked regions (Cooray et al. 2012)
@@ -1046,7 +1063,7 @@ class EnergyBudget:
         Computes the global weighted average of a scalar function on the sphere.
         The weights are initialized according to 'grid_type': for grid_type='gaussian' we use
         gaussian quadrature weights. If grid_type='regular' the weights are defined as the
-        cosine of latitude. If the grid is regular and latitude points are not available
+        cosine of latitude. If the grid is regular and latitude points are not available,
         it returns global mean with weights = 1 / nlat (not recommended).
 
         :param scalar: nd-array with data to be averaged
@@ -1059,7 +1076,7 @@ class EnergyBudget:
 
         # check array dimensions
         if scalar.shape[lat_axis] != self.nlat:
-            raise ValueError(f"Scalar size along axis must be nlat."
+            raise ValueError(f"Vector size along axis must be nlat."
                              f"Expected {self.nlat} and got {scalar.shape[lat_axis]}")
 
         if scalar.shape[lat_axis + 1] != self.nlon:

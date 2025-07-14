@@ -1,0 +1,2 @@
+recursive-include seba *.so
+recursive-include seba/cm_data *.cm

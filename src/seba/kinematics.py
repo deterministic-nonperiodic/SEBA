@@ -1,6 +1,6 @@
 import numpy as np
 
-from constants import Omega
+from .constants import Omega
 
 
 def coriolis_parameter(latitude):

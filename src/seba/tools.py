@@ -1,17 +1,20 @@
 import functools
 import time
+from functools import reduce
+from math import gcd
 
 import numpy as np
-import scipy.signal as sig
 import scipy.special as spec
 import shtns
 from _shtns import sht_idx
 from joblib import Parallel, delayed, cpu_count
 from scipy.linalg import inv
+from scipy.signal import fftconvolve, convolve
 from scipy.spatial import KDTree
+import scipy.stats as stats
 
-from fortran_libs import numeric_tools
-from spectral_analysis import lambda_from_deg
+from . import numeric_tools
+from .spectral_analysis import lambda_from_deg
 
 
 class Timer(object):
@@ -123,7 +126,7 @@ def get_num_cores():
 
 
 def get_chunk_size(n_workers, len_iterable, factor=4):
-    """Calculate chunk size argument for Pool-methods.
+    """Calculate chunk size argument for Pool methods.
 
     Resembles source-code within `multiprocessing.pool.Pool._map_async`.
     """
@@ -135,7 +138,7 @@ def get_chunk_size(n_workers, len_iterable, factor=4):
 
 def get_number_chunks(sample_size, workers, factor=4):
     """
-        Calculate number of chunks for Pool-methods.
+        Calculate the number of chunks for Pool methods.
     """
     n_chunks = sample_size / get_chunk_size(workers, sample_size, factor=factor)
 
@@ -146,12 +149,12 @@ def broadcast_1dto(arr, shape):
     """
     Broadcast a 1-dimensional array to a given shape using numpy rules
     by appending dummy dimensions. Raises error if the array cannot be
-    broadcast to target shape.
+    broadcast to the target shape.
     """
     a_size = arr.size
     if a_size in shape:
         # finds corresponding dimension from left to right.
-        # if shape contains multiple dimensions with the same size
+        # if shape contains multiple dimensions with the same size,
         # the result is broadcast to the left-most dimension
         index = shape.index(a_size)
     else:
@@ -166,7 +169,7 @@ def broadcast_1dto(arr, shape):
 
 
 def rotate_vector(vector, axis=0):
-    # take vector components along axis
+    """Rotate vector components"""
     vector = np.take(vector, [0, 1], axis=axis)
     # return vector rotated 90 degrees counterclockwise
     return np.ma.stack([-vector[1], vector[0]])
@@ -190,30 +193,32 @@ def getspecindx(ntrunc):
     return np.squeeze(index_m), np.squeeze(index_n)
 
 
-def _pack_levels(sbo, data, order='C'):
+def _pack_levels(data, nlat, nlm, order='C'):
     # pack dimensions of arrays (nlat, nlon, ...) to (nlat, nlon, samples)
-    data_length = len(data)
-    expected_length = [2, sbo.nlat, sbo.sphere.nlm]
+    data_shape = np.shape(data)
+
+    data_length = data_shape[0]
+    expected_length = [2, nlat, nlm]
 
     if data_length not in expected_length:
         raise ValueError(f"Inconsistent array shape: expecting "
-                         f"first dimension of size {sbo.nlat} or {sbo.sphere.nlm}.")
+                         f"first dimension of size {nlat} or {nlm}.")
 
-    data_shape = np.shape(data)[:3 - expected_length.index(data_length)] + (-1,)
+    data_shape = data_shape[:3 - expected_length.index(data_length)] + (-1,)
 
-    return np.reshape(data, data_shape, order=order).squeeze()
+    return np.reshape(data, data_shape, order=order)  # .squeeze()
 
 
-def _unpack_levels(sbo, data, order='C'):
+def _unpack_levels(data, samples, nlevels, order='C'):
     # unpack dimensions of arrays (nlat, nlon, samples)
-    if np.shape(data)[-1] == sbo.samples * sbo.nlevels:
-        data_shape = np.shape(data)[:-1] + (sbo.samples, sbo.nlevels)
+    if np.shape(data)[-1] == samples * nlevels:
+        data_shape = np.shape(data)[:-1] + (samples, nlevels)
         return np.reshape(data, data_shape, order=order)
     else:
         return data
 
 
-def transform_io(func, order='C'):
+def transform_io(func):
     """
     Decorator for handling arrays' IO dimensions for calling SHTns' spectral functions.
     The dimensions of the input arrays with shapes (nlat, nlon, nlev, ntime, ...)
@@ -224,24 +229,21 @@ def transform_io(func, order='C'):
     Parameters:
     -----------
     func: decorated function
-    order: {‘C’, ‘F’, ‘A’}, optional
-        Reshape the elements of the input arrays using this index order.
-        ‘C’ means to read / write the elements using C-like index order, with the last axis index
-        changing fastest, back to the first axis index changing slowest. See 'numpy.reshape' for
-        details.
     """
 
     @functools.wraps(func)
     def dimension_packer(*args, **kwargs):
-        # self passed as first argument
+        # self passed as the first argument
         cls, *args = args
-        transformed_args = [cls, ]
-        for arg in args:
-            transformed_args.append(_pack_levels(cls, arg, order=order))
 
-        results = func(*transformed_args, **kwargs)
-        # convert output back to original shape
-        return _unpack_levels(cls, results, order=order)
+        # Avoid class instance attributes lookup in loop
+        nlat = cls.nlat
+        nlm = cls.sphere.nlm
+
+        transformed_args = [cls, ] + [_pack_levels(arg, nlat, nlm) for arg in args]
+
+        # convert output back to the original shape
+        return _unpack_levels(func(*transformed_args, **kwargs), cls.samples, cls.nlevels)
 
     return dimension_packer
 
@@ -257,7 +259,7 @@ def convert_longitude(longitude):
     - array representing the converted longitude values in degrees
     """
     if np.any(longitude > 180.):
-        # longitudes are within (0, 360). Converting to (-180, 180)
+        # Longitudes are within (0, 360), need converting to (-180, 180)
         return np.where(longitude > 180, longitude - 360, longitude)
     else:
         # Converting to (0, 360)
@@ -277,7 +279,7 @@ def regular_lats_wts(nlat):
     """
     Computes the latitude points and weights of a regular grid
     (equally spaced in longitude and latitude). Regular grids
-    will include the poles and equator if nlat is odd. The sampling
+    will include the poles and the Equator if nlat is odd. The sampling
     is a constant 180 deg/nlat. Weights are defined as the cosine of latitudes.
 
     Parameters:
@@ -456,7 +458,7 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     arr = np.pad(arr, ((0,), (0,), (window_size,)), mode='wrap')
 
     # wrapper of convolution function for parallel computations
-    convolve_2d = functools.partial(sig.fftconvolve, in2=kernel, mode='same', axes=(1, 2))
+    convolve_2d = functools.partial(fftconvolve, in2=kernel, mode='same', axes=(1, 2))
 
     # Chunks of arrays along axis=0 for the mp mapping ...
     n_chunks = get_number_chunks(arr.shape[0], jobs, factor=4)
@@ -467,7 +469,7 @@ def lowpass_lanczos(data, window_size, cutoff_freq, axis=None, jobs=None):
     # applying lanczos filter in parallel
     result = pool(delayed(convolve_2d)(chunk) for chunk in np.array_split(arr, n_chunks))
     result = np.stack(result, axis=0)
-    
+
     result[np.isnan(result)] = 1.0
 
     # remove added pad
@@ -481,6 +483,62 @@ def is_sorted(arr, ascending=True):
         return np.all(arr[:-1] <= arr[1:])
     else:
         return np.all(arr[:-1] >= arr[1:])
+
+
+def lanczos_lowpass_1d(data, cutoff_frequency, sampling_frequency, window_length=None):
+    """
+    Apply a Lanczos low-pass filter to a time series.
+
+    Parameters:
+    - data: 1D numpy array of time series data.
+    - cutoff_frequency: The cutoff frequency of the filter in Hz.
+    - sampling_frequency: The sampling frequency of the data in Hz.
+    - window_length: The length of the Lanczos window (number of points).
+                     If None, it is calculated based on the cutoff frequency.
+
+    Returns:
+    - filtered_data: The filtered time series.
+    """
+
+    def lanczos_kernel(cutoff, window_size):
+        # Compute the Lanczos kernel
+        n = np.arange(1, window_size + 1)
+        h = spec.sinc(2 * cutoff * n) * np.sin(np.pi * n / window_size) / (np.pi * n / window_size)
+        kernel = np.concatenate(([2 * cutoff], h))
+        kernel = np.concatenate((kernel[::-1], kernel[1:]))
+        # Normalize the kernel to ensure the sum of the kernel coefficients equals one
+        kernel /= np.sum(kernel)
+        return kernel
+
+    # Normalize the cutoff frequency by the Nyquist frequency
+    nyquist_frequency = 0.5 * sampling_frequency
+    normalized_cutoff = cutoff_frequency / nyquist_frequency
+
+    # Calculate window length if not provided
+    if window_length is None:
+        window_length = int(4 / normalized_cutoff)  # Rule of thumb for window size
+
+    # Get the Lanczos kernel
+    kernel = lanczos_kernel(normalized_cutoff, window_length)
+
+    # Handle edges by padding the data
+    pad_length = len(kernel) // 2
+    padded_data = np.pad(data, (pad_length, pad_length), mode='reflect')
+
+    # Remove mean before filtering
+    data_mean = np.mean(data)
+    padded_data -= data_mean
+
+    # Convolve the padded data with the kernel
+    filtered_data = convolve(padded_data, kernel, mode='same')
+
+    # Add the mean back to the filtered data
+    filtered_data += data_mean
+
+    # Remove the padding
+    filtered_data = filtered_data[pad_length:-pad_length]
+
+    return filtered_data
 
 
 def search_nn_index(points, target_points):
@@ -599,13 +657,15 @@ def surface_mask(p, ps, smooth=True, jobs=None):
     return beta.clip(0.0, 1.0)
 
 
-def linear_scaler(data, feature_range=(0, 1)):
+def linear_scaler(data, feature_range=(0, 1), axis=0):
     #
-    d_min, d_max = feature_range
+    data = np.moveaxis(data, axis, 0)
 
-    scaled_data = (data - data.min()) * (d_max - d_min) / (data.max() - data.min())
+    d_min, d_max = data.min(axis=0), data.max(axis=0)
 
-    return scaled_data + d_min
+    scaled_data = (data - d_min) * (feature_range[1] - feature_range[0]) / (d_max - d_min)
+
+    return feature_range[0] + np.moveaxis(scaled_data, 0, axis)
 
 
 def compute_mode_coupling(mask, grid_type='gaussian', realizations=3):
@@ -772,7 +832,7 @@ def gradient_1d(scalar, x=None, axis=-1, order=6):
     equally_spaced = np.allclose(np.max(dx), np.min(dx), atol=1e-12)
 
     if equally_spaced:
-        # Using high order schemes for regular grid, otherwise
+        # Using high-order schemes for regular grid, otherwise
         # using second-order accurate central finite differences
         scalar = np.moveaxis(scalar, axis, 0)
         scalar_shape = scalar.shape
@@ -842,7 +902,6 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=None, scale='log'):
     sort_x = np.argsort(x)
 
     # The shape after all arrays are broadcast to each other
-    # Can't use broadcast_shapes until numpy >=1.20 is our minimum
     final_shape = np.broadcast(xp, *args).shape
 
     # indices for sorting
@@ -1007,3 +1066,94 @@ def _next_non_masked_element(x, idx):
             return next_idx, x[next_idx]
     except (AttributeError, TypeError, IndexError):
         return idx, x[idx]
+
+
+def nyquist_frequency(time_points):
+    """
+    Compute the Nyquist frequency given a sequence of time points.
+
+    Parameters:
+    - time_points (array-like): Array of time points.
+
+    Returns:
+    - FNy (float): Nyquist frequency.
+    """
+
+    # remove duplicates and sort time steps
+    time_points = np.unique(np.sort(time_points))
+
+    # Calculate the differences between successive time points
+    time_steps = np.diff(time_points)
+
+    # Find the greatest common divisor (GCD) of the time differences
+    # Convert diffs to integers by finding the smallest difference
+    min_step = np.min(time_steps)
+    scaled_steps = np.round(time_steps / min_step).astype(int)
+
+    # Compute p from the scaled p
+    p = min_step * reduce(gcd, scaled_steps)
+
+    # Compute the Nyquist frequency
+    nyquist_freq = 0.5 / min(p, min_step)
+
+    return nyquist_freq
+
+
+def mean_confidence_interval(data, confidence=0.95, axis=0):
+    a = np.asanyarray(data)
+
+    m, se = np.nanmean(a, axis=axis), stats.sem(a, axis=axis, nan_policy='omit')
+    h = se * stats.t.ppf((1 + confidence) / 2., a.shape[axis] - 1)
+    return m, h
+
+
+def ewm_confidence_interval(values, errors=None, confidence=0.95, axis=0):
+    """
+    Calculate the error-weighted mean and its confidence interval.
+
+    Parameters:
+        values (array-like): Measured values.
+        errors (array-like, optional): Associated errors for each value.
+        confidence (float): Confidence level (default is 0.95 for 95% confidence).
+        axis (int): Axis along which to compute the statistics (default is 0).
+
+    Returns:
+        mean (np.ndarray): Error-weighted mean.
+        confidence_interval (np.ndarray): Confidence interval of the mean.
+    """
+    # Ensure inputs are numpy arrays
+    values = np.array(values)
+
+    if errors is not None:
+        errors = np.array(errors)
+        valid = (errors > 0) & ~np.isnan(errors)
+
+        # Compute weights (zero for invalid entries)
+        weights = np.zeros_like(values)
+        weights[valid] = 1 / (errors[valid] ** 2)
+
+        # Weighted mean (replaces np.average)
+        weighted_mean = np.nansum(weights * values, axis=axis) / np.nansum(weights, axis=axis)
+
+        # Weighted standard error
+        weighted_std_error = np.sqrt(1 / np.nansum(weights, axis=axis))
+    else:
+        # Equal weights fallback
+        weights = np.ones_like(values)
+
+        weighted_mean = np.nanmean(values, axis=axis)
+        weighted_std_error = stats.sem(values, axis=axis, nan_policy='omit')
+
+    # Handle degrees of freedom
+    dof = np.nansum(weights, axis=axis) ** 2 / np.nansum(weights ** 2, axis=axis)
+    dof = np.where(dof > 1, dof - 1, np.nan)  # Avoid zero or negative dof
+
+    # Confidence interval scaling factor (z-score or t-score)
+    z_score = stats.t.ppf(0.5 + confidence / 2, dof)
+    confidence_interval = z_score * weighted_std_error
+
+    # Handle edge cases
+    if np.isnan(weighted_mean).all():
+        return np.nan, np.nan
+
+    return weighted_mean, confidence_interval
