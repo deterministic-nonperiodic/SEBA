@@ -6,8 +6,8 @@ import numpy as np
 import xarray as xr
 from tqdm import tqdm
 
-from io_tools import parse_dataset
-from seba import EnergyBudget
+from seba.io_tools import parse_dataset
+from seba.seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
