@@ -3,7 +3,7 @@ import warnings
 
 import xarray as xr
 
-from seba import EnergyBudget
+from seba.seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
