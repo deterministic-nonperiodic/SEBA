@@ -2,7 +2,7 @@ import warnings
 
 import numpy as np
 
-from seba import EnergyBudget
+from seba.seba import EnergyBudget
 
 warnings.filterwarnings('ignore')
 
