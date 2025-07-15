@@ -1,0 +1,11 @@
+# meson.options
+
+# This file defines project-specific options that can be configured by the user
+# when running `meson setup`.
+option(
+    'openmp',
+    type: 'boolean',
+    value: true,  # Default value: enable OpenMP support
+    description: 'Enable OpenMP support for Fortran extensions.'
+)
+

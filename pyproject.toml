@@ -1,0 +1,42 @@
+# pyproject.toml
+[build-system]
+# Specifies that Meson and meson-python are needed to build the package.
+requires = [
+    "meson-python >= 0.15.0", # Use a recent version of meson-python
+    "meson",                  # Use a recent version of Meson
+    "numpy",                  # For f2py and as a runtime dependency
+    "ninja"
+]
+build-backend = "mesonpy"
+
+[project]
+name = "seba"
+version = "0.1.0"
+description = "Spectral Energy Budget of the Atmosphere"
+readme = "README.md"
+authors = [
+    { name = "Yanmichel A. Morfa", email = "morfa@iap-kborn.de" },
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+
+# Runtime dependencies for your package
+dependencies = [
+    "numpy",
+    "scipy",
+    "xarray",
+    "matplotlib",
+    "pint",
+    "shtns",
+]
+
+[project.urls]
+Repository = "https://github.com/deterministic-nonperiodic/SEBA.git"
+
+[tool.setuptools]
+packages = ["seba"]
+package-dir = {"" = "src"}
+
+[tool.meson-python.args]
+setup = ["--reconfigure"] # Reconfigure on build
+

@@ -2,13 +2,12 @@ name: seba-env
 channels:
   - conda-forge
 dependencies:
-  - python
+  - python=3.11
   - numpy
   - xarray
   - scipy
   - matplotlib
   - pint
-  - shtns
   - h5py
   - netcdf4
   - pandas
@@ -22,3 +21,6 @@ dependencies:
   - alphashape
   - geopy
   - astropy
+  - pip
+  - pip:
+      - shtns
