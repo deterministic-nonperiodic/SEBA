@@ -36,12 +36,6 @@ This example demonstrates how to compute and visualize **spectral energy diagnos
 import xarray as xr
 from seba.seba import EnergyBudget
 
-# Define dataset path and model
-model = "ERA5"
-resolution = "025deg"
-data_path = "/path/to/simulations/"
-date_time = "20200128"
-
 # Load atmospheric 3D fields and surface pressure
 file_name = "/path/to/simulations/data.nc"
 
