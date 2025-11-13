@@ -5,7 +5,7 @@
 option(
     'openmp',
     type: 'boolean',
-    value: true,  # Default value: enable OpenMP support
+    value: false,  # Default value: disable OpenMP support
     description: 'Enable OpenMP support for Fortran extensions.'
 )
 
