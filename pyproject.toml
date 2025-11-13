@@ -12,13 +12,13 @@ build-backend = "mesonpy"
 [project]
 name = "seba"
 version = "0.1.0"
-description = "Spectral Energy Budget of the Atmosphere"
+description = "Spectral Energy Budget of the Atmosphere (SEBA)"
 readme = "README.md"
 authors = [
     { name = "Yanmichel A. Morfa", email = "morfa@iap-kborn.de" },
 ]
 license = { text = "MIT" }
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 
 # Runtime dependencies for your package
 dependencies = [
@@ -28,6 +28,8 @@ dependencies = [
     "matplotlib",
     "pint",
     "shtns",
+    "joblib",
+    "astropy"
 ]
 
 [project.urls]
